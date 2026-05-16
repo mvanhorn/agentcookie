@@ -18,6 +18,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/launchd"
 	"github.com/mvanhorn/agentcookie/internal/pairing"
+	"github.com/mvanhorn/agentcookie/internal/tsclient"
 )
 
 // Wizard flags. These are read by both `install` and `uninstall`.
@@ -34,6 +35,7 @@ var (
 	wizardSkipDaemon         bool
 	wizardNoRestartChrome    bool
 	wizardSkipRemoteDebug    bool
+	wizardSkipExitNode       bool
 )
 
 var wizardCmd = &cobra.Command{
@@ -89,6 +91,7 @@ func init() {
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipDaemon, "skip-daemon", false, "skip installing the LaunchAgent (configs + pairing only)")
 	wizardInstallCmd.Flags().BoolVar(&wizardNoRestartChrome, "no-restart-chrome", false, "[sink] do not auto-quit/relaunch Chrome to activate the chrome://inspect remote-debugging toggle; Chrome must be restarted manually for attach mode to discover the CDP endpoint")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipRemoteDebug, "skip-remote-debug", false, "[sink] do not write the chrome://inspect remote-debugging preference; useful when running the wizard for managed-mode sink installs")
+	wizardInstallCmd.Flags().BoolVar(&wizardSkipExitNode, "skip-exit-node-hint", false, "do not detect Tailscale or print the sudo commands that route the sink's outbound traffic through the source machine")
 
 	wizardUninstallCmd.Flags().StringVar(&wizardRole, "as", "", "source | sink (required)")
 	wizardUninstallCmd.Flags().BoolVar(&wizardForce, "purge", false, "also delete configs and paired keys")
@@ -178,6 +181,10 @@ func wizardInstallSource(ctx context.Context, binPath, logDir string) error {
 		fmt.Fprintln(os.Stderr, "agentcookie wizard: source LaunchAgent installed and started")
 	}
 
+	if !wizardSkipExitNode {
+		printExitNodeHint(ctx, "source", wizardPeer)
+	}
+
 	fmt.Fprintln(os.Stderr, "agentcookie wizard: source install complete")
 	return nil
 }
@@ -243,8 +250,69 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 		fmt.Fprintln(os.Stderr, "agentcookie wizard: sink LaunchAgent installed and started")
 	}
 
+	if !wizardSkipExitNode {
+		printExitNodeHint(ctx, "sink", wizardPeer)
+	}
+
 	fmt.Fprintln(os.Stderr, "agentcookie wizard: sink install complete")
 	return nil
+}
+
+// printExitNodeHint inspects Tailscale state and emits sudo command lines
+// the user can run once to align the sink machine's outbound IP with the
+// source machine's. It never executes sudo itself; that is intentionally
+// left to the human since it changes routing for the entire machine.
+//
+// role: "source" or "sink", determines which side of the relationship we
+// are configuring. peerHost is the OTHER machine's tailnet hostname.
+func printExitNodeHint(ctx context.Context, role, peerHost string) {
+	cli, err := tsclient.FindCLI()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: Tailscale not detected; skipping exit-node hint")
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: sites that bind sessions to the source machine's IP (instacart class) will not work without an exit-node hop")
+		return
+	}
+	st, err := tsclient.Get(ctx, cli)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agentcookie wizard: Tailscale CLI errored (%v); skipping exit-node hint\n", err)
+		return
+	}
+
+	switch role {
+	case "source":
+		if st.SelfAdvertisesExitNode() {
+			fmt.Fprintln(os.Stderr, "agentcookie wizard: this machine already advertises as a Tailscale exit node")
+			return
+		}
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: optional next step on this machine (source):")
+		fmt.Fprintln(os.Stderr, "  sudo tailscale set --advertise-exit-node")
+		fmt.Fprintln(os.Stderr, "  # then approve the exit-node offer in the Tailscale admin console")
+		fmt.Fprintln(os.Stderr, "  # routes the sink machine's outbound traffic through this machine's public IP")
+		fmt.Fprintln(os.Stderr, "  # keeps session-bound sites (instacart class) working when the sink hits them")
+	case "sink":
+		peer := st.FindPeer(peerHost)
+		if peer == nil {
+			fmt.Fprintf(os.Stderr, "agentcookie wizard: tailnet peer %q not found in Tailscale status; cannot suggest an exit-node command\n", peerHost)
+			fmt.Fprintln(os.Stderr, "agentcookie wizard: confirm both machines are on the same tailnet and the source advertises as exit node, then re-run the wizard")
+			return
+		}
+		if st.SelfUsesExitNode() {
+			fmt.Fprintln(os.Stderr, "agentcookie wizard: this machine already routes through a Tailscale exit node")
+			return
+		}
+		if !peer.ExitNodeOption {
+			fmt.Fprintf(os.Stderr, "agentcookie wizard: peer %q is on the tailnet but is NOT advertising as exit node\n", peerHost)
+			fmt.Fprintln(os.Stderr, "agentcookie wizard: run this on the source machine first:")
+			fmt.Fprintln(os.Stderr, "  sudo tailscale set --advertise-exit-node")
+			fmt.Fprintln(os.Stderr, "agentcookie wizard: then approve the exit-node offer at https://login.tailscale.com/admin/machines")
+			return
+		}
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: optional next step on this machine (sink):")
+		fmt.Fprintf(os.Stderr, "  sudo tailscale set --exit-node=%s --exit-node-allow-lan-access=true\n", peerHost)
+		fmt.Fprintln(os.Stderr, "  # routes this machine's outbound traffic through the source's public IP")
+		fmt.Fprintln(os.Stderr, "  # verify with: curl -s https://api.ipify.org && echo")
+		fmt.Fprintln(os.Stderr, "  # to undo: sudo tailscale set --exit-node=")
+	}
 }
 
 // ensureRemoteDebuggingEnabled walks the sink machine's real Chrome through
