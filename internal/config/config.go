@@ -43,13 +43,20 @@ type SinkConfig struct {
 // from Chrome's DevToolsActivePort file. This is the "magical install" path
 // because it avoids the macOS Keychain prompt entirely (no SQLite writes,
 // no security find-generic-password call).
+//
+// When ExtensionDir is set, the managed Chrome is launched with
+// --load-extension=<dir>. The agentcookie extension uses chrome.cookies.set()
+// (a reliable API path) instead of CDP Storage.setCookies (which silently
+// drops cookies). This is the v0.4 cookie-write path.
 type CDPRef struct {
-	Enabled      bool   `yaml:"enabled" json:"enabled"`
-	Managed      bool   `yaml:"managed,omitempty" json:"managed,omitempty"`
-	Host         string `yaml:"host,omitempty" json:"host,omitempty"`
-	Port         int    `yaml:"port,omitempty" json:"port,omitempty"`
-	ProfileDir   string `yaml:"profile_dir,omitempty" json:"profile_dir,omitempty"`
-	ChromeBinary string `yaml:"chrome_binary,omitempty" json:"chrome_binary,omitempty"`
+	Enabled        bool   `yaml:"enabled" json:"enabled"`
+	Managed        bool   `yaml:"managed,omitempty" json:"managed,omitempty"`
+	Host           string `yaml:"host,omitempty" json:"host,omitempty"`
+	Port           int    `yaml:"port,omitempty" json:"port,omitempty"`
+	ProfileDir     string `yaml:"profile_dir,omitempty" json:"profile_dir,omitempty"`
+	ChromeBinary   string `yaml:"chrome_binary,omitempty" json:"chrome_binary,omitempty"`
+	ExtensionDir   string `yaml:"extension_dir,omitempty" json:"extension_dir,omitempty"`
+	ExtensionToken string `yaml:"extension_token,omitempty" json:"-"`
 }
 
 // PeerRef names the other side of a paired sync relationship. Hostname is
@@ -126,6 +133,14 @@ func LoadSink(dir string) (*SinkConfig, error) {
 			cfg.CDP.ProfileDir = filepath.Join(home, ".agentcookie", "chrome-profile")
 		}
 		cfg.CDP.ProfileDir = ExpandTilde(cfg.CDP.ProfileDir)
+		if cfg.CDP.Managed && cfg.CDP.ExtensionDir == "" {
+			home, _ := os.UserHomeDir()
+			cfg.CDP.ExtensionDir = filepath.Join(home, ".agentcookie", "extension")
+		}
+		cfg.CDP.ExtensionDir = ExpandTilde(cfg.CDP.ExtensionDir)
+		if cfg.CDP.ExtensionToken == "" {
+			cfg.CDP.ExtensionToken = "agentcookie-default-token"
+		}
 	}
 	return &cfg, nil
 }
