@@ -1,0 +1,52 @@
+version: 2
+
+project_name: agentcookie
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: agentcookie
+    main: ./cmd/agentcookie
+    binary: agentcookie
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - darwin
+    goarch:
+      - arm64
+      - amd64
+    ldflags:
+      - -s -w -X github.com/mvanhorn/agentcookie/internal/cli.Version={{ .Version }}
+
+archives:
+  - id: agentcookie
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - docs/quickstart.md
+      - docs/threat-model.md
+      - docs/architecture.md
+      - docs/protocol.md
+      - docs/faq.md
+      - examples/source.yaml
+      - examples/sink.yaml
+      - examples/allowlist.yaml
+      - examples/launchd-sink.plist
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - merge
