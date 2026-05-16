@@ -14,7 +14,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/mvanhorn/agentcookie/extension"
 	"github.com/mvanhorn/agentcookie/internal/chromeconn"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/launchd"
@@ -190,16 +189,6 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 	if err := os.MkdirAll(common.ConfigDir, 0o755); err != nil {
 		return err
 	}
-
-	// Unpack the bundled Chrome extension. The sink's managed Chrome will load
-	// it via --load-extension and use chrome.cookies.set() (reliable) instead
-	// of CDP Storage.setCookies (silently-drops-cookies).
-	home, _ := os.UserHomeDir()
-	extDir := filepath.Join(home, ".agentcookie", "extension")
-	if err := extension.Install(extDir); err != nil {
-		return fmt.Errorf("install Chrome extension: %w", err)
-	}
-	fmt.Fprintf(os.Stderr, "agentcookie wizard: Chrome extension unpacked to %s\n", extDir)
 
 	if err := writeYAMLIfMissing(
 		filepath.Join(common.ConfigDir, "sink.yaml"),

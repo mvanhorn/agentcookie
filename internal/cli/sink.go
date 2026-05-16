@@ -18,7 +18,6 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chromeconn"
 	"github.com/mvanhorn/agentcookie/internal/chromemgr"
 	"github.com/mvanhorn/agentcookie/internal/config"
-	"github.com/mvanhorn/agentcookie/internal/extbridge"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"github.com/mvanhorn/agentcookie/internal/state"
 	"github.com/mvanhorn/agentcookie/internal/transport"
@@ -77,22 +76,15 @@ func runSink(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr, "agentcookie sink: cdp.managed=true; skipping Chrome Safe Storage (CDP path needs no key)")
 	}
 
-	// Build the extension bridge BEFORE Chrome starts, so the bridge's HTTP
-	// handlers are mounted and ready by the time the extension's service
-	// worker starts polling.
-	var bridge *extbridge.Bridge
-	if cfg.CDP.Enabled && cfg.CDP.Managed && cfg.CDP.ExtensionDir != "" && !sinkDryRun {
-		bridge = extbridge.New(extbridge.Config{Token: cfg.CDP.ExtensionToken})
-	}
-
 	// Start the managed Chrome subprocess if configured. The supervisor inside
 	// chromemgr handles restart-on-crash for the lifetime of the sink.
+	// Managed mode is legacy; v0.5 attach mode (the default) does not spawn
+	// any Chrome.
 	var chromeMgr *chromemgr.Manager
 	if cfg.CDP.Enabled && cfg.CDP.Managed && !sinkDryRun {
 		mgr, err := chromemgr.New(chromemgr.Config{
 			ChromeBinary: cfg.CDP.ChromeBinary,
 			ProfileDir:   cfg.CDP.ProfileDir,
-			ExtensionDir: cfg.CDP.ExtensionDir,
 		})
 		if err != nil {
 			return fmt.Errorf("init chromemgr: %w", err)
@@ -104,11 +96,7 @@ func runSink(cmd *cobra.Command, args []string) error {
 		}
 		defer mgr.Stop()
 		chromeMgr = mgr
-		if cfg.CDP.ExtensionDir != "" {
-			fmt.Fprintf(os.Stderr, "agentcookie sink: managed Chrome up at %s (profile=%s extension=%s)\n", mustDebuggerURL(mgr), cfg.CDP.ProfileDir, cfg.CDP.ExtensionDir)
-		} else {
-			fmt.Fprintf(os.Stderr, "agentcookie sink: managed Chrome up at %s (profile=%s)\n", mustDebuggerURL(mgr), cfg.CDP.ProfileDir)
-		}
+		fmt.Fprintf(os.Stderr, "agentcookie sink: managed Chrome up at %s (profile=%s)\n", mustDebuggerURL(mgr), cfg.CDP.ProfileDir)
 	}
 	transportSecret, err := resolveTransportSecret(common.ConfigDir, cfg.Peer.Hostname, cfg.Security.SharedSecret)
 	if err != nil {
@@ -138,9 +126,6 @@ func runSink(cmd *cobra.Command, args []string) error {
 	}
 
 	mux := http.NewServeMux()
-	if bridge != nil {
-		bridge.Mount(mux)
-	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintln(w, "ok")
 	})
@@ -204,7 +189,7 @@ func runSink(cmd *cobra.Command, args []string) error {
 			return
 		}
 
-		written, mode, err := writeCookiesToSink(r.Context(), cfg, cookies, key, chromeMgr, bridge)
+		written, mode, err := writeCookiesToSink(r.Context(), cfg, cookies, key, chromeMgr)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "agentcookie sink: write failed after %d cookies (mode=%s): %v\n", written, mode, err)
 			sinkState.LastError = err.Error()
@@ -233,18 +218,20 @@ func runSink(cmd *cobra.Command, args []string) error {
 	return srv.ListenAndServe()
 }
 
-// writeCookiesToSink chooses the appropriate write path. When the managed
-// Chrome has an extension loaded, the sink uses the extension's
-// chrome.cookies.set() path (reliable, no silent drops). When CDP is managed
-// without an extension, falls back to CDP Storage.setCookies. When CDP is
-// enabled but unmanaged, probes an externally-launched Chrome. When CDP is
-// disabled entirely, SQLite is the only path.
-func writeCookiesToSink(ctx context.Context, cfg *config.SinkConfig, cookies []chrome.Cookie, key []byte, mgr *chromemgr.Manager, bridge *extbridge.Bridge) (int, string, error) {
-	// v0.5 attach mode: connect to the user's running Chrome via the CDP
-	// endpoint Chrome exposes when remote debugging is enabled through
-	// chrome://inspect/#remote-debugging. Uses chromedp for cookie writes
-	// (handles SameSite=None+Secure normalization, partitionKey, expiry
-	// overflow). Selected explicitly with `cdp.mode: attach` in sink.yaml.
+// writeCookiesToSink chooses the appropriate write path based on cfg.CDP.Mode:
+//
+//   - "attach" (v0.5 default): connect to the user's running Chrome via the
+//     chrome://inspect-activated CDP endpoint. chromedp writes cookies with
+//     correct SameSite, partitionKey, and expiry handling.
+//   - "managed" (legacy): the sink supervises its own Chrome subprocess and
+//     writes via hand-rolled CDP. Retained for headless deployments where no
+//     human can flip the chrome://inspect toggle. Known to drop cookies that
+//     fail Chrome's per-cookie validation (SameSite=None without Secure,
+//     CHIPS edge cases, expiry overflow). Use attach mode whenever possible.
+//   - "" (back-compat): same as managed when CDP.Managed=true; otherwise
+//     probes an externally-launched Chrome at host:port. Pre-v0.5 behavior.
+//   - CDP.Enabled=false: SQLite is the only path.
+func writeCookiesToSink(ctx context.Context, cfg *config.SinkConfig, cookies []chrome.Cookie, key []byte, mgr *chromemgr.Manager) (int, string, error) {
 	if cfg.CDP.Enabled && cfg.CDP.Mode == "attach" {
 		profileDir := cfg.CDP.AttachProfileDir
 		if profileDir == "" {
@@ -275,22 +262,6 @@ func writeCookiesToSink(ctx context.Context, cfg *config.SinkConfig, cookies []c
 			fmt.Fprintf(os.Stderr, "agentcookie sink: attach mode reported %d per-cookie failures across %d hosts\n", total, len(failures))
 		}
 		return written, "attach", nil
-	}
-
-	// Preferred v0.4 path: managed Chrome + agentcookie extension via the
-	// HTTP bridge. chrome.cookies.set() is reliable; CDP Storage.setCookies
-	// is not.
-	if bridge != nil {
-		callCtx, cancelCall := context.WithTimeout(ctx, 35*time.Second)
-		defer cancelCall()
-		written, failures, err := bridge.SetCookies(callCtx, cookies)
-		if err != nil {
-			return written, "extension", fmt.Errorf("extension cookies channel: %w", err)
-		}
-		if total := failureTotal(failures); total > 0 {
-			fmt.Fprintf(os.Stderr, "agentcookie sink: extension reported %d cookies failed across %d hosts\n", total, len(failures))
-		}
-		return written, "extension", nil
 	}
 
 	if cfg.CDP.Enabled && cfg.CDP.Managed {
