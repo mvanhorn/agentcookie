@@ -99,7 +99,11 @@ func runSource(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("marshal cookies: %w", err)
 	}
-	sealed, err := transport.SealWithSecret(payload, cfg.Security.SharedSecret)
+	secret, err := resolveTransportSecret(common.ConfigDir, cfg.Peer.Hostname, cfg.Security.SharedSecret)
+	if err != nil {
+		return err
+	}
+	sealed, err := transport.SealWithSecret(payload, secret)
 	if err != nil {
 		return fmt.Errorf("seal payload: %w", err)
 	}

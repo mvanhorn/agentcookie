@@ -13,18 +13,29 @@ import (
 )
 
 // SourceConfig captures the source machine's settings: where to push, which
-// Chrome profile to read from, and the shared transport secret (pre-U5).
+// Chrome profile to read from, and how transport is authenticated. After
+// pairing (U5), Peer.Hostname references a key in the keystore. The
+// legacy Security.SharedSecret field is kept for backwards compat with v0
+// configs that predate pairing.
 type SourceConfig struct {
 	Sink     SinkRef     `yaml:"sink" json:"sink"`
 	Chrome   ChromeRef   `yaml:"chrome" json:"chrome"`
-	Security SecurityRef `yaml:"security" json:"security"`
+	Peer     PeerRef     `yaml:"peer,omitempty" json:"peer,omitempty"`
+	Security SecurityRef `yaml:"security,omitempty" json:"security,omitempty"`
 }
 
 // SinkConfig captures the sink machine's settings.
 type SinkConfig struct {
 	Listen   ListenRef   `yaml:"listen" json:"listen"`
 	Chrome   ChromeRef   `yaml:"chrome" json:"chrome"`
-	Security SecurityRef `yaml:"security" json:"security"`
+	Peer     PeerRef     `yaml:"peer,omitempty" json:"peer,omitempty"`
+	Security SecurityRef `yaml:"security,omitempty" json:"security,omitempty"`
+}
+
+// PeerRef names the other side of a paired sync relationship. Hostname is
+// the key under ~/.config/agentcookie/keys/.
+type PeerRef struct {
+	Hostname string `yaml:"hostname" json:"hostname"`
 }
 
 type SinkRef struct {
@@ -57,8 +68,8 @@ func LoadSource(dir string) (*SourceConfig, error) {
 	if cfg.Sink.URL == "" {
 		return nil, fmt.Errorf("%s: sink.url is required", path)
 	}
-	if cfg.Security.SharedSecret == "" {
-		return nil, fmt.Errorf("%s: security.shared_secret is required (will be replaced by pairing in U5)", path)
+	if cfg.Peer.Hostname == "" && cfg.Security.SharedSecret == "" {
+		return nil, fmt.Errorf("%s: either peer.hostname (paired key) or security.shared_secret (legacy) is required", path)
 	}
 	if cfg.Chrome.DBPath == "" {
 		cfg.Chrome.DBPath = DefaultChromeCookiesPath()
@@ -77,8 +88,8 @@ func LoadSink(dir string) (*SinkConfig, error) {
 	if cfg.Listen.Addr == "" {
 		cfg.Listen.Addr = "127.0.0.1:9999"
 	}
-	if cfg.Security.SharedSecret == "" {
-		return nil, fmt.Errorf("%s: security.shared_secret is required (will be replaced by pairing in U5)", path)
+	if cfg.Peer.Hostname == "" && cfg.Security.SharedSecret == "" {
+		return nil, fmt.Errorf("%s: either peer.hostname (paired key) or security.shared_secret (legacy) is required", path)
 	}
 	if cfg.Chrome.DBPath == "" {
 		cfg.Chrome.DBPath = DefaultChromeCookiesPath()
