@@ -18,6 +18,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chromemgr"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
+	"github.com/mvanhorn/agentcookie/internal/state"
 	"github.com/mvanhorn/agentcookie/internal/transport"
 )
 
@@ -112,6 +113,15 @@ func runSink(cmd *cobra.Command, args []string) error {
 
 	seqTracker := protocol.NewSequenceTracker()
 
+	// State writer for `agentcookie status` to read.
+	home, _ := os.UserHomeDir()
+	stateWriter := state.NewWriter(state.SinkPath(home))
+	sinkState := &state.SinkState{
+		Role:       "sink",
+		ListenAddr: cfg.Listen.Addr,
+		CDPManaged: cfg.CDP.Enabled && cfg.CDP.Managed,
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintln(w, "ok")
@@ -168,6 +178,12 @@ func runSink(cmd *cobra.Command, args []string) error {
 				"cookies":         cookies,
 			}, "", "  ")
 			fmt.Fprintf(os.Stderr, "agentcookie sink (dry-run): accepted batch:\n%s\n", string(dump))
+			sinkState.LastWrite = time.Now().UTC()
+			sinkState.LastWriteCount = len(cookies)
+			sinkState.LastWriteMode = "dry-run"
+			sinkState.TotalWrites++
+			sinkState.TotalDropped += dropped
+			_ = stateWriter.Save(sinkState)
 			_, _ = fmt.Fprintf(w, "dry-run ok: accepted %d cookies; dropped %d non-allowlisted\n", len(cookies), dropped)
 			return
 		}
@@ -175,10 +191,20 @@ func runSink(cmd *cobra.Command, args []string) error {
 		written, mode, err := writeCookiesToSink(r.Context(), cfg, cookies, key, chromeMgr)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "agentcookie sink: write failed after %d cookies (mode=%s): %v\n", written, mode, err)
+			sinkState.LastError = err.Error()
+			sinkState.LastErrorAt = time.Now().UTC()
+			sinkState.TotalRejects++
+			_ = stateWriter.Save(sinkState)
 			http.Error(w, fmt.Sprintf("write cookies: %v", err), http.StatusInternalServerError)
 			return
 		}
 		fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies via %s (dropped %d non-allowlisted)\n", written, mode, dropped)
+		sinkState.LastWrite = time.Now().UTC()
+		sinkState.LastWriteCount = written
+		sinkState.LastWriteMode = mode
+		sinkState.TotalWrites++
+		sinkState.TotalDropped += dropped
+		_ = stateWriter.Save(sinkState)
 		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies via %s; dropped %d non-allowlisted\n", written, mode, dropped)
 	})
 

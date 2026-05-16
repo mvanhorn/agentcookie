@@ -16,6 +16,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/pairing"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
+	"github.com/mvanhorn/agentcookie/internal/state"
 	"github.com/mvanhorn/agentcookie/internal/transport"
 	"github.com/mvanhorn/agentcookie/internal/watcher"
 )
@@ -84,8 +85,24 @@ func runSource(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// State writer for `agentcookie status` to read.
+	home, _ := os.UserHomeDir()
+	stateWriter := state.NewWriter(state.SourcePath(home))
+	srcState := &state.SourceState{Role: "source", SinkURL: cfg.Sink.URL}
+
 	push := func(ctx context.Context) (int, error) {
-		return pushOnce(ctx, cfg, allow, key, secret, sourceDryRun, sourceVerbose)
+		n, err := pushOnce(ctx, cfg, allow, key, secret, sourceDryRun, sourceVerbose)
+		if err != nil {
+			srcState.TotalFailures++
+			srcState.LastError = err.Error()
+			srcState.LastErrorAt = time.Now().UTC()
+		} else {
+			srcState.TotalPushes++
+			srcState.LastPushCount = n
+			srcState.LastPush = time.Now().UTC()
+		}
+		_ = stateWriter.Save(srcState)
+		return n, err
 	}
 
 	if sourceOnce {
