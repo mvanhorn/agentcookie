@@ -1,0 +1,17 @@
+# Example source.yaml. Copy to ~/.config/agentcookie/source.yaml on the
+# machine where you log in interactively (your laptop).
+
+sink:
+  # URL of the sink machine's HTTP listener over your tailnet.
+  url: http://my-mac-mini.tailnet.ts.net:9999/sync
+
+chrome:
+  # Defaults to ~/Library/Application Support/Google/Chrome/Default/Cookies if
+  # omitted. Set explicitly to read from a non-default profile.
+  db_path: ~/Library/Application Support/Google/Chrome/Default/Cookies
+
+security:
+  # Pre-pairing shared secret. Replace with a long random string. Use the same
+  # value in sink.yaml on the other end. U5 will replace this with a per-peer
+  # key derived at pairing time and stored in the OS keychain.
+  shared_secret: REPLACE-WITH-A-LONG-RANDOM-STRING
