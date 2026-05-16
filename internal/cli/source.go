@@ -14,6 +14,8 @@ import (
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/config"
+	"github.com/mvanhorn/agentcookie/internal/pairing"
+	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"github.com/mvanhorn/agentcookie/internal/transport"
 )
 
@@ -95,9 +97,15 @@ func runSource(cmd *cobra.Command, args []string) error {
 		return emit(result, fmt.Sprintf("agentcookie source: %d cookies across %d patterns (dry-run=%v)\n", len(all), len(byPattern), sourceDryRun))
 	}
 
-	payload, err := json.Marshal(all)
+	envelope := protocol.SyncEnvelope{
+		ProtocolVersion: protocol.Version,
+		SourceHostname:  pairing.LocalHostname(),
+		Sequence:        time.Now().Unix(),
+		Cookies:         all,
+	}
+	payload, err := json.Marshal(envelope)
 	if err != nil {
-		return fmt.Errorf("marshal cookies: %w", err)
+		return fmt.Errorf("marshal envelope: %w", err)
 	}
 	secret, err := resolveTransportSecret(common.ConfigDir, cfg.Peer.Hostname, cfg.Security.SharedSecret)
 	if err != nil {
