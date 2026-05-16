@@ -100,36 +100,69 @@ WebSocket once at sink start, hold it open, and write cookies as batches
 arrive. The user sees the dialog the first time the sink boots and never
 again until they restart Chrome.
 
-Open question: does the permission grant persist across Chrome restarts, or
-does each restart re-prompt? Either is workable (sink restart-reconnect logic
-handles the transient case), but the wizard's user-facing copy needs to
-match reality. Verify empirically in U2 by restarting Chrome on the Mac mini
-and observing whether the sink reconnects without a dialog.
+Empirical observation in headless mode (relevant for CI / autonomous
+verification): headless Chrome does not render the permission dialog, so the
+WebSocket handshake hangs until timeout. Implication: headless tests against
+chrome://inspect-activated Chrome do not work; use the legacy
+`--remote-debugging-port=0` + isolated `--user-data-dir` path for headless
+verification.
 
-## Persistence of the toggle itself
+A related issue is being tracked upstream:
+[chrome-devtools-mcp#825 "Allow persisting remote debugging permission
+approval"](https://github.com/ChromeDevTools/chrome-devtools-mcp/issues/825).
+There is no documented Chrome flag or enterprise policy that suppresses the
+per-connection dialog as of Chrome 148.
 
-The "Allow remote debugging for this browser instance" wording on the
-chrome://inspect/#remote-debugging page is ambiguous on persistence. Two
-plausible interpretations:
+Practical UX for Matt's Mac mini: real (non-headless) Chrome shows the
+dialog, he clicks Allow once when the sink first attaches, and the
+connection persists for the lifetime of the sink process. If he restarts
+Chrome (rare; the machine is up 24/7), the dialog re-fires on next sink
+reconnect.
 
-A. Persists across Chrome restarts. Stored as a Chrome preference (`Local
-   State` or per-profile `Preferences`). Toggle once, attach mode keeps
-   working forever.
+## Persistence of the toggle itself (resolved empirically)
 
-B. Per-Chrome-instance only. Each Chrome restart clears the toggle, user
-   has to flip it again.
+The toggle persists across Chrome restarts. It is stored in Chrome's
+browser-wide `Local State` JSON (not per-profile `Preferences`) at the key
+`devtools.remote_debugging.user-enabled`.
 
-Neither path was nailed down from public docs. Both should be tested in
-U2 (start Chrome with toggle off; flip toggle; observe DevToolsActivePort
-appears; quit Chrome; relaunch; observe whether DevToolsActivePort
-reappears at launch or only after another toggle flip). The wizard's copy
-adapts to whichever it is. If it's (B), wizard becomes a one-line "you
-need to flip this whenever you restart Chrome" reminder, which is fine
-since most users keep Chrome running.
+Verified on the Mac mini (macOS 15.3.1, Chrome 148.0.7778.168) by:
 
-For Matt specifically: Mac mini Chrome runs essentially 24/7 because PP CLIs
-and agent runtimes need it. So even if persistence is (B), the practical
-impact is minimal as long as the LaunchAgent re-prompts on Chrome restart.
+1. Launching a fresh Chrome with `--user-data-dir=/tmp/chrome-inspect-test`,
+   `--remote-debugging-port=0`, and `--headless=new`.
+2. Snapshotting `Default/Preferences` and `Local State`.
+3. Driving Chrome via CDP: `Page.navigate` to
+   `chrome://inspect/#remote-debugging`, `Runtime.evaluate` of
+   `document.getElementById('remote-debugging-enabled').click()`.
+4. Quitting Chrome.
+5. Diffing the before/after snapshots.
+
+`Default/Preferences` did not gain any debug-related keys. `Local State`
+gained a single key:
+
+```
+devtools.remote_debugging.user-enabled = true
+```
+
+To activate remote debugging programmatically (without a user click):
+
+1. Quit Chrome.
+2. Read the existing `~/Library/Application Support/Google/Chrome/Local State`
+   JSON, merge the new key, write it back. Match Chrome's file permissions.
+3. Relaunch Chrome WITHOUT any `--remote-debugging-port` flag.
+
+Empirically verified: after step 3, Chrome opens a CDP listener at port
+9222 (the default port when activation comes through this path, not
+auto-picked like with `--remote-debugging-port=0`). `DevToolsActivePort`
+gets written to the user-data-dir root with two lines: `9222` and the
+browser-level WebSocket path.
+
+For agentcookie wizard:
+
+- Default UX path: ask the user to flip the chrome://inspect toggle in
+  their running Chrome. Single click, no Chrome restart needed.
+- Advanced UX path (autonomous, no human click): wizard runs an SSH-driven
+  edit to Local State + Chrome restart on the sink machine. Skips the
+  toggle UI entirely.
 
 ## Security model
 
@@ -194,17 +227,23 @@ Watch out for:
 - Multiple Chrome user profiles. v0.5 targets the Default profile; non-Default
   profile support is v0.6 territory.
 
-## Open questions deferred to U2
+## Open questions deferred to U2 / U6
 
-- Does the permission grant persist across Chrome restarts, or fire every time?
-- Does the chrome://inspect toggle itself persist (preferences vs. per-instance)?
-- Does the dialog identify the connecting client by name? If so, how? (The
-  wizard's UX text adapts to whatever the dialog says.)
-- Is there a graceful re-prompt path if the user later clicks Deny by mistake,
-  or do they need to re-toggle the inspect page?
+Resolved during U1 followup:
 
-None of these block U2 implementation. They're empirical questions answered by
-the first real connection on Matt's Mac mini.
+- Toggle persistence: stored at `devtools.remote_debugging.user-enabled` in
+  `Local State`. Persists across Chrome restarts.
+- Programmatic activation: writing the Local State key + Chrome restart
+  auto-opens CDP on port 9222 without any user click on the toggle.
+
+Still open (require Matt's real Chrome to confirm):
+
+- Permission grant persistence across Chrome restarts (Chrome blog implies
+  per-session re-prompt; not verifiable in headless mode).
+- Whether the dialog identifies the connecting client by name and what
+  text agentcookie's connection appears under.
+- Whether the dialog accepts a graceful re-prompt path after Deny, or
+  requires re-flipping the toggle.
 
 ## Sources
 
