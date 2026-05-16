@@ -28,8 +28,19 @@ type SourceConfig struct {
 type SinkConfig struct {
 	Listen   ListenRef   `yaml:"listen" json:"listen"`
 	Chrome   ChromeRef   `yaml:"chrome" json:"chrome"`
+	CDP      CDPRef      `yaml:"cdp,omitempty" json:"cdp,omitempty"`
 	Peer     PeerRef     `yaml:"peer,omitempty" json:"peer,omitempty"`
 	Security SecurityRef `yaml:"security,omitempty" json:"security,omitempty"`
+}
+
+// CDPRef configures live-Chrome injection on the sink via Chrome DevTools
+// Protocol. When Enabled and the configured port is reachable, the sink
+// writes cookies through Storage.setCookies for instant in-memory visibility
+// instead of (or in addition to) the SQLite write path.
+type CDPRef struct {
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	Host    string `yaml:"host,omitempty" json:"host,omitempty"`
+	Port    int    `yaml:"port,omitempty" json:"port,omitempty"`
 }
 
 // PeerRef names the other side of a paired sync relationship. Hostname is
@@ -93,6 +104,14 @@ func LoadSink(dir string) (*SinkConfig, error) {
 	}
 	if cfg.Chrome.DBPath == "" {
 		cfg.Chrome.DBPath = DefaultChromeCookiesPath()
+	}
+	if cfg.CDP.Enabled {
+		if cfg.CDP.Host == "" {
+			cfg.CDP.Host = "127.0.0.1"
+		}
+		if cfg.CDP.Port == 0 {
+			cfg.CDP.Port = 9222
+		}
 	}
 	return &cfg, nil
 }

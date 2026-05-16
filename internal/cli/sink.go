@@ -1,14 +1,17 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/mvanhorn/agentcookie/internal/cdp"
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/transport"
@@ -71,17 +74,49 @@ func runSink(cmd *cobra.Command, args []string) error {
 			http.Error(w, "unmarshal cookies: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		written, err := chrome.WriteCookies(cfg.Chrome.DBPath, cookies, key)
+		written, mode, err := writeCookiesToSink(r.Context(), cfg, cookies, key)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "agentcookie sink: write failed after %d cookies: %v\n", written, err)
+			fmt.Fprintf(os.Stderr, "agentcookie sink: write failed after %d cookies (mode=%s): %v\n", written, mode, err)
 			http.Error(w, fmt.Sprintf("write cookies: %v", err), http.StatusInternalServerError)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies to %s\n", written, cfg.Chrome.DBPath)
-		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies\n", written)
+		fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies via %s\n", written, mode)
+		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies via %s\n", written, mode)
 	})
 
 	srv := &http.Server{Addr: cfg.Listen.Addr, Handler: mux}
-	fmt.Fprintf(os.Stderr, "agentcookie sink: listening on http://%s (db=%s)\n", cfg.Listen.Addr, cfg.Chrome.DBPath)
+	fmt.Fprintf(os.Stderr, "agentcookie sink: listening on http://%s (db=%s cdp=%v)\n", cfg.Listen.Addr, cfg.Chrome.DBPath, cfg.CDP.Enabled)
 	return srv.ListenAndServe()
+}
+
+// writeCookiesToSink tries CDP live injection first when configured, falls
+// back to direct SQLite write. Returns the number of cookies written and the
+// mode used ("cdp" or "sqlite") so the response surfaces visibility to callers.
+func writeCookiesToSink(ctx context.Context, cfg *config.SinkConfig, cookies []chrome.Cookie, key []byte) (int, string, error) {
+	if cfg.CDP.Enabled {
+		probeCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+		defer cancel()
+		info, err := cdp.Probe(probeCtx, cfg.CDP.Host, cfg.CDP.Port)
+		if err == nil && info.WebSocketDebuggerURL != "" {
+			dialCtx, cancelDial := context.WithTimeout(ctx, 3*time.Second)
+			defer cancelDial()
+			conn, derr := cdp.Dial(dialCtx, info.WebSocketDebuggerURL)
+			if derr == nil {
+				defer conn.Close()
+				callCtx, cancelCall := context.WithTimeout(ctx, 10*time.Second)
+				defer cancelCall()
+				written, serr := cdp.SetCookies(callCtx, conn, cookies)
+				if serr == nil {
+					return written, "cdp", nil
+				}
+				fmt.Fprintf(os.Stderr, "agentcookie sink: CDP injection failed (%v), falling back to SQLite\n", serr)
+			} else {
+				fmt.Fprintf(os.Stderr, "agentcookie sink: CDP dial failed (%v), falling back to SQLite\n", derr)
+			}
+		} else if err != nil {
+			fmt.Fprintf(os.Stderr, "agentcookie sink: CDP probe failed (%v), falling back to SQLite\n", err)
+		}
+	}
+	written, err := chrome.WriteCookies(cfg.Chrome.DBPath, cookies, key)
+	return written, "sqlite", err
 }
