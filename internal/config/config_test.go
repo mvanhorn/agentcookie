@@ -77,48 +77,83 @@ security:
 	}
 }
 
-func TestLoadAllowlistHappyPath(t *testing.T) {
+func TestLoadBlocklistHappyPath(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "allowlist.yaml", `
+	writeFile(t, dir, "blocklist.yaml", `
 version: 1
 domains:
-  - pattern: "%instacart.com"
-    description: Instacart
-  - pattern: "%example.com"
+  - pattern: "%chase.com"
+    description: Chase bank
+  - pattern: "%1password.com"
 `)
-	al, err := LoadAllowlist(dir)
+	bl, err := LoadBlocklist(dir)
 	if err != nil {
-		t.Fatalf("LoadAllowlist: %v", err)
+		t.Fatalf("LoadBlocklist: %v", err)
 	}
-	if len(al.Domains) != 2 {
-		t.Errorf("expected 2 domains, got %d", len(al.Domains))
+	if len(bl.Domains) != 2 {
+		t.Errorf("expected 2 domains, got %d", len(bl.Domains))
 	}
-	if al.Domains[0].Pattern != "%instacart.com" {
-		t.Errorf("first pattern wrong: %q", al.Domains[0].Pattern)
+	if bl.Domains[0].Pattern != "%chase.com" {
+		t.Errorf("first pattern wrong: %q", bl.Domains[0].Pattern)
 	}
 }
 
-func TestLoadAllowlistRejectsUnknownVersion(t *testing.T) {
+func TestLoadBlocklistMissingReturnsEmpty(t *testing.T) {
+	// v0.3: missing blocklist is NOT an error. Empty = sync-all default.
 	dir := t.TempDir()
-	writeFile(t, dir, "allowlist.yaml", `
+	bl, err := LoadBlocklist(dir)
+	if err != nil {
+		t.Fatalf("LoadBlocklist on missing file should not error: %v", err)
+	}
+	if bl == nil || len(bl.Domains) != 0 {
+		t.Errorf("expected empty blocklist, got %+v", bl)
+	}
+}
+
+func TestLoadBlocklistRejectsUnknownVersion(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "blocklist.yaml", `
 version: 99
 domains: []
 `)
-	if _, err := LoadAllowlist(dir); err == nil {
+	if _, err := LoadBlocklist(dir); err == nil {
 		t.Fatal("expected error for unknown version, got nil")
 	}
 }
 
-func TestLoadAllowlistRejectsEmptyPattern(t *testing.T) {
+func TestLoadBlocklistRejectsEmptyPattern(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "allowlist.yaml", `
+	writeFile(t, dir, "blocklist.yaml", `
 version: 1
 domains:
   - pattern: ""
     description: oops
 `)
-	if _, err := LoadAllowlist(dir); err == nil {
+	if _, err := LoadBlocklist(dir); err == nil {
 		t.Fatal("expected error for empty pattern, got nil")
+	}
+}
+
+func TestLoadBlocklistMigratesLegacyAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "allowlist.yaml", `
+version: 1
+domains:
+  - pattern: "%instacart.com"
+`)
+	bl, err := LoadBlocklist(dir)
+	if err != nil {
+		t.Fatalf("LoadBlocklist: %v", err)
+	}
+	if len(bl.Domains) != 0 {
+		t.Errorf("legacy allowlist should NOT carry over to blocklist; got %d domains", len(bl.Domains))
+	}
+	// Legacy file should be renamed to .v2.bak.
+	if _, err := os.Stat(filepath.Join(dir, "allowlist.yaml.v2.bak")); err != nil {
+		t.Errorf("legacy allowlist should be renamed to .v2.bak, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "allowlist.yaml")); !os.IsNotExist(err) {
+		t.Errorf("legacy allowlist should be gone after migration, got %v", err)
 	}
 }
 

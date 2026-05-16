@@ -133,8 +133,8 @@ func wizardInstallSource(ctx context.Context, binPath, logDir string) error {
 		return err
 	}
 	if err := writeYAMLIfMissing(
-		filepath.Join(common.ConfigDir, "allowlist.yaml"),
-		starterAllowlistYAML(),
+		filepath.Join(common.ConfigDir, "blocklist.yaml"),
+		starterBlocklistYAML(),
 		wizardForce,
 	); err != nil {
 		return err
@@ -193,8 +193,8 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 		return err
 	}
 	if err := writeYAMLIfMissing(
-		filepath.Join(common.ConfigDir, "allowlist.yaml"),
-		starterAllowlistYAML(),
+		filepath.Join(common.ConfigDir, "blocklist.yaml"),
+		starterBlocklistYAML(),
 		wizardForce,
 	); err != nil {
 		return err
@@ -419,15 +419,27 @@ func defaultSinkListenAddr() string {
 	return "0.0.0.0:9999"
 }
 
-func starterAllowlistYAML() string {
-	return `version: 1
+func starterBlocklistYAML() string {
+	return `# blocklist.yaml: domains to KEEP on this machine (NOT synced to the peer).
+# Empty file = sync everything. Uncomment any pattern below to opt out.
+version: 1
 domains:
-  - pattern: "%github.com"
-    description: GitHub session for agent workflows
-  # Uncomment and add domains your PP CLIs / agents need.
-  # - pattern: "%instacart.com"
-  # - pattern: "%granola.so"
-  # - pattern: "%superhuman.com"
+  # Banking / brokerage / personal finance:
+  # - pattern: "%chase.com"
+  # - pattern: "%vanguard.com"
+  # - pattern: "%fidelity.com"
+  # - pattern: "%schwab.com"
+  # - pattern: "%bankofamerica.com"
+  # Password managers (probably never want these on a second machine):
+  # - pattern: "%1password.com"
+  # - pattern: "%bitwarden.com"
+  # - pattern: "%lastpass.com"
+  # Tax / IRS:
+  # - pattern: "%irs.gov"
+  # - pattern: "%turbotax.intuit.com"
+  # Health / insurance:
+  # - pattern: "%kaiserpermanente.org"
+  # - pattern: "%bcbs.com"
 `
 }
 

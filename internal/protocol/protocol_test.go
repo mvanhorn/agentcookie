@@ -37,69 +37,87 @@ func TestSequenceTrackerIsolatesSources(t *testing.T) {
 	}
 }
 
-func TestAllowlistMatcher(t *testing.T) {
-	al := &config.Allowlist{
+func TestBlocklistMatcher_DropsMatchingHosts(t *testing.T) {
+	bl := &config.Blocklist{
 		Version: 1,
-		Domains: []config.AllowlistEntry{
-			{Pattern: "%instacart.com"},
-			{Pattern: "%granola.so"},
-			{Pattern: "exact.example.com"},
+		Domains: []config.BlocklistEntry{
+			{Pattern: "%chase.com"},
+			{Pattern: "%vanguard.com"},
+			{Pattern: "passwords.example.com"},
 		},
 	}
-	m := NewAllowlistMatcher(al)
+	m := NewBlocklistMatcher(bl)
 	cases := map[string]bool{
-		"www.instacart.com": true,
-		"instacart.com":     true,
-		".instacart.com":    true,
-		"foo.granola.so":    true,
-		"exact.example.com": true,
-		"INSTACART.COM":     true, // case-insensitive
-		"not-allowed.com":   false,
-		"":                  false,
+		"www.chase.com":          true,
+		"chase.com":              true,
+		".chase.com":              true,
+		"foo.vanguard.com":       true,
+		"passwords.example.com":  true,
+		"CHASE.COM":              true, // case-insensitive
+		"safe.example.com":       false,
+		"github.com":             false,
+		"":                       false,
 	}
-	for host, want := range cases {
+	for host, wantBlocked := range cases {
 		got := m.MatchesHost(host)
-		if got != want {
-			t.Errorf("MatchesHost(%q) = %v, want %v", host, got, want)
+		if got != wantBlocked {
+			t.Errorf("MatchesHost(%q) = %v, want %v", host, got, wantBlocked)
 		}
 	}
 }
 
-func TestAllowlistFilterCountsDropped(t *testing.T) {
-	al := &config.Allowlist{
+func TestBlocklistFilter_PassesNonMatchingDropsMatching(t *testing.T) {
+	bl := &config.Blocklist{
 		Version: 1,
-		Domains: []config.AllowlistEntry{{Pattern: "%instacart.com"}},
+		Domains: []config.BlocklistEntry{{Pattern: "%chase.com"}},
 	}
-	m := NewAllowlistMatcher(al)
+	m := NewBlocklistMatcher(bl)
 	cookies := []chrome.Cookie{
-		{HostKey: "www.instacart.com", Name: "session"},
-		{HostKey: "instacart.com", Name: "csrf"},
-		{HostKey: "evil.com", Name: "tracker"},
-		{HostKey: "another-bad.com", Name: "ad"},
-		{HostKey: "evil.com", Name: "second-tracker"},
+		{HostKey: "www.chase.com", Name: "session"},
+		{HostKey: "chase.com", Name: "csrf"},
+		{HostKey: "github.com", Name: "_gh_sess"},
+		{HostKey: "instacart.com", Name: "cart"},
+		{HostKey: "chase.com", Name: "second-chase"},
 	}
-	accepted, dropped := m.Filter(cookies)
-	if len(accepted) != 2 {
-		t.Errorf("expected 2 accepted, got %d", len(accepted))
+	passed, dropped := m.Filter(cookies)
+	if len(passed) != 2 {
+		t.Errorf("expected 2 passed, got %d (%+v)", len(passed), passed)
 	}
-	if dropped["evil.com"] != 2 {
-		t.Errorf("expected evil.com dropped=2, got %d", dropped["evil.com"])
+	if dropped["chase.com"] != 2 {
+		t.Errorf("expected chase.com dropped=2, got %d", dropped["chase.com"])
 	}
-	if dropped["another-bad.com"] != 1 {
-		t.Errorf("expected another-bad.com dropped=1, got %d", dropped["another-bad.com"])
+	if dropped["www.chase.com"] != 1 {
+		t.Errorf("expected www.chase.com dropped=1, got %d", dropped["www.chase.com"])
 	}
 }
 
-func TestAllowlistMatcherEmpty(t *testing.T) {
-	// Empty allowlist rejects everything (defense in depth: no allowlist
-	// means no opt-ins, so nothing flows).
-	m := NewAllowlistMatcher(&config.Allowlist{Version: 1})
-	if m.MatchesHost("anything.com") {
-		t.Error("empty allowlist must not match")
+func TestBlocklistMatcher_EmptyAndNilPassEverything(t *testing.T) {
+	// Empty blocklist drops nothing; everything passes (sync-all default).
+	m := NewBlocklistMatcher(&config.Blocklist{Version: 1})
+	if m.MatchesHost("anywhere.com") {
+		t.Error("empty blocklist must not match")
 	}
-	m2 := NewAllowlistMatcher(nil)
-	if m2.MatchesHost("anything.com") {
-		t.Error("nil allowlist must not match")
+	if m.PatternCount() != 0 {
+		t.Errorf("expected 0 patterns, got %d", m.PatternCount())
+	}
+	m2 := NewBlocklistMatcher(nil)
+	if m2.MatchesHost("anywhere.com") {
+		t.Error("nil blocklist must not match")
+	}
+}
+
+func TestBlocklistFilter_EmptyBlocklistPassesEverything(t *testing.T) {
+	m := NewBlocklistMatcher(&config.Blocklist{Version: 1})
+	cookies := []chrome.Cookie{
+		{HostKey: "chase.com", Name: "would-have-blocked"},
+		{HostKey: "github.com", Name: "ok"},
+	}
+	passed, dropped := m.Filter(cookies)
+	if len(passed) != 2 {
+		t.Errorf("expected all 2 cookies to pass with empty blocklist, got %d", len(passed))
+	}
+	if len(dropped) != 0 {
+		t.Errorf("expected no drops with empty blocklist, got %d", len(dropped))
 	}
 }
 
@@ -108,9 +126,9 @@ func TestMatchLike(t *testing.T) {
 		pattern, s string
 		want       bool
 	}{
-		{"%instacart.com", "www.instacart.com", true},
-		{"%instacart.com", "instacart.com", true},
-		{"%instacart.com", "instacart.com.evil.com", false},
+		{"%chase.com", "www.chase.com", true},
+		{"%chase.com", "chase.com", true},
+		{"%chase.com", "chase.com.evil.com", false},
 		{"exact", "exact", true},
 		{"exact", "exactly", false},
 		{"%", "anything", true},
@@ -127,8 +145,6 @@ func TestMatchLike(t *testing.T) {
 }
 
 func TestEnvelopeJSONRoundTrip(t *testing.T) {
-	// Sanity: JSON marshal + unmarshal preserves all fields, including the
-	// cookies slice with all flags.
 	original := SyncEnvelope{
 		ProtocolVersion: Version,
 		SourceHostname:  "laptop.tail.ts.net",

@@ -100,15 +100,15 @@ func runSink(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Sink-side allowlist (optional but recommended defense in depth). If the
-	// file is missing, log a warning and accept all decrypted cookies; the
-	// source still filters its own side.
-	var allowMatcher *protocol.AllowlistMatcher
-	if al, alErr := config.LoadAllowlist(common.ConfigDir); alErr == nil {
-		allowMatcher = protocol.NewAllowlistMatcher(al)
-		fmt.Fprintf(os.Stderr, "agentcookie sink: allowlist loaded with %d patterns\n", len(al.Domains))
+	// Sink-side blocklist (defense in depth). Empty or missing blocklist =
+	// sync everything the source pushed. Patterns that match host_keys are
+	// dropped on the sink side regardless of what the source sent.
+	bl, _ := config.LoadBlocklist(common.ConfigDir)
+	blockMatcher := protocol.NewBlocklistMatcher(bl)
+	if blockMatcher.PatternCount() == 0 {
+		fmt.Fprintln(os.Stderr, "agentcookie sink: blocklist empty; sync-all mode")
 	} else {
-		fmt.Fprintf(os.Stderr, "agentcookie sink: no allowlist found (%v); accepting all source-pushed cookies\n", alErr)
+		fmt.Fprintf(os.Stderr, "agentcookie sink: blocklist has %d opt-out patterns\n", blockMatcher.PatternCount())
 	}
 
 	seqTracker := protocol.NewSequenceTracker()
@@ -155,12 +155,10 @@ func runSink(cmd *cobra.Command, args []string) error {
 			return
 		}
 
-		// Sink-side allowlist filter (defense in depth).
+		// Sink-side blocklist filter (defense in depth).
 		cookies := envelope.Cookies
 		var droppedHosts map[string]int
-		if allowMatcher != nil {
-			cookies, droppedHosts = allowMatcher.Filter(cookies)
-		}
+		cookies, droppedHosts = blockMatcher.Filter(cookies)
 
 		dropped := 0
 		for _, n := range droppedHosts {
