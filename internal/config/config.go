@@ -37,10 +37,19 @@ type SinkConfig struct {
 // Protocol. When Enabled and the configured port is reachable, the sink
 // writes cookies through Storage.setCookies for instant in-memory visibility
 // instead of (or in addition to) the SQLite write path.
+//
+// When Managed is true, the sink launches and supervises its own Chrome
+// subprocess with an isolated user-data-dir; Host and Port are auto-discovered
+// from Chrome's DevToolsActivePort file. This is the "magical install" path
+// because it avoids the macOS Keychain prompt entirely (no SQLite writes,
+// no security find-generic-password call).
 type CDPRef struct {
-	Enabled bool   `yaml:"enabled" json:"enabled"`
-	Host    string `yaml:"host,omitempty" json:"host,omitempty"`
-	Port    int    `yaml:"port,omitempty" json:"port,omitempty"`
+	Enabled      bool   `yaml:"enabled" json:"enabled"`
+	Managed      bool   `yaml:"managed,omitempty" json:"managed,omitempty"`
+	Host         string `yaml:"host,omitempty" json:"host,omitempty"`
+	Port         int    `yaml:"port,omitempty" json:"port,omitempty"`
+	ProfileDir   string `yaml:"profile_dir,omitempty" json:"profile_dir,omitempty"`
+	ChromeBinary string `yaml:"chrome_binary,omitempty" json:"chrome_binary,omitempty"`
 }
 
 // PeerRef names the other side of a paired sync relationship. Hostname is
@@ -109,9 +118,14 @@ func LoadSink(dir string) (*SinkConfig, error) {
 		if cfg.CDP.Host == "" {
 			cfg.CDP.Host = "127.0.0.1"
 		}
-		if cfg.CDP.Port == 0 {
+		if cfg.CDP.Port == 0 && !cfg.CDP.Managed {
 			cfg.CDP.Port = 9222
 		}
+		if cfg.CDP.Managed && cfg.CDP.ProfileDir == "" {
+			home, _ := os.UserHomeDir()
+			cfg.CDP.ProfileDir = filepath.Join(home, ".agentcookie", "chrome-profile")
+		}
+		cfg.CDP.ProfileDir = ExpandTilde(cfg.CDP.ProfileDir)
 	}
 	return &cfg, nil
 }
