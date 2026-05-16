@@ -15,6 +15,7 @@ import (
 
 	"github.com/mvanhorn/agentcookie/internal/cdp"
 	"github.com/mvanhorn/agentcookie/internal/chrome"
+	"github.com/mvanhorn/agentcookie/internal/chromeconn"
 	"github.com/mvanhorn/agentcookie/internal/chromemgr"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/extbridge"
@@ -239,6 +240,43 @@ func runSink(cmd *cobra.Command, args []string) error {
 // enabled but unmanaged, probes an externally-launched Chrome. When CDP is
 // disabled entirely, SQLite is the only path.
 func writeCookiesToSink(ctx context.Context, cfg *config.SinkConfig, cookies []chrome.Cookie, key []byte, mgr *chromemgr.Manager, bridge *extbridge.Bridge) (int, string, error) {
+	// v0.5 attach mode: connect to the user's running Chrome via the CDP
+	// endpoint Chrome exposes when remote debugging is enabled through
+	// chrome://inspect/#remote-debugging. Uses chromedp for cookie writes
+	// (handles SameSite=None+Secure normalization, partitionKey, expiry
+	// overflow). Selected explicitly with `cdp.mode: attach` in sink.yaml.
+	if cfg.CDP.Enabled && cfg.CDP.Mode == "attach" {
+		profileDir := cfg.CDP.AttachProfileDir
+		if profileDir == "" {
+			profileDir = chromeconn.DefaultProfileDir()
+		}
+		ep, derr := chromeconn.Discover(profileDir)
+		if derr != nil {
+			return 0, "attach", fmt.Errorf("chromeconn discover: %w", derr)
+		}
+		probeCtx, cancelProbe := context.WithTimeout(ctx, 1500*time.Millisecond)
+		if perr := chromeconn.ProbeReachable(probeCtx, ep); perr != nil {
+			cancelProbe()
+			return 0, "attach", fmt.Errorf("chromeconn probe: %w", perr)
+		}
+		cancelProbe()
+		attachCtx, cancelAttach, aerr := chromeconn.Attach(ctx, ep)
+		if aerr != nil {
+			return 0, "attach", fmt.Errorf("chromeconn attach: %w", aerr)
+		}
+		defer cancelAttach()
+		callCtx, cancelCall := context.WithTimeout(attachCtx, 35*time.Second)
+		defer cancelCall()
+		written, failures, werr := chromeconn.WriteCookiesChunked(callCtx, cookies, 500)
+		if werr != nil {
+			return written, "attach", fmt.Errorf("chromeconn write: %w", werr)
+		}
+		if total := failureTotal(failures); total > 0 {
+			fmt.Fprintf(os.Stderr, "agentcookie sink: attach mode reported %d per-cookie failures across %d hosts\n", total, len(failures))
+		}
+		return written, "attach", nil
+	}
+
 	// Preferred v0.4 path: managed Chrome + agentcookie extension via the
 	// HTTP bridge. chrome.cookies.set() is reliable; CDP Storage.setCookies
 	// is not.
