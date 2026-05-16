@@ -11,6 +11,15 @@ chrome:
   # if omitted.
   db_path: ~/Library/Application Support/Google/Chrome/Default/Cookies
 
+cdp:
+  # When enabled, the sink probes Chrome's --remote-debugging-port and
+  # injects cookies via Storage.setCookies for instant in-memory visibility.
+  # Falls back to the SQLite write path if Chrome is not reachable.
+  # Launch Chrome with: open -na "Google Chrome" --args --remote-debugging-port=9222
+  enabled: true
+  host: 127.0.0.1
+  port: 9222
+
 peer:
   # Hostname of the source machine. After `agentcookie pair --as sink ...`
   # finishes, this is the filename under ~/.config/agentcookie/keys/.
