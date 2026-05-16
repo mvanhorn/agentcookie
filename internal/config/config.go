@@ -34,20 +34,15 @@ type SinkConfig struct {
 }
 
 // CDPRef configures live-Chrome injection on the sink via Chrome DevTools
-// Protocol. When Enabled and the configured port is reachable, the sink
-// writes cookies through Storage.setCookies for instant in-memory visibility
-// instead of (or in addition to) the SQLite write path.
+// Protocol. When Enabled is set, the sink dispatches by Mode:
 //
-// When Managed is true, the sink launches and supervises its own Chrome
-// subprocess with an isolated user-data-dir; Host and Port are auto-discovered
-// from Chrome's DevToolsActivePort file. This is the "magical install" path
-// because it avoids the macOS Keychain prompt entirely (no SQLite writes,
-// no security find-generic-password call).
-//
-// When ExtensionDir is set, the managed Chrome is launched with
-// --load-extension=<dir>. The agentcookie extension uses chrome.cookies.set()
-// (a reliable API path) instead of CDP Storage.setCookies (which silently
-// drops cookies). This is the v0.4 cookie-write path.
+//   - Mode "attach" (v0.5 default): attach to the user's running Chrome via
+//     the chrome://inspect/#remote-debugging activation. AttachProfileDir
+//     overrides the discovery target (defaults to the user's default Chrome
+//     profile).
+//   - Mode "managed" (legacy): spawn an isolated Chrome subprocess at
+//     ProfileDir and write via hand-rolled CDP. Known to drop cookies
+//     silently. Retained for headless deployments only.
 type CDPRef struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 	// Mode selects the cookie-write path. Values:
@@ -57,19 +52,19 @@ type CDPRef struct {
 	//               profile and connects via chromedp.
 	//   "managed" - legacy; sink spawns its own Chrome subprocess. Retained
 	//               for headless deployments where no one can flip the
-	//               chrome://inspect toggle. Cookie writes go through the
-	//               extension+HTTP-bridge path or hand-rolled CDP.
+	//               chrome://inspect toggle. Cookie writes go through
+	//               hand-rolled CDP and are known to drop some cookies.
 	//   ""        - back-compat: derive mode from the legacy Managed field.
+	//               If Managed=true -> "managed"; otherwise -> "attach"
+	//               (v0.5 default).
 	//
 	// Set in YAML as `cdp.mode: attach` or `cdp.mode: managed`.
-	Mode           string `yaml:"mode,omitempty" json:"mode,omitempty"`
-	Managed        bool   `yaml:"managed,omitempty" json:"managed,omitempty"`
-	Host           string `yaml:"host,omitempty" json:"host,omitempty"`
-	Port           int    `yaml:"port,omitempty" json:"port,omitempty"`
-	ProfileDir     string `yaml:"profile_dir,omitempty" json:"profile_dir,omitempty"`
-	ChromeBinary   string `yaml:"chrome_binary,omitempty" json:"chrome_binary,omitempty"`
-	ExtensionDir   string `yaml:"extension_dir,omitempty" json:"extension_dir,omitempty"`
-	ExtensionToken string `yaml:"extension_token,omitempty" json:"-"`
+	Mode         string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	Managed      bool   `yaml:"managed,omitempty" json:"managed,omitempty"`
+	Host         string `yaml:"host,omitempty" json:"host,omitempty"`
+	Port         int    `yaml:"port,omitempty" json:"port,omitempty"`
+	ProfileDir   string `yaml:"profile_dir,omitempty" json:"profile_dir,omitempty"`
+	ChromeBinary string `yaml:"chrome_binary,omitempty" json:"chrome_binary,omitempty"`
 	// AttachProfileDir overrides the default Chrome profile directory used by
 	// attach mode. Default: ~/Library/Application Support/Google/Chrome on
 	// macOS. Useful for tests and multi-profile setups.
@@ -142,9 +137,9 @@ func LoadSink(dir string) (*SinkConfig, error) {
 		if cfg.CDP.Mode == "" {
 			if cfg.CDP.Managed {
 				cfg.CDP.Mode = "managed"
+			} else {
+				cfg.CDP.Mode = "attach"
 			}
-			// else: leave empty; legacy dispatch picks bridge/managed/probe paths.
-			// v0.5 U3 flips this default to "attach".
 		}
 		if cfg.CDP.Host == "" {
 			cfg.CDP.Host = "127.0.0.1"
@@ -157,15 +152,7 @@ func LoadSink(dir string) (*SinkConfig, error) {
 			cfg.CDP.ProfileDir = filepath.Join(home, ".agentcookie", "chrome-profile")
 		}
 		cfg.CDP.ProfileDir = ExpandTilde(cfg.CDP.ProfileDir)
-		if cfg.CDP.Managed && cfg.CDP.ExtensionDir == "" {
-			home, _ := os.UserHomeDir()
-			cfg.CDP.ExtensionDir = filepath.Join(home, ".agentcookie", "extension")
-		}
-		cfg.CDP.ExtensionDir = ExpandTilde(cfg.CDP.ExtensionDir)
 		cfg.CDP.AttachProfileDir = ExpandTilde(cfg.CDP.AttachProfileDir)
-		if cfg.CDP.ExtensionToken == "" {
-			cfg.CDP.ExtensionToken = "agentcookie-default-token"
-		}
 	}
 	return &cfg, nil
 }

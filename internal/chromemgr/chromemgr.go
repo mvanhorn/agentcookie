@@ -33,9 +33,6 @@ type Config struct {
 	ChromeBinary string
 	// ProfileDir is the --user-data-dir Chrome will use. Required.
 	ProfileDir string
-	// ExtensionDir, if set, is passed as --load-extension. The directory must
-	// contain a valid unpacked Chrome extension (manifest.json + sources).
-	ExtensionDir string
 	// UserAgent, if set, overrides Chrome's default User-Agent string. Used
 	// for stealth (matching the source machine's UA).
 	UserAgent string
@@ -123,19 +120,11 @@ func (m *Manager) spawnOnce(ctx context.Context) error {
 		"--user-data-dir=" + m.cfg.ProfileDir,
 		"--no-first-run",
 		"--no-default-browser-check",
+		"--no-startup-window",
 		// --disable-blink-features=AutomationControlled removes the
 		// navigator.webdriver=true marker that Cloudflare and other anti-bot
 		// services check for.
 		"--disable-blink-features=AutomationControlled",
-	}
-	if m.cfg.ExtensionDir != "" {
-		args = append(args, "--load-extension="+m.cfg.ExtensionDir)
-		// Extensions need at least one tab to keep the service worker active.
-		// Open a benign about:blank to satisfy that.
-		args = append(args, "about:blank")
-	} else {
-		// No extension; can run windowless.
-		args = append(args, "--no-startup-window")
 	}
 	if m.cfg.UserAgent != "" {
 		args = append(args, "--user-agent="+m.cfg.UserAgent)
