@@ -64,12 +64,10 @@ func runSource(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	allow, err := config.LoadAllowlist(common.ConfigDir)
+	// v0.3: sync-all by default. Blocklist is optional; missing file is fine.
+	blocklist, err := config.LoadBlocklist(common.ConfigDir)
 	if err != nil {
 		return err
-	}
-	if len(allow.Domains) == 0 {
-		return fmt.Errorf("allowlist is empty; add at least one domain pattern to %s/allowlist.yaml", common.ConfigDir)
 	}
 
 	password, err := chrome.SafeStoragePassword()
@@ -91,7 +89,7 @@ func runSource(cmd *cobra.Command, args []string) error {
 	srcState := &state.SourceState{Role: "source", SinkURL: cfg.Sink.URL}
 
 	push := func(ctx context.Context) (int, error) {
-		n, err := pushOnce(ctx, cfg, allow, key, secret, sourceDryRun, sourceVerbose)
+		n, err := pushOnce(ctx, cfg, blocklist, key, secret, sourceDryRun, sourceVerbose)
 		if err != nil {
 			srcState.TotalFailures++
 			srcState.LastError = err.Error()
@@ -130,40 +128,48 @@ func runSource(cmd *cobra.Command, args []string) error {
 }
 
 // pushOnce performs one read+filter+push cycle. Returns the number of cookies
-// successfully posted (0 on dry-run or empty allowlist or error).
+// successfully posted (0 on dry-run or error).
+//
+// v0.3 reads ALL cookies from Chrome in one pass (pattern '%') then applies
+// the blocklist matcher to drop opt-out hosts. Missing or empty blocklist =
+// sync everything.
 func pushOnce(
 	ctx context.Context,
 	cfg *config.SourceConfig,
-	allow *config.Allowlist,
+	blocklist *config.Blocklist,
 	key []byte,
 	secret string,
 	dryRun bool,
 	verbose bool,
 ) (int, error) {
-	var all []chrome.Cookie
-	byPattern := map[string]int{}
-	for _, entry := range allow.Domains {
-		cookies, err := chrome.ReadCookiesForHost(cfg.Chrome.DBPath, entry.Pattern, key)
-		if err != nil {
-			return 0, fmt.Errorf("read pattern %q: %w", entry.Pattern, err)
-		}
-		byPattern[entry.Pattern] = len(cookies)
-		all = append(all, cookies...)
-		if verbose {
-			fmt.Fprintf(os.Stderr, "agentcookie source: %s -> %d cookies\n", entry.Pattern, len(cookies))
-		}
+	all, err := chrome.ReadCookiesForHost(cfg.Chrome.DBPath, "%", key)
+	if err != nil {
+		return 0, fmt.Errorf("read cookies: %w", err)
+	}
+	totalRead := len(all)
+
+	blockMatcher := protocol.NewBlocklistMatcher(blocklist)
+	all, droppedHosts := blockMatcher.Filter(all)
+	totalDropped := 0
+	for _, n := range droppedHosts {
+		totalDropped += n
+	}
+	if verbose {
+		fmt.Fprintf(os.Stderr, "agentcookie source: read %d cookies, blocked %d on %d hosts, passing %d\n",
+			totalRead, totalDropped, len(droppedHosts), len(all))
 	}
 
 	result := map[string]any{
-		"cookies_read": len(all),
-		"by_pattern":   byPattern,
-		"dry_run":      dryRun,
-		"sink_url":     cfg.Sink.URL,
-		"posted":       false,
+		"cookies_read":    totalRead,
+		"cookies_blocked": totalDropped,
+		"cookies_passing": len(all),
+		"dry_run":         dryRun,
+		"sink_url":        cfg.Sink.URL,
+		"posted":          false,
 	}
 
 	if dryRun || len(all) == 0 {
-		_ = emit(result, fmt.Sprintf("agentcookie source: %d cookies across %d patterns (dry-run=%v)\n", len(all), len(byPattern), dryRun))
+		_ = emit(result, fmt.Sprintf("agentcookie source: %d cookies after blocklist (dry-run=%v)\n", len(all), dryRun))
 		return 0, nil
 	}
 

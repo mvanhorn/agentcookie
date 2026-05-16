@@ -1,0 +1,39 @@
+# blocklist.yaml: domains to KEEP on this machine (NOT synced to the peer).
+#
+# v0.3 sync-all default: agentcookie syncs every cookie unless its host_key
+# matches a pattern in this file. Add sites here that you specifically do
+# not want flowing to the sink machine.
+#
+# This file is OPTIONAL. If you do not create it at
+# ~/.config/agentcookie/blocklist.yaml, agentcookie syncs everything.
+#
+# Pattern syntax: SQLite LIKE, '%' is a wildcard. Matching is case-
+# insensitive and matches against Chrome's host_key (which includes a
+# leading dot for subdomain cookies).
+#
+# Both source and sink read this file independently. The sink owner has the
+# final say on what state lands on their machine.
+
+version: 1
+
+domains:
+  # Banking / brokerage / personal finance:
+  # - pattern: "%chase.com"
+  #   description: Chase bank
+  # - pattern: "%vanguard.com"
+  # - pattern: "%fidelity.com"
+  # - pattern: "%schwab.com"
+  # - pattern: "%bankofamerica.com"
+
+  # Password managers (almost certainly do not want synced):
+  # - pattern: "%1password.com"
+  # - pattern: "%bitwarden.com"
+  # - pattern: "%lastpass.com"
+
+  # Tax / IRS:
+  # - pattern: "%irs.gov"
+  # - pattern: "%turbotax.intuit.com"
+
+  # Health / insurance:
+  # - pattern: "%kaiserpermanente.org"
+  # - pattern: "%bcbs.com"
