@@ -30,3 +30,6 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Built binaries (each cmd compiles to bin/<name>)
+/bin/
