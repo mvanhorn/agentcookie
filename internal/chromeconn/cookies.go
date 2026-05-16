@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/cdp"
@@ -91,13 +92,24 @@ func cookieToParam(c chrome.Cookie) *network.CookieParam {
 		return nil
 	}
 	p := &network.CookieParam{
-		Name:     c.Name,
-		Value:    c.Value,
-		Domain:   c.HostKey,
-		Path:     c.Path,
-		Secure:   c.IsSecure != 0,
-		HTTPOnly: c.IsHTTPOnly != 0,
-		SameSite: sameSiteEnum(c.SameSite),
+		Name:         c.Name,
+		Value:        c.Value,
+		Domain:       c.HostKey,
+		Path:         c.Path,
+		Secure:       c.IsSecure != 0,
+		HTTPOnly:     c.IsHTTPOnly != 0,
+		SameSite:     sameSiteEnum(c.SameSite),
+		SourceScheme: sourceSchemeEnum(c.SourceScheme, c.IsSecure != 0),
+	}
+	if c.SourcePort > 0 {
+		p.SourcePort = int64(c.SourcePort)
+	}
+	// SameSite=None cookies are silently dropped unless Chrome can verify a
+	// secure source. Providing an explicit URL lets Chrome derive scheme and
+	// port; without it the cookie is rejected. Apply only when the cookie is
+	// Secure (the only case where SameSite=None is legal anyway).
+	if p.Secure {
+		p.URL = "https://" + strings.TrimPrefix(c.HostKey, ".") + c.Path
 	}
 	if c.HasExpires != 0 && c.ExpiresUTC > 0 {
 		expiresUnix := float64(c.ExpiresUTC)/1e6 - chromeEpochDeltaSeconds
@@ -121,6 +133,25 @@ func cdpTimeSinceEpoch(unixSeconds float64) cdp.TimeSinceEpoch {
 	whole := int64(unixSeconds)
 	frac := unixSeconds - float64(whole)
 	return cdp.TimeSinceEpoch(time.Unix(whole, int64(frac*1e9)).UTC())
+}
+
+// sourceSchemeEnum maps Chrome SQLite source_scheme int (0=unset, 1=non-secure,
+// 2=secure) to cdproto's enum. Chrome silently drops SameSite=None cookies
+// whose source scheme is Unset/NonSecure even when Secure=true; we infer
+// Secure source scheme from the IsSecure flag as a safety net for cookies
+// whose SQLite source_scheme field is empty.
+func sourceSchemeEnum(v int, isSecure bool) network.CookieSourceScheme {
+	switch v {
+	case 1:
+		return network.CookieSourceSchemeNonSecure
+	case 2:
+		return network.CookieSourceSchemeSecure
+	default:
+		if isSecure {
+			return network.CookieSourceSchemeSecure
+		}
+		return network.CookieSourceSchemeUnset
+	}
 }
 
 // sameSiteEnum maps Chrome SQLite samesite int to cdproto's enum.
