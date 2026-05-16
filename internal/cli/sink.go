@@ -14,6 +14,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/cdp"
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/config"
+	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"github.com/mvanhorn/agentcookie/internal/transport"
 )
 
@@ -50,6 +51,19 @@ func runSink(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Sink-side allowlist (optional but recommended defense in depth). If the
+	// file is missing, log a warning and accept all decrypted cookies; the
+	// source still filters its own side.
+	var allowMatcher *protocol.AllowlistMatcher
+	if al, alErr := config.LoadAllowlist(common.ConfigDir); alErr == nil {
+		allowMatcher = protocol.NewAllowlistMatcher(al)
+		fmt.Fprintf(os.Stderr, "agentcookie sink: allowlist loaded with %d patterns\n", len(al.Domains))
+	} else {
+		fmt.Fprintf(os.Stderr, "agentcookie sink: no allowlist found (%v); accepting all source-pushed cookies\n", alErr)
+	}
+
+	seqTracker := protocol.NewSequenceTracker()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintln(w, "ok")
@@ -69,19 +83,39 @@ func runSink(cmd *cobra.Command, args []string) error {
 			http.Error(w, "open payload: "+err.Error(), http.StatusUnauthorized)
 			return
 		}
-		var cookies []chrome.Cookie
-		if err := json.Unmarshal(plaintext, &cookies); err != nil {
-			http.Error(w, "unmarshal cookies: "+err.Error(), http.StatusBadRequest)
+		var envelope protocol.SyncEnvelope
+		if err := json.Unmarshal(plaintext, &envelope); err != nil {
+			http.Error(w, "unmarshal envelope: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		if envelope.ProtocolVersion != protocol.Version {
+			http.Error(w, fmt.Sprintf("protocol version mismatch: got %d, sink speaks %d", envelope.ProtocolVersion, protocol.Version), http.StatusBadRequest)
+			return
+		}
+		if !seqTracker.Accept(envelope.SourceHostname, envelope.Sequence) {
+			http.Error(w, fmt.Sprintf("sequence %d not greater than last seen for %q (replay defense)", envelope.Sequence, envelope.SourceHostname), http.StatusConflict)
+			return
+		}
+
+		// Sink-side allowlist filter (defense in depth).
+		cookies := envelope.Cookies
+		var droppedHosts map[string]int
+		if allowMatcher != nil {
+			cookies, droppedHosts = allowMatcher.Filter(cookies)
+		}
+
 		written, mode, err := writeCookiesToSink(r.Context(), cfg, cookies, key)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "agentcookie sink: write failed after %d cookies (mode=%s): %v\n", written, mode, err)
 			http.Error(w, fmt.Sprintf("write cookies: %v", err), http.StatusInternalServerError)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies via %s\n", written, mode)
-		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies via %s\n", written, mode)
+		dropped := 0
+		for _, n := range droppedHosts {
+			dropped += n
+		}
+		fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies via %s (dropped %d non-allowlisted)\n", written, mode, dropped)
+		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies via %s; dropped %d non-allowlisted\n", written, mode, dropped)
 	})
 
 	srv := &http.Server{Addr: cfg.Listen.Addr, Handler: mux}
