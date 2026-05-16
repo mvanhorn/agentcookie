@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/mvanhorn/agentcookie/internal/cdp"
 	"github.com/mvanhorn/agentcookie/internal/chrome"
+	"github.com/mvanhorn/agentcookie/internal/chromemgr"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"github.com/mvanhorn/agentcookie/internal/transport"
@@ -53,7 +56,10 @@ func runSink(cmd *cobra.Command, args []string) error {
 	}
 
 	var key []byte
-	if !sinkDryRun {
+	// Skip Chrome Safe Storage entirely when CDP is managed (we never write
+	// SQLite, so we never need the AES key) or when --dry-run is set.
+	skipKeychain := sinkDryRun || (cfg.CDP.Enabled && cfg.CDP.Managed)
+	if !skipKeychain {
 		password, err := chrome.SafeStoragePassword()
 		if err != nil {
 			return fmt.Errorf("read Chrome Safe Storage from Keychain: %w", err)
@@ -62,8 +68,31 @@ func runSink(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-	} else {
+	} else if sinkDryRun {
 		fmt.Fprintln(os.Stderr, "agentcookie sink: --dry-run set; skipping Chrome Safe Storage and all write paths")
+	} else {
+		fmt.Fprintln(os.Stderr, "agentcookie sink: cdp.managed=true; skipping Chrome Safe Storage (CDP path needs no key)")
+	}
+
+	// Start the managed Chrome subprocess if configured. The supervisor inside
+	// chromemgr handles restart-on-crash for the lifetime of the sink.
+	var chromeMgr *chromemgr.Manager
+	if cfg.CDP.Enabled && cfg.CDP.Managed && !sinkDryRun {
+		mgr, err := chromemgr.New(chromemgr.Config{
+			ChromeBinary: cfg.CDP.ChromeBinary,
+			ProfileDir:   cfg.CDP.ProfileDir,
+		})
+		if err != nil {
+			return fmt.Errorf("init chromemgr: %w", err)
+		}
+		startCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := mgr.Start(startCtx); err != nil {
+			return fmt.Errorf("start managed Chrome: %w", err)
+		}
+		defer mgr.Stop()
+		chromeMgr = mgr
+		fmt.Fprintf(os.Stderr, "agentcookie sink: managed Chrome up at %s (profile=%s)\n", mustDebuggerURL(mgr), cfg.CDP.ProfileDir)
 	}
 	transportSecret, err := resolveTransportSecret(common.ConfigDir, cfg.Peer.Hostname, cfg.Security.SharedSecret)
 	if err != nil {
@@ -143,7 +172,7 @@ func runSink(cmd *cobra.Command, args []string) error {
 			return
 		}
 
-		written, mode, err := writeCookiesToSink(r.Context(), cfg, cookies, key)
+		written, mode, err := writeCookiesToSink(r.Context(), cfg, cookies, key, chromeMgr)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "agentcookie sink: write failed after %d cookies (mode=%s): %v\n", written, mode, err)
 			http.Error(w, fmt.Sprintf("write cookies: %v", err), http.StatusInternalServerError)
@@ -162,10 +191,36 @@ func runSink(cmd *cobra.Command, args []string) error {
 	return srv.ListenAndServe()
 }
 
-// writeCookiesToSink tries CDP live injection first when configured, falls
-// back to direct SQLite write. Returns the number of cookies written and the
-// mode used ("cdp" or "sqlite") so the response surfaces visibility to callers.
-func writeCookiesToSink(ctx context.Context, cfg *config.SinkConfig, cookies []chrome.Cookie, key []byte) (int, string, error) {
+// writeCookiesToSink chooses the appropriate write path. When CDP is managed,
+// the sink writes exclusively via the managed Chrome subprocess and never
+// falls back to SQLite (the managed path is the contract). When CDP is
+// enabled but unmanaged, the sink probes an externally-launched Chrome
+// instance and falls back to SQLite if it cannot reach it. When CDP is
+// disabled entirely, SQLite is the only path.
+func writeCookiesToSink(ctx context.Context, cfg *config.SinkConfig, cookies []chrome.Cookie, key []byte, mgr *chromemgr.Manager) (int, string, error) {
+	if cfg.CDP.Enabled && cfg.CDP.Managed {
+		if mgr == nil || !mgr.IsRunning() {
+			return 0, "cdp-managed", fmt.Errorf("managed Chrome is not currently running")
+		}
+		wsURL, err := mgr.DebuggerURL()
+		if err != nil {
+			return 0, "cdp-managed", fmt.Errorf("managed Chrome debugger URL: %w", err)
+		}
+		dialCtx, cancelDial := context.WithTimeout(ctx, 3*time.Second)
+		defer cancelDial()
+		conn, derr := cdp.Dial(dialCtx, wsURL)
+		if derr != nil {
+			return 0, "cdp-managed", fmt.Errorf("dial managed Chrome: %w", derr)
+		}
+		defer conn.Close()
+		callCtx, cancelCall := context.WithTimeout(ctx, 10*time.Second)
+		defer cancelCall()
+		written, serr := cdp.SetCookies(callCtx, conn, cookies)
+		if serr != nil {
+			return written, "cdp-managed", fmt.Errorf("Storage.setCookies on managed Chrome: %w", serr)
+		}
+		return written, "cdp-managed", nil
+	}
 	if cfg.CDP.Enabled {
 		probeCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 		defer cancel()
@@ -192,4 +247,22 @@ func writeCookiesToSink(ctx context.Context, cfg *config.SinkConfig, cookies []c
 	}
 	written, err := chrome.WriteCookies(cfg.Chrome.DBPath, cookies, key)
 	return written, "sqlite", err
+}
+
+// mustDebuggerURL formats the manager's current debugger URL with the host
+// portion redacted to just the port for logging. Returns the raw URL when
+// parsing fails. Used for stderr lines only.
+func mustDebuggerURL(mgr *chromemgr.Manager) string {
+	u, err := mgr.DebuggerURL()
+	if err != nil {
+		return "(not yet up)"
+	}
+	parsed, perr := url.Parse(u)
+	if perr != nil || parsed.Port() == "" {
+		return u
+	}
+	if _, err := strconv.Atoi(parsed.Port()); err != nil {
+		return u
+	}
+	return "ws://127.0.0.1:" + parsed.Port() + parsed.Path
 }

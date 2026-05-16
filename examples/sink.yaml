@@ -2,31 +2,31 @@
 # where your AI agents run (your Mac mini, cloud VM, etc.).
 
 listen:
-  # Address the sink's /sync HTTP listener binds to. Bind to your tailnet IP,
+  # Address the sink's /sync HTTP listener binds to. Bind to your tailnet IP
   # not 0.0.0.0. Defaults to 127.0.0.1:9999 if omitted.
   addr: 100.x.y.z:9999
 
-chrome:
-  # Defaults to ~/Library/Application Support/Google/Chrome/Default/Cookies
-  # if omitted.
-  db_path: ~/Library/Application Support/Google/Chrome/Default/Cookies
-
 cdp:
-  # When enabled, the sink probes Chrome's --remote-debugging-port and
-  # injects cookies via Storage.setCookies for instant in-memory visibility.
-  # Falls back to the SQLite write path if Chrome is not reachable.
-  # Launch Chrome with: open -na "Google Chrome" --args --remote-debugging-port=9222
+  # The default v0.2 install path. The sink launches its own Chrome subprocess
+  # with --remote-debugging-port=AUTO and an isolated --user-data-dir. Cookies
+  # land via Chrome DevTools Protocol Storage.setCookies, so the sink never
+  # calls macOS Keychain. No interactive prompts. No screen-sharing needed.
   enabled: true
-  host: 127.0.0.1
-  port: 9222
+  managed: true
+  # profile_dir defaults to ~/.agentcookie/chrome-profile when omitted.
+  # chrome_binary defaults to /Applications/Google Chrome.app/Contents/MacOS/Google Chrome.
+
+# chrome:
+#   # Only set db_path when running in legacy SQLite mode (managed: false AND
+#   # cdp.enabled: false). The managed CDP path does not touch SQLite.
+#   db_path: ~/Library/Application Support/Google/Chrome/Default/Cookies
 
 peer:
   # Hostname of the source machine. After `agentcookie pair --as sink ...`
   # finishes, this is the filename under ~/.config/agentcookie/keys/.
-  # The derived 32-byte key found there is used for transport AES-GCM.
   hostname: my-laptop.tailnet.ts.net
 
-# Legacy security.shared_secret is still accepted as a fallback for users
-# who haven't paired yet. After pairing, delete the field below entirely.
+# Legacy security.shared_secret still accepted as a fallback for users who
+# have not paired yet. After pairing, delete the field below.
 # security:
 #   shared_secret: only-set-this-before-you-pair
