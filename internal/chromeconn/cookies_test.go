@@ -10,17 +10,19 @@ import (
 )
 
 func TestCookieToParam_Happy(t *testing.T) {
-	// instacart-shaped session cookie: SameSite=None, Secure, persistent expiry.
+	// instacart-shaped cookie: SameSite=None, Secure, persistent expiry.
 	c := chrome.Cookie{
-		HostKey:    ".instacart.com",
-		Name:       "_instacart_session_id",
-		Value:      "abc.def.ghi",
-		Path:       "/",
-		IsSecure:   1,
-		IsHTTPOnly: 1,
-		SameSite:   0, // None
-		HasExpires: 1,
-		ExpiresUTC: 13380163200000000, // 2025-01-01 UTC in WebKit microseconds (Unix 1735689600 + delta 11644473600, times 1e6)
+		HostKey:      ".instacart.com",
+		Name:         "_instacart_session_id",
+		Value:        "abc.def.ghi",
+		Path:         "/",
+		IsSecure:     1,
+		IsHTTPOnly:   1,
+		SameSite:     0, // None
+		SourceScheme: 2, // Secure
+		SourcePort:   443,
+		HasExpires:   1,
+		ExpiresUTC:   13380163200000000, // 2025-01-01 UTC in WebKit microseconds
 	}
 	p := cookieToParam(c)
 	if p == nil {
@@ -35,6 +37,15 @@ func TestCookieToParam_Happy(t *testing.T) {
 	if p.SameSite != network.CookieSameSiteNone {
 		t.Errorf("samesite: got %q want None", p.SameSite)
 	}
+	if p.SourceScheme != network.CookieSourceSchemeSecure {
+		t.Errorf("source scheme: got %q want Secure", p.SourceScheme)
+	}
+	if p.SourcePort != 443 {
+		t.Errorf("source port: got %d want 443", p.SourcePort)
+	}
+	if p.URL != "https://instacart.com/" {
+		t.Errorf("URL: got %q want https://instacart.com/", p.URL)
+	}
 	if p.Expires == nil {
 		t.Fatal("expected non-nil Expires for persistent cookie")
 	}
@@ -42,6 +53,27 @@ func TestCookieToParam_Happy(t *testing.T) {
 	want := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	if !got.Equal(want) {
 		t.Errorf("Expires: got %s want %s", got, want)
+	}
+}
+
+func TestCookieToParam_SourceSchemeInferredFromSecure(t *testing.T) {
+	// Cookie with IsSecure=1 but SourceScheme=0 (unset in SQLite) should still
+	// get Secure inferred so Chrome doesn't reject SameSite=None cookies.
+	c := chrome.Cookie{HostKey: "x.com", Name: "n", IsSecure: 1, SourceScheme: 0}
+	p := cookieToParam(c)
+	if p.SourceScheme != network.CookieSourceSchemeSecure {
+		t.Errorf("inferred source scheme: got %q want Secure", p.SourceScheme)
+	}
+	if p.URL != "https://x.com" {
+		t.Errorf("URL: got %q want https://x.com", p.URL)
+	}
+}
+
+func TestCookieToParam_InsecureLeavesURLEmpty(t *testing.T) {
+	c := chrome.Cookie{HostKey: "x.com", Name: "n", IsSecure: 0}
+	p := cookieToParam(c)
+	if p.URL != "" {
+		t.Errorf("URL should be empty for non-secure cookie, got %q", p.URL)
 	}
 }
 
