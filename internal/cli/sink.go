@@ -17,6 +17,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/chromemgr"
 	"github.com/mvanhorn/agentcookie/internal/config"
+	"github.com/mvanhorn/agentcookie/internal/extbridge"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"github.com/mvanhorn/agentcookie/internal/state"
 	"github.com/mvanhorn/agentcookie/internal/transport"
@@ -75,6 +76,14 @@ func runSink(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr, "agentcookie sink: cdp.managed=true; skipping Chrome Safe Storage (CDP path needs no key)")
 	}
 
+	// Build the extension bridge BEFORE Chrome starts, so the bridge's HTTP
+	// handlers are mounted and ready by the time the extension's service
+	// worker starts polling.
+	var bridge *extbridge.Bridge
+	if cfg.CDP.Enabled && cfg.CDP.Managed && cfg.CDP.ExtensionDir != "" && !sinkDryRun {
+		bridge = extbridge.New(extbridge.Config{Token: cfg.CDP.ExtensionToken})
+	}
+
 	// Start the managed Chrome subprocess if configured. The supervisor inside
 	// chromemgr handles restart-on-crash for the lifetime of the sink.
 	var chromeMgr *chromemgr.Manager
@@ -82,6 +91,7 @@ func runSink(cmd *cobra.Command, args []string) error {
 		mgr, err := chromemgr.New(chromemgr.Config{
 			ChromeBinary: cfg.CDP.ChromeBinary,
 			ProfileDir:   cfg.CDP.ProfileDir,
+			ExtensionDir: cfg.CDP.ExtensionDir,
 		})
 		if err != nil {
 			return fmt.Errorf("init chromemgr: %w", err)
@@ -93,7 +103,11 @@ func runSink(cmd *cobra.Command, args []string) error {
 		}
 		defer mgr.Stop()
 		chromeMgr = mgr
-		fmt.Fprintf(os.Stderr, "agentcookie sink: managed Chrome up at %s (profile=%s)\n", mustDebuggerURL(mgr), cfg.CDP.ProfileDir)
+		if cfg.CDP.ExtensionDir != "" {
+			fmt.Fprintf(os.Stderr, "agentcookie sink: managed Chrome up at %s (profile=%s extension=%s)\n", mustDebuggerURL(mgr), cfg.CDP.ProfileDir, cfg.CDP.ExtensionDir)
+		} else {
+			fmt.Fprintf(os.Stderr, "agentcookie sink: managed Chrome up at %s (profile=%s)\n", mustDebuggerURL(mgr), cfg.CDP.ProfileDir)
+		}
 	}
 	transportSecret, err := resolveTransportSecret(common.ConfigDir, cfg.Peer.Hostname, cfg.Security.SharedSecret)
 	if err != nil {
@@ -123,6 +137,9 @@ func runSink(cmd *cobra.Command, args []string) error {
 	}
 
 	mux := http.NewServeMux()
+	if bridge != nil {
+		bridge.Mount(mux)
+	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintln(w, "ok")
 	})
@@ -186,7 +203,7 @@ func runSink(cmd *cobra.Command, args []string) error {
 			return
 		}
 
-		written, mode, err := writeCookiesToSink(r.Context(), cfg, cookies, key, chromeMgr)
+		written, mode, err := writeCookiesToSink(r.Context(), cfg, cookies, key, chromeMgr, bridge)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "agentcookie sink: write failed after %d cookies (mode=%s): %v\n", written, mode, err)
 			sinkState.LastError = err.Error()
@@ -215,13 +232,29 @@ func runSink(cmd *cobra.Command, args []string) error {
 	return srv.ListenAndServe()
 }
 
-// writeCookiesToSink chooses the appropriate write path. When CDP is managed,
-// the sink writes exclusively via the managed Chrome subprocess and never
-// falls back to SQLite (the managed path is the contract). When CDP is
-// enabled but unmanaged, the sink probes an externally-launched Chrome
-// instance and falls back to SQLite if it cannot reach it. When CDP is
+// writeCookiesToSink chooses the appropriate write path. When the managed
+// Chrome has an extension loaded, the sink uses the extension's
+// chrome.cookies.set() path (reliable, no silent drops). When CDP is managed
+// without an extension, falls back to CDP Storage.setCookies. When CDP is
+// enabled but unmanaged, probes an externally-launched Chrome. When CDP is
 // disabled entirely, SQLite is the only path.
-func writeCookiesToSink(ctx context.Context, cfg *config.SinkConfig, cookies []chrome.Cookie, key []byte, mgr *chromemgr.Manager) (int, string, error) {
+func writeCookiesToSink(ctx context.Context, cfg *config.SinkConfig, cookies []chrome.Cookie, key []byte, mgr *chromemgr.Manager, bridge *extbridge.Bridge) (int, string, error) {
+	// Preferred v0.4 path: managed Chrome + agentcookie extension via the
+	// HTTP bridge. chrome.cookies.set() is reliable; CDP Storage.setCookies
+	// is not.
+	if bridge != nil {
+		callCtx, cancelCall := context.WithTimeout(ctx, 35*time.Second)
+		defer cancelCall()
+		written, failures, err := bridge.SetCookies(callCtx, cookies)
+		if err != nil {
+			return written, "extension", fmt.Errorf("extension cookies channel: %w", err)
+		}
+		if total := failureTotal(failures); total > 0 {
+			fmt.Fprintf(os.Stderr, "agentcookie sink: extension reported %d cookies failed across %d hosts\n", total, len(failures))
+		}
+		return written, "extension", nil
+	}
+
 	if cfg.CDP.Enabled && cfg.CDP.Managed {
 		if mgr == nil || !mgr.IsRunning() {
 			return 0, "cdp-managed", fmt.Errorf("managed Chrome is not currently running")
@@ -271,6 +304,14 @@ func writeCookiesToSink(ctx context.Context, cfg *config.SinkConfig, cookies []c
 	}
 	written, err := chrome.WriteCookies(cfg.Chrome.DBPath, cookies, key)
 	return written, "sqlite", err
+}
+
+func failureTotal(m map[string]int) int {
+	t := 0
+	for _, v := range m {
+		t += v
+	}
+	return t
 }
 
 // mustDebuggerURL formats the manager's current debugger URL with the host
