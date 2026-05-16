@@ -18,6 +18,10 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/transport"
 )
 
+var (
+	sinkDryRun bool
+)
+
 var sinkCmd = &cobra.Command{
 	Use:   "sink",
 	Short: "Listen for incoming cookie syncs and upsert them into local Chrome",
@@ -28,8 +32,18 @@ re-encrypts per cookie with this machine's Chrome Safe Storage key, and
 upserts into the local Chrome cookies SQLite.
 
 Chrome must be quit on the sink while writes happen (file lock). Live
-injection via CDP, which lifts that requirement, lands in U4.`,
+injection via CDP, which lifts that requirement, lands in U4.
+
+--dry-run skips the Chrome Safe Storage / SQLite / CDP write paths entirely
+and dumps each accepted batch of cookies to stderr as JSON. Useful for
+debugging the wire format and for running the sink over SSH without the
+GUI Keychain prompt that 'security find-generic-password' otherwise
+requires on macOS.`,
 	RunE: runSink,
+}
+
+func init() {
+	sinkCmd.Flags().BoolVar(&sinkDryRun, "dry-run", false, "accept and decrypt sync payloads but do NOT touch Chrome Safe Storage or write any cookies; dump batches to stderr")
 }
 
 func runSink(cmd *cobra.Command, args []string) error {
@@ -38,13 +52,18 @@ func runSink(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	password, err := chrome.SafeStoragePassword()
-	if err != nil {
-		return fmt.Errorf("read Chrome Safe Storage from Keychain: %w", err)
-	}
-	key, err := chrome.DeriveAESKey(password)
-	if err != nil {
-		return err
+	var key []byte
+	if !sinkDryRun {
+		password, err := chrome.SafeStoragePassword()
+		if err != nil {
+			return fmt.Errorf("read Chrome Safe Storage from Keychain: %w", err)
+		}
+		key, err = chrome.DeriveAESKey(password)
+		if err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "agentcookie sink: --dry-run set; skipping Chrome Safe Storage and all write paths")
 	}
 	transportSecret, err := resolveTransportSecret(common.ConfigDir, cfg.Peer.Hostname, cfg.Security.SharedSecret)
 	if err != nil {
@@ -104,22 +123,42 @@ func runSink(cmd *cobra.Command, args []string) error {
 			cookies, droppedHosts = allowMatcher.Filter(cookies)
 		}
 
+		dropped := 0
+		for _, n := range droppedHosts {
+			dropped += n
+		}
+
+		if sinkDryRun {
+			// Dump the accepted batch to stderr as JSON for inspection. Do NOT
+			// touch Chrome state.
+			dump, _ := json.MarshalIndent(map[string]any{
+				"source_hostname": envelope.SourceHostname,
+				"sequence":        envelope.Sequence,
+				"accepted":        len(cookies),
+				"dropped":         dropped,
+				"cookies":         cookies,
+			}, "", "  ")
+			fmt.Fprintf(os.Stderr, "agentcookie sink (dry-run): accepted batch:\n%s\n", string(dump))
+			_, _ = fmt.Fprintf(w, "dry-run ok: accepted %d cookies; dropped %d non-allowlisted\n", len(cookies), dropped)
+			return
+		}
+
 		written, mode, err := writeCookiesToSink(r.Context(), cfg, cookies, key)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "agentcookie sink: write failed after %d cookies (mode=%s): %v\n", written, mode, err)
 			http.Error(w, fmt.Sprintf("write cookies: %v", err), http.StatusInternalServerError)
 			return
 		}
-		dropped := 0
-		for _, n := range droppedHosts {
-			dropped += n
-		}
 		fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies via %s (dropped %d non-allowlisted)\n", written, mode, dropped)
 		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies via %s; dropped %d non-allowlisted\n", written, mode, dropped)
 	})
 
 	srv := &http.Server{Addr: cfg.Listen.Addr, Handler: mux}
-	fmt.Fprintf(os.Stderr, "agentcookie sink: listening on http://%s (db=%s cdp=%v)\n", cfg.Listen.Addr, cfg.Chrome.DBPath, cfg.CDP.Enabled)
+	if sinkDryRun {
+		fmt.Fprintf(os.Stderr, "agentcookie sink: listening on http://%s (dry-run; no Chrome state will be modified)\n", cfg.Listen.Addr)
+	} else {
+		fmt.Fprintf(os.Stderr, "agentcookie sink: listening on http://%s (db=%s cdp=%v)\n", cfg.Listen.Addr, cfg.Chrome.DBPath, cfg.CDP.Enabled)
+	}
 	return srv.ListenAndServe()
 }
 
