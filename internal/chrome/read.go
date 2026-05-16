@@ -81,7 +81,11 @@ WHERE host_key LIKE ?`
 		if err != nil {
 			return nil, fmt.Errorf("decrypt %s/%s: %w", c.HostKey, c.Name, err)
 		}
-		c.Value = plain
+		// Chrome 127+ on macOS embeds a 32-byte host-bound prefix in the
+		// plaintext. Strip it so downstream consumers (CDP, dumps, fixtures)
+		// see only the real cookie value.
+		stripped := stripAppBoundPrefix([]byte(plain), c.HostKey)
+		c.Value = string(stripped)
 		cookies = append(cookies, c)
 	}
 	if err := rows.Err(); err != nil {
