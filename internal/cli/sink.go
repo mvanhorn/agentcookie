@@ -42,6 +42,10 @@ func runSink(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	transportSecret, err := resolveTransportSecret(common.ConfigDir, cfg.Peer.Hostname, cfg.Security.SharedSecret)
+	if err != nil {
+		return err
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +61,7 @@ func runSink(cmd *cobra.Command, args []string) error {
 			http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		plaintext, err := transport.OpenWithSecret(sealed, cfg.Security.SharedSecret)
+		plaintext, err := transport.OpenWithSecret(sealed, transportSecret)
 		if err != nil {
 			http.Error(w, "open payload: "+err.Error(), http.StatusUnauthorized)
 			return
