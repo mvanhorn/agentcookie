@@ -1,164 +1,134 @@
 ---
 name: agentcookie-install
-description: Install and pair agentcookie on a source-and-sink pair of macOS machines. Use when the user says "install agentcookie", "set up cookie sync", or "pair my laptop with my Mac mini for agents".
-version: 0.1.0
+description: Install agentcookie on the user's source (laptop) and sink (Mac mini / cloud VM / second Mac) machines and pair them so Chrome cookies sync continuously over their Tailscale tailnet. Use when the user says "install agentcookie", "set up cookie sync", "share my Chrome sessions with my Mac mini", or "make my agent log in as me".
+version: 0.2.0
 ---
 
 # agentcookie install
 
-You are helping the user install agentcookie on two machines and pair them. The source machine is where the user logs in interactively (typically a laptop). The sink machine is where AI agents run (typically a Mac mini, a cloud VM, or any always-on macOS box).
+You are helping the user install agentcookie on two machines that are both on the same Tailscale tailnet, then pair them, so that the sink's Chrome stays continuously in sync with the source's Chrome.
 
-## What this skill does
+After install, the user does not touch agentcookie again. A LaunchAgent on each side keeps the daemons running across reboots. The source watches Chrome via fsnotify and pushes every cookie change to the sink within seconds. The sink writes via Chrome DevTools Protocol into a dedicated managed Chrome subprocess. No Keychain prompt fires on the sink. No screen-sharing required.
 
-1. Detects which machine you are running on (source or sink).
-2. Installs the `agentcookie` binary from `go install` (or links a local checkout if you have one).
-3. Lays down the launchd plist so the sink restarts itself across reboots.
-4. Walks the user through the pairing handshake.
-5. Generates a starter `allowlist.yaml` based on the user's installed Printing Press CLIs, then asks them to confirm.
+The user expects one prompt ("install agentcookie on my laptop and my Mac mini") to be enough. Make that real.
 
-The skill never registers a hosted account, never sends anything off-machine, and never reads the user's existing cookies without explicit confirmation.
+## Inputs you need
 
-## Step 0: Ask which side
+1. Which machine is the **source** (the machine the user logs into Chrome on, usually their laptop).
+2. Which machine is the **sink** (the machine where AI agents act, usually a Mac mini or cloud VM).
+3. Tailscale is up on both, and the user can SSH from source to sink without a password prompt.
 
-Use `AskUserQuestion` (or whatever blocking input primitive the platform exposes) to ask:
+If any of these are missing, stop and ask.
 
-```
-Which machine are we setting up?
+## Flow
 
-A) Source (the machine where I log in to sites in Chrome - usually my laptop)
-B) Sink (the machine that runs my AI agents - usually a Mac mini or cloud VM)
-```
+### Step 0: detect the lay of the land
 
-Set `ROLE` accordingly. Source goes through steps 1A-4A. Sink goes through 1B-4B.
-
-## Step 1A: Install on source
+Run on the current machine:
 
 ```bash
-# Use go install if Go is on PATH; otherwise tell the user to install Go 1.24+ first.
-if command -v go >/dev/null 2>&1; then
-  go install github.com/mvanhorn/agentcookie/cmd/agentcookie@latest
-else
-  echo "agentcookie needs Go 1.24+. Install from https://go.dev/dl/ then re-run this skill."
-  exit 1
-fi
-mkdir -p ~/.config/agentcookie
+which agentcookie 2>/dev/null || echo "missing"
+/Applications/Tailscale.app/Contents/MacOS/Tailscale status 2>&1 | head -20
+ssh -o ConnectTimeout=5 -o BatchMode=yes <suspected-sink> 'whoami' 2>&1
 ```
 
-Confirm `agentcookie version` works.
+From the Tailscale status output, the current machine is the entry marked "active" or appears at the top. Every other macOS entry is a candidate sink.
 
-## Step 2A: Drop the example configs
+### Step 1: confirm source vs sink with the user
+
+Use the platform's blocking question primitive. Phrase it concretely:
+
+> I see you're on `<current-hostname>`. Looks like `<other-hostname>` (Tailscale IP `100.x.y.z`) is your other Mac. Should I install agentcookie with `<current-hostname>` as the source (your logged-in Chrome) and `<other-hostname>` as the sink (where your agents run)?
+
+Confirm before proceeding. If wrong, ask which is which.
+
+### Step 2: install on the source
+
+Install the binary if missing:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mvanhorn/agentcookie/main/examples/source.yaml -o ~/.config/agentcookie/source.yaml
-curl -fsSL https://raw.githubusercontent.com/mvanhorn/agentcookie/main/examples/allowlist.yaml -o ~/.config/agentcookie/allowlist.yaml
+go install github.com/mvanhorn/agentcookie/cmd/agentcookie@latest
 ```
 
-Open `source.yaml` and ask the user to fill in:
-- `sink.url`: the sink machine's tailnet URL (e.g. `http://my-mac-mini.tailnet.ts.net:9999/sync`)
-- `peer.hostname`: the sink's tailnet hostname (used as the filename under `~/.config/agentcookie/keys/`)
-
-Tell the user to leave `security.shared_secret` commented out; pairing will populate the keystore instead.
-
-## Step 3A: Pre-fill the allowlist
-
-Look in `~/printing-press/library/` for PP CLI binaries. For each binary, suggest the matching domain pattern based on the CLI's metadata (see the README of each CLI). Common mappings:
-
-| PP CLI | Suggested allowlist pattern |
-|--------|----------------------------|
-| `instacart` | `%instacart.com` |
-| `granola` | `%granola.so` |
-| `superhuman` | `%superhuman.com`, `%mail.google.com` |
-| `hubspot` | `%hubspot.com`, `%app.hubspot.com` |
-| `airbnb` | `%airbnb.com` |
-| `linear` | `%linear.app` |
-
-Append the user-confirmed list to `~/.config/agentcookie/allowlist.yaml` under `domains:`.
-
-## Step 4A: Start the pairing handshake
+Run the source-side wizard. It blocks until pairing completes:
 
 ```bash
-agentcookie pair --as source
+agentcookie wizard install --as source --peer <sink-hostname> --local-name <source-hostname> &
+WIZARD_PID=$!
 ```
 
-The command prints a code like `XYZW-ABCD` and the sink-side run command. Read both back to the user and tell them to run the sink-side command on the OTHER machine within 10 minutes.
-
-Wait. When pairing completes the command returns with a confirmation line and the derived-key fingerprint. Done.
-
-## Step 1B: Install on sink
-
-Same as Step 1A: `go install github.com/mvanhorn/agentcookie/cmd/agentcookie@latest`, create `~/.config/agentcookie/`.
-
-## Step 2B: Drop the example configs
+Run in the background because we need to poll the pairing info file:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mvanhorn/agentcookie/main/examples/sink.yaml -o ~/.config/agentcookie/sink.yaml
-curl -fsSL https://raw.githubusercontent.com/mvanhorn/agentcookie/main/examples/allowlist.yaml -o ~/.config/agentcookie/allowlist.yaml
+# Wait up to 10 seconds for the pairing info to appear.
+for i in {1..40}; do
+  if [ -f ~/.agentcookie/pairing.json ]; then break; fi
+  sleep 0.25
+done
+cat ~/.agentcookie/pairing.json
 ```
 
-Fill in:
-- `listen.addr`: the sink's tailnet IP + port (NOT 0.0.0.0; use the tailnet address Tailscale assigned)
-- `peer.hostname`: the source machine's tailnet hostname
-- `cdp.enabled: true` if you want cookies to land in a running Chrome (recommended; launch Chrome with `--remote-debugging-port=9222`)
+Extract `code` and `pair_url` from the JSON output. These are what the sink needs.
 
-## Step 3B: Install the launchd plist for unattended operation
+### Step 3: install on the sink
+
+SSH to the sink and run its wizard. You can pass everything on one line:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mvanhorn/agentcookie/main/examples/launchd-sink.plist -o ~/Library/LaunchAgents/dev.agentcookie.sink.plist
-# Edit the plist to point ProgramArguments at the actual agentcookie binary
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.agentcookie.sink.plist
-launchctl print gui/$(id -u)/dev.agentcookie.sink | head -5
+ssh <sink-hostname> "go install github.com/mvanhorn/agentcookie/cmd/agentcookie@latest && \
+  agentcookie wizard install --as sink \
+    --peer <source-hostname> \
+    --code <code-from-pairing.json> \
+    --pair-url <pair_url-from-pairing.json> \
+    --local-name <sink-hostname>"
 ```
 
-## Step 4B: Run the sink-side pairing
+The sink wizard:
+1. Drops `~/.config/agentcookie/{sink.yaml, allowlist.yaml}` with `cdp.managed: true` (zero Keychain involvement).
+2. Runs the X25519 + HKDF pairing handshake against the source's pair URL.
+3. Installs the sink LaunchAgent.
+4. Starts the sink, which spawns a dedicated Chrome subprocess for the agent's cookie target.
 
-The user gives you the pairing code and source hostname from Step 4A. Run:
+### Step 4: confirm both daemons are up
 
 ```bash
-agentcookie pair --as sink \
-  --peer <source-hostname> \
-  --pair-url http://<source-hostname>:9998/pair \
-  --code <code>
+launchctl list | grep dev.agentcookie
+ssh <sink-hostname> 'launchctl list | grep dev.agentcookie'
 ```
 
-On success, the keystore on this machine now has the derived key. The launchd-managed sink picks it up on next signal; if it was already running with the legacy `security.shared_secret`, restart it:
+Each should show `dev.agentcookie.source` (laptop) and `dev.agentcookie.sink` (Mac mini) with a PID.
+
+### Step 5: verify a real sync round-trip
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/dev.agentcookie.sink
+agentcookie status --json
+ssh <sink-hostname> 'agentcookie status --json'
 ```
 
-## Step 5: Verify
+The source should report a recent push timestamp. The sink should report a recent write count. If either is empty, log into a github.com tab on the source's Chrome to force a cookie write and re-check.
 
-Both sides:
+### Step 6: report to the user
 
-```bash
-agentcookie status --json | jq .
-```
+In plain language. Example:
 
-The source side should report `peer.hostname` set and a key file present. The sink side should report `peer.hostname`, an allowlist with the chosen patterns, and (if you enabled CDP) `cdp.enabled: true`.
+> Done. agentcookie is running on both `<source>` and `<sink>`. The source pushes cookies as soon as they change in Chrome on `<source>`; the sink writes them into a dedicated Chrome instance at `~/.agentcookie/chrome-profile` on `<sink>`. Your agents on `<sink>` connect to that Chrome via CDP at `~/.agentcookie/chrome-profile`. After this install, the user does not run agentcookie commands by hand again.
 
-Then trigger a sync from the source:
+## What to do if something errors
 
-```bash
-agentcookie source --once --verbose
-```
+**`agentcookie: command not found` on the sink after `go install`.** The sink's `$PATH` lacks `~/go/bin`. Tell the user (or fix by sourcing `~/.zshrc` on the SSH command, or invoke the binary by absolute path: `~/go/bin/agentcookie`).
 
-You should see one cookie batch land on the sink. On the sink, look for the log line:
+**Sink pairing returns `connection refused`.** Tailscale ACLs may be blocking tailnet-internal traffic on port 9998. Check `tailscale status` shows the source as reachable. If the source is online but unreachable, the user has restrictive ACLs to relax.
 
-```
-agentcookie sink: wrote N cookies via cdp (dropped M non-allowlisted)
-```
+**Sink wizard hangs at `Chrome did not publish DevToolsActivePort`.** The managed Chrome subprocess failed to start. Most likely: Google Chrome is not installed at `/Applications/Google Chrome.app`. Install Chrome or set `cdp.chrome_binary` in sink.yaml.
 
-If CDP is enabled and Chrome is running with remote debugging, the cookies are visible to running pages immediately. Otherwise they are in the SQLite store and become visible on the next Chrome launch.
+**`agentcookie status` reports zero pushes after install.** The source watcher has not seen a Chrome write yet. Open a tab on the source's Chrome (any allowlisted domain) and refresh. Push should appear within 2 seconds.
 
-## Troubleshooting
+**Sink Chrome subprocess crashes repeatedly.** Check `~/.agentcookie/logs/sink.err.log`. Most common cause: stale lockfile from a prior Chrome session sharing the user-data-dir. Solution: `rm ~/.agentcookie/chrome-profile/SingletonLock` and let the supervisor restart.
 
-- **Keychain prompt does not appear**: macOS already trusts the binary's previous Keychain access. If `agentcookie` errors with "Keychain access denied", open Keychain Access and remove the existing trust entry, then re-run.
-- **CDP probe fails**: `lsof -i :9222 | grep -i chrome` to confirm Chrome is debuggable. Launch Chrome with `open -na "Google Chrome" --args --remote-debugging-port=9222`.
-- **Pairing times out**: the source listens for 10 minutes. Re-run `agentcookie pair --as source` to get a fresh code.
-- **Sequence rejected on /sync**: the sink restarted but the source kept its in-memory sequence counter. Source emits a new sequence each `--once` call (`time.Now().Unix()`), so the next sync recovers.
+## Out of scope for this skill
 
-## Notes
-
-- The skill never registers a hosted account. All state lives on the user's machines plus the Tailscale-managed tailnet.
-- Allowlist on the sink is independent of the source's allowlist. The sink owner has the final say on what state lands in their Chrome.
-- The shared-secret fallback in `security.shared_secret` is for users mid-migration from earlier prototypes. After pairing, delete that field from both YAMLs.
+- Code-signing the binary so Keychain access is granted without a prompt.
+- Web Store extension install (planned for v0.3).
+- Linux sink support (planned for v0.3).
+- Bidirectional sync (planned for v0.3).
+- Adding new domains to the allowlist after install (the user edits `~/.config/agentcookie/allowlist.yaml` on each side; LaunchAgents pick up changes on next restart, which they do automatically every 10 seconds after a config save).
