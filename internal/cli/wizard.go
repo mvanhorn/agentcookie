@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mvanhorn/agentcookie/extension"
+	"github.com/mvanhorn/agentcookie/internal/chromeconn"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/launchd"
 	"github.com/mvanhorn/agentcookie/internal/pairing"
@@ -22,16 +23,18 @@ import (
 
 // Wizard flags. These are read by both `install` and `uninstall`.
 var (
-	wizardRole       string
-	wizardPeer       string
-	wizardListen     string
-	wizardLocalName  string
-	wizardSinkURL    string
-	wizardCode       string
-	wizardPairURL    string
-	wizardRepair     bool
-	wizardForce      bool
-	wizardSkipDaemon bool
+	wizardRole               string
+	wizardPeer               string
+	wizardListen             string
+	wizardLocalName          string
+	wizardSinkURL            string
+	wizardCode               string
+	wizardPairURL            string
+	wizardRepair             bool
+	wizardForce              bool
+	wizardSkipDaemon         bool
+	wizardNoRestartChrome    bool
+	wizardSkipRemoteDebug    bool
 )
 
 var wizardCmd = &cobra.Command{
@@ -85,6 +88,8 @@ func init() {
 	wizardInstallCmd.Flags().BoolVar(&wizardRepair, "repair", false, "force a fresh pairing handshake even if a key already exists")
 	wizardInstallCmd.Flags().BoolVar(&wizardForce, "force", false, "overwrite existing source.yaml / sink.yaml / allowlist.yaml")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipDaemon, "skip-daemon", false, "skip installing the LaunchAgent (configs + pairing only)")
+	wizardInstallCmd.Flags().BoolVar(&wizardNoRestartChrome, "no-restart-chrome", false, "[sink] do not auto-quit/relaunch Chrome to activate the chrome://inspect remote-debugging toggle; Chrome must be restarted manually for attach mode to discover the CDP endpoint")
+	wizardInstallCmd.Flags().BoolVar(&wizardSkipRemoteDebug, "skip-remote-debug", false, "[sink] do not write the chrome://inspect remote-debugging preference; useful when running the wizard for managed-mode sink installs")
 
 	wizardUninstallCmd.Flags().StringVar(&wizardRole, "as", "", "source | sink (required)")
 	wizardUninstallCmd.Flags().BoolVar(&wizardForce, "purge", false, "also delete configs and paired keys")
@@ -232,6 +237,12 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 		fmt.Fprintf(os.Stderr, "agentcookie wizard: paired with source %q (fingerprint %s)\n", wizardPeer, res.Fingerprint)
 	}
 
+	if !wizardSkipRemoteDebug {
+		if err := ensureRemoteDebuggingEnabled(ctx); err != nil {
+			return fmt.Errorf("activate Chrome remote debugging: %w", err)
+		}
+	}
+
 	if !wizardSkipDaemon {
 		if err := installLaunchAgent(launchd.Spec{
 			Role:       launchd.RoleSink,
@@ -244,6 +255,91 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 	}
 
 	fmt.Fprintln(os.Stderr, "agentcookie wizard: sink install complete")
+	return nil
+}
+
+// ensureRemoteDebuggingEnabled walks the sink machine's real Chrome through
+// the chrome://inspect/#remote-debugging activation contract documented in
+// docs/research/chrome-144-remote-debugging.md. The full flow when starting
+// from cold:
+//
+//  1. Check whether the toggle pref is already set. If yes, skip.
+//  2. If Chrome is running, quit it cleanly via osascript so it can save
+//     session state and persist Local State.
+//  3. Write devtools.remote_debugging.user-enabled=true into Local State.
+//  4. Relaunch Chrome via 'open -a "Google Chrome"' (unless --no-restart-chrome).
+//  5. Wait for DevToolsActivePort to appear (proves CDP is active).
+//
+// On first sink-to-Chrome connect, Chrome shows a permission dialog the user
+// must click Allow on. Subsequent CDP traffic over the same WebSocket does
+// not re-prompt. This is the residual user click after autonomous activation.
+func ensureRemoteDebuggingEnabled(ctx context.Context) error {
+	profileDir := chromeconn.DefaultProfileDir()
+
+	// Step 1: already on?
+	if ep, err := chromeconn.Discover(profileDir); err == nil {
+		fmt.Fprintf(os.Stderr, "agentcookie wizard: Chrome remote debugging already active at %s\n", ep.WebSocketURL())
+		return nil
+	}
+	prefSet, err := chromeconn.IsRemoteDebuggingPrefSet(profileDir)
+	if err != nil {
+		return fmt.Errorf("read Local State: %w", err)
+	}
+	if prefSet {
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: chrome://inspect toggle already on in Local State, but Chrome has not been restarted yet")
+	}
+
+	chromeRunning, err := chromeconn.IsChromeRunning()
+	if err != nil {
+		return fmt.Errorf("probe Chrome process: %w", err)
+	}
+
+	if wizardNoRestartChrome {
+		// Lights-off mode: write the pref but do not touch the running Chrome.
+		if !prefSet {
+			if err := chromeconn.SetRemoteDebuggingPref(profileDir); err != nil {
+				return err
+			}
+			fmt.Fprintln(os.Stderr, "agentcookie wizard: wrote chrome://inspect remote-debugging pref to Local State; restart Chrome manually to activate CDP")
+		}
+		if chromeRunning {
+			fmt.Fprintln(os.Stderr, "agentcookie wizard: Chrome is currently running; the new pref takes effect on the next Chrome launch")
+		}
+		return nil
+	}
+
+	if chromeRunning {
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: quitting Chrome to write the chrome://inspect remote-debugging pref (it will be relaunched immediately)")
+		quitCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		if err := chromeconn.QuitChromeGracefully(quitCtx, 15*time.Second); err != nil {
+			cancel()
+			return fmt.Errorf("quit Chrome: %w (pass --no-restart-chrome and restart Chrome yourself)", err)
+		}
+		cancel()
+	}
+
+	if !prefSet {
+		if err := chromeconn.SetRemoteDebuggingPref(profileDir); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: chrome://inspect remote-debugging pref written")
+	}
+
+	launchCtx, cancelLaunch := context.WithTimeout(ctx, 10*time.Second)
+	if err := chromeconn.LaunchChrome(launchCtx); err != nil {
+		cancelLaunch()
+		return fmt.Errorf("relaunch Chrome: %w", err)
+	}
+	cancelLaunch()
+
+	waitCtx, cancelWait := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelWait()
+	ep, err := chromeconn.WaitForRemoteDebugging(waitCtx, profileDir, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("wait for Chrome to publish DevToolsActivePort: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "agentcookie wizard: Chrome CDP active at %s\n", ep.WebSocketURL())
+	fmt.Fprintln(os.Stderr, "agentcookie wizard: the first time the sink attaches, Chrome will show an 'Allow remote debugging' dialog; click Allow once")
 	return nil
 }
 
@@ -402,11 +498,15 @@ peer:
 func renderSinkYAML(peer string) string {
 	// Bind to the local tailnet IP for sink listener if available; otherwise 0.0.0.0:9999.
 	listenAddr := defaultSinkListenAddr()
+	// v0.5 default: cdp.mode=attach. Sink connects to the user's real
+	// Chrome via the chrome://inspect/#remote-debugging activation, which
+	// the wizard wires up at install time. Legacy managed-Chrome mode is
+	// still available by setting `cdp.mode: managed` (see U3 for cleanup).
 	return fmt.Sprintf(`listen:
   addr: %s
 cdp:
   enabled: true
-  managed: true
+  mode: attach
 peer:
   hostname: %s
 `, listenAddr, peer)
