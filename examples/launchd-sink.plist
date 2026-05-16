@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Example launchd plist for running agentcookie sink as a user agent on macOS.
+
+  1. Replace REPLACE_WITH_FULL_PATH_TO_AGENTCOOKIE with the absolute path
+     to the binary (e.g. /Users/yourname/go/bin/agentcookie).
+  2. Optionally set HOME and PATH env vars if your shell setup needs them.
+  3. Copy to ~/Library/LaunchAgents/dev.agentcookie.sink.plist
+  4. launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.agentcookie.sink.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.agentcookie.sink</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>REPLACE_WITH_FULL_PATH_TO_AGENTCOOKIE</string>
+    <string>sink</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/agentcookie-sink.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/agentcookie-sink.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/REPLACE_WITH_USERNAME</string>
+  </dict>
+</dict>
+</plist>

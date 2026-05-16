@@ -4,53 +4,57 @@ Peer-to-peer Chrome session replication for AI agents.
 
 Your laptop is logged in to everything. Your AI agents run on a different machine (Mac mini, cloud VM, whatever) and aren't. That gap is `agentcookie`.
 
+## Why
+
+Existing cookie-sync tools are built for humans switching accounts between two laptops they both touch. They assume someone will click "Merge" or open Chrome periodically. agentcookie is built for the opposite workflow: continuous, one-way, unattended replication from the machine you live in to the machine your AI agents act from. No browser required on the sink. No third-party data plane. Pairing-derived keys, allowlists on both sides.
+
 ## Status
 
-Pre-release. v0.1 in active development.
+Pre-release. v0.1 in active development. Watch the repo for the launch announcement.
 
-What works today:
+### What works today
 
-- Unified `agentcookie` CLI with subcommands: `source`, `sink`, `pair`, `status`, `version`. All support `--json` output for agent callers.
-- Cookie acquisition on macOS: reads Chrome's Cookies SQLite read-only with `immutable=1`, decrypts with the per-machine Chrome Safe Storage key (PBKDF2-SHA1 of the Keychain password, salt `saltysalt`, 1003 iters, IV = 16 spaces, AES-128-CBC, `v10` prefix).
-- Cookie write on macOS: schema-aware INSERT ... ON CONFLICT that adapts to Chrome's evolving column set (`top_frame_site_key`, `source_type`, `has_cross_site_ancestor`).
-- Pairing handshake: `agentcookie pair --as source` on the laptop prints a one-time 8-char base32 code. Within 10 minutes, `agentcookie pair --as sink --peer <source-host> --pair-url ... --code <code>` on the Mac mini runs an X25519 exchange authenticated by the code. Both sides derive a 32-byte symmetric key via HKDF-SHA256 (info `agentcookie-pair-v1`) and write it to `~/.config/agentcookie/keys/<peer>.json` at mode 0600.
-- Transport: AES-GCM over HTTP. After pairing, both sides look up the per-peer key by `peer.hostname` in the YAML config. Legacy `security.shared_secret` still accepted as fallback.
-- 30 unit tests across `internal/chrome`, `internal/transport`, `internal/config`, `internal/keystore`, `internal/pairing`.
+- Unified `agentcookie` CLI: `source`, `sink`, `pair`, `status`, `version`. All support `--json` for agent callers.
+- Pairing handshake: X25519 + HKDF-SHA256 salted with a one-time code. Derived 32-byte keys land at `~/.config/agentcookie/keys/<peer>.json` mode 0600.
+- Cookie acquisition on macOS: read Chrome cookies SQLite read-only with `immutable=1`, decrypt v10 ciphertext using the Keychain Safe Storage key.
+- Cookie write: schema-aware INSERT ... ON CONFLICT that adapts to Chrome's evolving column set (`top_frame_site_key`, `source_type`, `has_cross_site_ancestor`).
+- Live-Chrome injection: sink probes Chrome's DevTools port and uses `Storage.setCookies` for instant in-memory visibility. Falls back to SQLite write if Chrome isn't debuggable.
+- Wire protocol v1: versioned `SyncEnvelope` with monotonic Sequence (replay defense), source hostname, cookies. Documented in `docs/protocol.md`.
+- Sink-side allowlist enforcement: defense in depth even if the source is compromised.
+- AES-256-GCM transport over HTTP, layered on top of the Tailscale tailnet's WireGuard channel.
+- 42 unit tests across `internal/chrome`, `internal/transport`, `internal/config`, `internal/keystore`, `internal/pairing`, `internal/cdp`, `internal/protocol`.
 
-What does not yet exist:
+### What's coming
 
-- Long-lived watch mode (fsnotify-driven continuous sync) -- planned in U6 of the roadmap.
-- Live-Chrome injection on the sink via CDP (today the sink writes only when Chrome is closed) -- U4.
-- Signed allowlist sync source-to-sink with sink-side enforcement -- U6.
-- macOS Keychain storage for derived keys (today the keys are in `~/.config/agentcookie/keys/` at 0600) -- v0.2.
-- Threat-model docs, install skill, brand decision, marketing site, public launch -- U7-U11.
+- Long-lived watch mode (fsnotify-driven continuous sync). Today `agentcookie source --once` covers the cron / launchd loop.
+- macOS Keychain storage for derived keys. Today the keys live in `~/.config/agentcookie/keys/` at mode 0600.
+- `agentcookie pair --rotate` for live key rotation.
+- Durable replay defense (nonce or timestamp window in the envelope).
+- One-to-many fan-out.
+- Linux sink support.
 
 ## Quickstart
 
+See [docs/quickstart.md](docs/quickstart.md) for the full five-minute install. Short version:
+
 ```
-# 1. Install (both machines)
 go install github.com/mvanhorn/agentcookie/cmd/agentcookie@latest
-
-# 2. Copy example configs
-mkdir -p ~/.config/agentcookie
-cp examples/source.yaml ~/.config/agentcookie/source.yaml  # on laptop
-cp examples/sink.yaml ~/.config/agentcookie/sink.yaml      # on Mac mini
-cp examples/allowlist.yaml ~/.config/agentcookie/allowlist.yaml  # on laptop
-
-# 3. Pair (laptop first)
-agentcookie pair --as source
-# Prints: code XYZW-ABCD; URL http://<laptop-tailnet>:9998/pair
-
-# Then on Mac mini, within 10 minutes:
-agentcookie pair --as sink --peer <laptop-tailnet> \
-  --pair-url http://<laptop-tailnet>:9998/pair --code XYZW-ABCD
-
-# 4. Run sink (Mac mini, long-lived)
-agentcookie sink
-
-# 5. Sync once (laptop)
-agentcookie source --once
+# Drop ~/.config/agentcookie/source.yaml + allowlist.yaml on laptop
+# Drop ~/.config/agentcookie/sink.yaml + allowlist.yaml on Mac mini
+agentcookie pair --as source     # on laptop, prints code
+agentcookie pair --as sink ...   # on Mac mini, with the code
+agentcookie sink                 # long-lived on Mac mini
+agentcookie source --once        # one-shot sync on laptop (cron this)
 ```
+
+## Documentation
+
+- [Quickstart](docs/quickstart.md): five-minute install on a laptop-and-Mac-mini pair
+- [Architecture](docs/architecture.md): module layout, sync lifecycle, pairing lifecycle, security boundaries
+- [Protocol v1](docs/protocol.md): wire format spec for future client implementations
+- [Threat model](docs/threat-model.md): what agentcookie does and does not protect against
+- [FAQ](docs/faq.md): common questions
+- [Install skill](skill/SKILL.md): Claude Code / gstack-style skill for an agent to drive the install
 
 ## License
 
