@@ -1,0 +1,16 @@
+# Example sink.yaml. Copy to ~/.config/agentcookie/sink.yaml on the machine
+# where your AI agents run (your Mac mini, cloud VM, etc.).
+
+listen:
+  # Address the sink's HTTP server binds to. Bind to your tailnet IP, not 0.0.0.0.
+  # Default is 127.0.0.1:9999 if omitted.
+  addr: 100.x.y.z:9999
+
+chrome:
+  # Defaults to ~/Library/Application Support/Google/Chrome/Default/Cookies if
+  # omitted.
+  db_path: ~/Library/Application Support/Google/Chrome/Default/Cookies
+
+security:
+  # Must match the value in source.yaml on the other end.
+  shared_secret: REPLACE-WITH-A-LONG-RANDOM-STRING

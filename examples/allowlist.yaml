@@ -1,0 +1,23 @@
+# Example allowlist.yaml. Copy to ~/.config/agentcookie/allowlist.yaml on the
+# source machine (the laptop). The sink does not need its own allowlist in
+# v0.1 since the source enforces the filter before sending; that changes in
+# U6 when the sink rejects diffs for non-allowlisted domains as a defense in
+# depth.
+
+version: 1
+
+domains:
+  # Each entry is a SQLite LIKE pattern matched against Chrome's host_key.
+  # Use '%' as wildcard. Lead with '.' or '%' to catch subdomains.
+
+  - pattern: "%instacart.com"
+    description: Instacart session for the pp-instacart CLI
+
+  - pattern: "%granola.so"
+    description: Granola session for the pp-granola CLI
+
+  - pattern: "%superhuman.com"
+    description: Superhuman session for the pp-superhuman CLI
+
+  - pattern: "%example.com"
+    description: Low-stakes test target for U1 verification
