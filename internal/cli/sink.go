@@ -208,7 +208,11 @@ func applyEnvelopeToSink(
 	key []byte,
 ) (writeResult, error) {
 	var result writeResult
-	err := chromectl.WithChromeQuit(ctx, 20*time.Second, 30*time.Second, func() error {
+	// v0.9: WithChromeDown (not WithChromeQuit) -- on the Mac mini sink
+	// Chrome stays quit. Launching Chrome would trigger the meta.version
+	// migration from 18 to 24 and rewrite cookies into App-Bound v20,
+	// breaking every kooky v0.2.2 reader. See plan 2026-05-17-003 U5.
+	err := chromectl.WithChromeDown(ctx, 20*time.Second, func() error {
 		if len(cookies) > 0 {
 			n, err := chrome.WriteCookies(cfg.Chrome.DBPath, cookies, key)
 			result.Cookies = n
