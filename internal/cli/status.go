@@ -102,6 +102,20 @@ var statusCmd = &cobra.Command{
 			}
 			fmt.Printf("  sink daemon: %d writes via %s, %d rejected, last write %s\n",
 				st.SinkState.TotalWrites, st.SinkState.LastWriteMode, st.SinkState.TotalRejects, ago)
+			if n := len(st.SinkState.LastAdapterResults); n > 0 {
+				ok, skipped, failed := 0, 0, 0
+				for _, r := range st.SinkState.LastAdapterResults {
+					switch {
+					case r.Err != "":
+						failed++
+					case r.Skipped:
+						skipped++
+					default:
+						ok++
+					}
+				}
+				fmt.Printf("    adapters (last run): %d ok, %d skipped, %d failed (of %d)\n", ok, skipped, failed, n)
+			}
 		}
 		for _, e := range st.Errors {
 			fmt.Fprintf(os.Stderr, "  warning: %s\n", e)
