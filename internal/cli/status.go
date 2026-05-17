@@ -69,9 +69,7 @@ var statusCmd = &cobra.Command{
 		}
 		if st.SinkConfig != nil {
 			fmt.Printf("  sink listening on %s\n", st.SinkConfig.Listen.Addr)
-			if st.SinkConfig.CDP.Enabled && st.SinkConfig.CDP.Managed {
-				fmt.Printf("    managed Chrome profile: %s\n", st.SinkConfig.CDP.ProfileDir)
-			} else if st.SinkConfig.Chrome.DBPath != "" {
+			if st.SinkConfig.Chrome.DBPath != "" {
 				fmt.Printf("    chrome db: %s\n", st.SinkConfig.Chrome.DBPath)
 			}
 		} else {
