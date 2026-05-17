@@ -285,15 +285,25 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 	return nil
 }
 
-// printBridgeHint tells the operator how PP CLIs use the v0.8 sidecar
-// cookies bridge. Sidecar lives at ~/.agentcookie/cookies-plain.db
-// (plaintext, mode 0600). PP CLIs read it via the AGENTCOOKIE_PLAIN_COOKIES
-// env var or by importing the cookiesource Go module.
+// printBridgeHint tells the operator how PP CLIs use the cookie bridge.
+// v0.9 ships two paths:
+//
+//   1. Primary: Mac mini's actual Chrome Cookies file is written in plain
+//      v10 mode (no App-Bound prefix) with meta.version=18. Any kooky
+//      v0.2.2 caller reads it via the macOS Keychain Safe Storage key.
+//      No env var, no cookiesource integration required.
+//   2. Backstop: ~/.agentcookie/cookies-plain.db sidecar (mode 0600,
+//      plaintext values, empty encrypted_value). cookiesource-aware
+//      callers honor AGENTCOOKIE_PLAIN_COOKIES.
+//
+// Precondition for path 1: Mac mini Chrome stays quit. The wizard says so;
+// the user keeps it that way.
 func printBridgeHint() {
-	fmt.Fprintln(os.Stderr, "agentcookie wizard: PP CLIs and headless agents can use the cookie bridge:")
-	fmt.Fprintln(os.Stderr, "  echo 'export AGENTCOOKIE_PLAIN_COOKIES=~/.agentcookie/cookies-plain.db' >> ~/.zshenv")
-	fmt.Fprintln(os.Stderr, "  # Existing PP CLI: one-line patch to read from the env var via the cookiesource Go module")
-	fmt.Fprintln(os.Stderr, "  # See README 'Using cookies with PP CLIs' for the import snippet")
+	fmt.Fprintln(os.Stderr, "agentcookie wizard: PP CLIs and headless agents read cookies two ways on this sink:")
+	fmt.Fprintln(os.Stderr, "  1. Direct: any kooky v0.2.2 caller reads Mac mini's Chrome Cookies file (v0.9 plain-v10 mode).")
+	fmt.Fprintln(os.Stderr, "     Keep Chrome QUIT on this machine: launching it migrates meta.version and breaks the bridge.")
+	fmt.Fprintln(os.Stderr, "  2. Sidecar: cookiesource-aware callers honor:")
+	fmt.Fprintln(os.Stderr, "       export AGENTCOOKIE_PLAIN_COOKIES=~/.agentcookie/cookies-plain.db")
 }
 
 // printExitNodeHint inspects Tailscale state and emits sudo command lines
