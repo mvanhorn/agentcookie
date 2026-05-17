@@ -185,6 +185,11 @@ func LaunchAndWait(ctx context.Context, timeout time.Duration) error {
 // quitTimeout and launchTimeout cap the two boundary phases.
 // fn runs with no time limit; the caller's context cancellation handles
 // abort.
+//
+// Use this on the source machine where Chrome is the user's interactive
+// browser and must come back up after writes. On the Mac mini sink, use
+// WithChromeDown -- Chrome must stay quit so its meta.version=24
+// migration does not rewrite the v0.9 plain-v10 cookies into v20.
 func WithChromeQuit(ctx context.Context, quitTimeout, launchTimeout time.Duration, fn func() error) error {
 	if err := QuitAndWait(ctx, quitTimeout); err != nil {
 		return err
@@ -198,4 +203,25 @@ func WithChromeQuit(ctx context.Context, quitTimeout, launchTimeout time.Duratio
 		return launchErr
 	}
 	return nil
+}
+
+// WithChromeDown quits Chrome, runs fn, and leaves Chrome quit. Used on
+// the Mac mini sink: Chrome must not run interactively because launching
+// it would trigger the version-24 schema migration that rewrites the
+// v0.9 plain-v10 cookies into App-Bound v20, breaking every kooky v0.2.2
+// reader on the box.
+//
+// If Chrome was already running when this is called, it gets quit. The
+// caller has no way to know whether to re-launch later; the sink-mini
+// premise is that Chrome stays down. If a user manually launches Chrome
+// on the sink after this returns, they will silently break the bridge
+// until the next sync.
+//
+// fn runs with no time limit; the caller's context cancellation handles
+// abort.
+func WithChromeDown(ctx context.Context, quitTimeout time.Duration, fn func() error) error {
+	if err := QuitAndWait(ctx, quitTimeout); err != nil {
+		return err
+	}
+	return fn()
 }

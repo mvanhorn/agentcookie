@@ -208,7 +208,11 @@ func applyEnvelopeToSink(
 	key []byte,
 ) (writeResult, error) {
 	var result writeResult
-	err := chromectl.WithChromeQuit(ctx, 20*time.Second, 30*time.Second, func() error {
+	// v0.9: WithChromeDown (not WithChromeQuit) -- on the Mac mini sink
+	// Chrome stays quit. Launching Chrome would trigger the meta.version
+	// migration from 18 to 24 and rewrite cookies into App-Bound v20,
+	// breaking every kooky v0.2.2 reader. See plan 2026-05-17-003 U5.
+	err := chromectl.WithChromeDown(ctx, 20*time.Second, func() error {
 		if len(cookies) > 0 {
 			n, err := chrome.WriteCookies(cfg.Chrome.DBPath, cookies, key)
 			result.Cookies = n
@@ -217,6 +221,15 @@ func applyEnvelopeToSink(
 			}
 			if rowCount, qerr := chrome.SqliteRowCount(cfg.Chrome.DBPath, "cookies"); qerr == nil {
 				fmt.Fprintf(os.Stderr, "agentcookie sink: post-commit verify: %d rows in cookies table (just wrote %d)\n", rowCount, n)
+			}
+			// v0.9 probe: decrypt a few rows the way kooky v0.2.2 would and
+			// confirm no App-Bound prefix leakage + meta.version=18 pin.
+			// Fails loud in sink stderr so a regression is visible before
+			// any agent run hits broken cookies.
+			if probe, perr := chrome.ProbeCookiesFile(cfg.Chrome.DBPath, key, 3); perr != nil {
+				fmt.Fprintf(os.Stderr, "agentcookie sink: %s (error: %v)\n", "probe error", perr)
+			} else {
+				fmt.Fprintf(os.Stderr, "agentcookie sink: %s\n", probe.Summary())
 			}
 			// v0.8 bridge: also write a plaintext-value sidecar at
 			// ~/.agentcookie/cookies-plain.db. PP CLIs reading this path

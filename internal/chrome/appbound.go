@@ -32,6 +32,13 @@ func stripAppBoundPrefix(plaintext []byte, hostKey string) []byte {
 // cookie on decrypt. Without the prefix, Chrome silently drops the cookie
 // on the next launch (cookie passes SQLite write but doesn't survive the
 // in-memory load).
+//
+// Currently unreferenced: v0.9 dropped the App-Bound prefix from the write
+// path because PP CLIs on the Mac mini sink read via kooky v0.2.2, which
+// does not strip the prefix. See plan 2026-05-17-003. Kept exported for the
+// eventual coordinated bump (kooky v0.2.9+ in PP, agentcookie back to v20
+// mode); call sites re-enable it then. stripAppBoundPrefix on the read side
+// stays active and defensive.
 func prependAppBoundPrefix(plaintext []byte, hostKey string) []byte {
 	prefix := sha256.Sum256([]byte(hostKey))
 	out := make([]byte, sha256.Size+len(plaintext))

@@ -67,3 +67,55 @@ func TestLaunchAndWait_NoOpWhenRunning(t *testing.T) {
 		t.Errorf("expected nil when Chrome already running, got %v", err)
 	}
 }
+
+// TestWithChromeDown_RunsFnAndDoesNotRelaunch verifies WithChromeDown
+// runs fn and, crucially, never calls LaunchAndWait. Runs only when
+// Chrome is not currently running so the test does not disturb the
+// developer's session.
+func TestWithChromeDown_RunsFnAndDoesNotRelaunch(t *testing.T) {
+	running, err := IsRunning()
+	if err != nil {
+		t.Skipf("IsRunning errored: %v", err)
+	}
+	if running {
+		t.Skip("Chrome is running on this machine; test would disturb it")
+	}
+	called := false
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := WithChromeDown(ctx, 500*time.Millisecond, func() error {
+		called = true
+		return nil
+	}); err != nil {
+		t.Errorf("WithChromeDown returned error: %v", err)
+	}
+	if !called {
+		t.Error("fn was not invoked")
+	}
+	// Confirm WithChromeDown did NOT launch Chrome behind our back.
+	stillNotRunning, _ := IsRunning()
+	if stillNotRunning {
+		t.Error("WithChromeDown launched Chrome; it must leave Chrome quit")
+	}
+}
+
+// TestWithChromeDown_PropagatesFnError ensures fn errors surface as the
+// returned error and are not swallowed.
+func TestWithChromeDown_PropagatesFnError(t *testing.T) {
+	running, err := IsRunning()
+	if err != nil {
+		t.Skipf("IsRunning errored: %v", err)
+	}
+	if running {
+		t.Skip("Chrome is running on this machine; test would disturb it")
+	}
+	want := errors.New("fn boom")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	got := WithChromeDown(ctx, 500*time.Millisecond, func() error {
+		return want
+	})
+	if !errors.Is(got, want) {
+		t.Errorf("expected fn error to propagate, got %v", got)
+	}
+}
