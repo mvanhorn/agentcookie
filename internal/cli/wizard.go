@@ -324,23 +324,18 @@ func defaultKeychainTrustBinaries() []string {
 }
 
 // printBridgeHint tells the operator how PP CLIs use the cookie bridge.
-// v0.9 ships two paths:
-//
-//   1. Primary: Mac mini's actual Chrome Cookies file is written in plain
-//      v10 mode (no App-Bound prefix) with meta.version=18. Any kooky
-//      v0.2.2 caller reads it via the macOS Keychain Safe Storage key.
-//      No env var, no cookiesource integration required.
-//   2. Backstop: ~/.agentcookie/cookies-plain.db sidecar (mode 0600,
-//      plaintext values, empty encrypted_value). cookiesource-aware
-//      callers honor AGENTCOOKIE_PLAIN_COOKIES.
-//
-// Precondition for path 1: Mac mini Chrome stays quit. The wizard says so;
-// the user keeps it that way.
+// v0.11's adapter pattern is the primary path: after each sync, the
+// sink writes per-CLI session caches directly. v0.9's plain-v10 + v0.8
+// sidecar remain as fallbacks for kooky-using CLIs that have no
+// registered adapter.
 func printBridgeHint() {
-	fmt.Fprintln(os.Stderr, "agentcookie wizard: PP CLIs and headless agents read cookies two ways on this sink:")
-	fmt.Fprintln(os.Stderr, "  1. Direct: any kooky v0.2.2 caller reads Mac mini's Chrome Cookies file (v0.9 plain-v10 mode).")
-	fmt.Fprintln(os.Stderr, "     Keep Chrome QUIT on this machine: launching it migrates meta.version and breaks the bridge.")
-	fmt.Fprintln(os.Stderr, "  2. Sidecar: cookiesource-aware callers honor:")
+	fmt.Fprintln(os.Stderr, "agentcookie wizard: PP CLIs read cookies on this sink via three paths:")
+	fmt.Fprintln(os.Stderr, "  1. Adapter push (v0.11): the sink writes each registered PP CLI's session cache after every sync.")
+	fmt.Fprintln(os.Stderr, "     Verify with: agentcookie wizard verify-adapters")
+	fmt.Fprintln(os.Stderr, "     Five built-ins ship: instacart, airbnb, ebay, pagliacci, table-reservation-goat.")
+	fmt.Fprintln(os.Stderr, "  2. Plain v10 Chrome cookies (v0.9): kooky-using CLIs with no adapter can still read from")
+	fmt.Fprintln(os.Stderr, "     Chrome's actual Cookies file. Keep Chrome QUIT on this machine to preserve the format.")
+	fmt.Fprintln(os.Stderr, "  3. Sidecar (v0.8): cookiesource-aware callers honor:")
 	fmt.Fprintln(os.Stderr, "       export AGENTCOOKIE_PLAIN_COOKIES=~/.agentcookie/cookies-plain.db")
 }
 
