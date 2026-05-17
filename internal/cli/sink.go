@@ -168,14 +168,14 @@ func runSink(cmd *cobra.Command, args []string) error {
 			http.Error(w, fmt.Sprintf("apply envelope: %v", err), http.StatusInternalServerError)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies + %d localStorage origins + %d indexedDB origins (dropped %d non-allowlisted cookies)\n", result.Cookies, result.LocalStorage, result.IndexedDB, dropped)
+		fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies (+ %d sidecar) + %d localStorage origins + %d indexedDB origins (dropped %d non-allowlisted cookies)\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, dropped)
 		sinkState.LastWrite = time.Now().UTC()
 		sinkState.LastWriteCount = result.Cookies
 		sinkState.LastWriteMode = "sqlite+leveldb"
 		sinkState.TotalWrites++
 		sinkState.TotalDropped += dropped
 		_ = stateWriter.Save(sinkState)
-		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies, %d localStorage origins, %d indexedDB origins; dropped %d non-allowlisted cookies\n", result.Cookies, result.LocalStorage, result.IndexedDB, dropped)
+		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies (%d sidecar), %d localStorage origins, %d indexedDB origins; dropped %d non-allowlisted cookies\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, dropped)
 	})
 
 	srv := &http.Server{Addr: cfg.Listen.Addr, Handler: mux}
@@ -189,9 +189,10 @@ func runSink(cmd *cobra.Command, args []string) error {
 
 // writeResult counts what landed on the sink during one /sync.
 type writeResult struct {
-	Cookies      int
-	LocalStorage int // top-level origin subdirs in the live leveldb after the write
-	IndexedDB    int // origin subdirs in the live IndexedDB dir after the write
+	Cookies        int
+	SidecarCookies int // plaintext cookies written to ~/.agentcookie/cookies-plain.db
+	LocalStorage   int // top-level origin subdirs in the live leveldb after the write
+	IndexedDB      int // origin subdirs in the live IndexedDB dir after the write
 }
 
 // applyEnvelopeToSink wraps the three on-disk Chrome writes in a single
@@ -216,6 +217,16 @@ func applyEnvelopeToSink(
 			}
 			if rowCount, qerr := chrome.SqliteRowCount(cfg.Chrome.DBPath, "cookies"); qerr == nil {
 				fmt.Fprintf(os.Stderr, "agentcookie sink: post-commit verify: %d rows in cookies table (just wrote %d)\n", rowCount, n)
+			}
+			// v0.8 bridge: also write a plaintext-value sidecar at
+			// ~/.agentcookie/cookies-plain.db. PP CLIs reading this path
+			// get cookies without Keychain prompts and without kooky's
+			// App-Bound-decryption complaint. Sidecar errors are logged
+			// but non-fatal: the real Chrome write is the source of truth.
+			if sidecarN, sidecarErr := chrome.WriteCookiesSidecar(chromepaths.SidecarCookiesDB(), cookies); sidecarErr != nil {
+				fmt.Fprintf(os.Stderr, "agentcookie sink: sidecar write failed (%v); PP CLIs will fall back to Chrome's encrypted store\n", sidecarErr)
+			} else {
+				result.SidecarCookies = sidecarN
 			}
 		}
 		if len(env.LocalStorageTarball) > 0 {

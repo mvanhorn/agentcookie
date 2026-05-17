@@ -35,6 +35,7 @@ var (
 	wizardSkipDaemon         bool
 	wizardSkipExitNode       bool
 	wizardSkipKeychainPrompt bool
+	wizardSkipBridgeHint     bool
 )
 
 var wizardCmd = &cobra.Command{
@@ -90,6 +91,7 @@ func init() {
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipDaemon, "skip-daemon", false, "skip installing the LaunchAgent (configs + pairing only)")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipExitNode, "skip-exit-node-hint", false, "do not detect Tailscale or print the sudo commands that route the sink's outbound traffic through the source machine")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipKeychainPrompt, "skip-keychain-prompt", false, "[sink] do not trigger the Chrome Safe Storage Keychain prompt during install; the sink daemon will prompt on first sync instead")
+	wizardInstallCmd.Flags().BoolVar(&wizardSkipBridgeHint, "skip-bridge-hint", false, "[sink] do not print the cookie-bridge env-var integration hint at install end")
 
 	wizardUninstallCmd.Flags().StringVar(&wizardRole, "as", "", "source | sink (required)")
 	wizardUninstallCmd.Flags().BoolVar(&wizardForce, "purge", false, "also delete configs and paired keys")
@@ -258,8 +260,23 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 		printExitNodeHint(ctx, "sink", wizardPeer)
 	}
 
+	if !wizardSkipBridgeHint {
+		printBridgeHint()
+	}
+
 	fmt.Fprintln(os.Stderr, "agentcookie wizard: sink install complete")
 	return nil
+}
+
+// printBridgeHint tells the operator how PP CLIs use the v0.8 sidecar
+// cookies bridge. Sidecar lives at ~/.agentcookie/cookies-plain.db
+// (plaintext, mode 0600). PP CLIs read it via the AGENTCOOKIE_PLAIN_COOKIES
+// env var or by importing the cookiesource Go module.
+func printBridgeHint() {
+	fmt.Fprintln(os.Stderr, "agentcookie wizard: PP CLIs and headless agents can use the cookie bridge:")
+	fmt.Fprintln(os.Stderr, "  echo 'export AGENTCOOKIE_PLAIN_COOKIES=~/.agentcookie/cookies-plain.db' >> ~/.zshenv")
+	fmt.Fprintln(os.Stderr, "  # Existing PP CLI: one-line patch to read from the env var via the cookiesource Go module")
+	fmt.Fprintln(os.Stderr, "  # See README 'Using cookies with PP CLIs' for the import snippet")
 }
 
 // printExitNodeHint inspects Tailscale state and emits sudo command lines
