@@ -20,9 +20,22 @@ const (
 )
 
 // SafeStoragePassword returns the Chrome Safe Storage password from the macOS
-// Keychain. The first call from a new binary prompts the user for Keychain
-// access; subsequent calls succeed silently once the user clicks "Always Allow".
+// Keychain. On darwin+CGO builds, tries the keybase/go-keychain API path
+// first (SecItemCopyMatching), then falls back to shelling out to the
+// `security` CLI. The keybase path is more reliable from LaunchAgent
+// contexts where the legacy `security` CLI sometimes returns empty output
+// or non-zero exits despite the underlying keychain being readable.
+//
+// Either path requires the binary to be in the Keychain item's ACL OR the
+// item to be marked any-app-accessible OR running in a context where the
+// login keychain is auto-unlocked (LaunchAgents in the user GUI session).
+// Plan 2026-05-17-004's wizard set-keychain-access step is what makes that
+// last condition true for new binaries.
 func SafeStoragePassword() (string, error) {
+	if pw, err := safeStoragePasswordViaKeybase(); err == nil {
+		return pw, nil
+	}
+	// Fall back to `security` CLI shell-out.
 	cmd := exec.Command("security",
 		"find-generic-password",
 		"-a", keychainAccount,

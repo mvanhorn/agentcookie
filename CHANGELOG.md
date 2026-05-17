@@ -2,6 +2,53 @@
 
 ## [Unreleased]
 
+### v0.10: one-time keychain access for headless kooky CLIs
+
+The remaining gap after v0.9: kooky-using CLIs (instacart-pp-cli, bird,
+future PP CLIs) hit a macOS Keychain prompt the first time each binary
+tried to read Chrome Safe Storage. v0.10 closes the gap with a single
+wizard step at sink install time.
+
+`agentcookie wizard install --as sink` now auto-runs
+`set-keychain-access`, which spawns a one-shot LaunchAgent in the
+user's GUI session and iterates strategies to broaden Chrome Safe
+Storage access. The primary strategy is `delete-and-recreate-with-A`:
+remove the existing keychain item, recreate with `security
+add-generic-password -A` and a fresh random password. On a fresh
+install this works without a login keychain password prompt because
+`SecKeychainAddGenericPassword` on a new item honors `-A` at creation
+time. Each strategy is validated via the same Apple Security framework
+API path kooky-CGO uses (`github.com/keybase/go-keychain.GetGenericPassword`,
+exposed as `agentcookie internal keychain-probe`).
+
+For sinks where the keychain item already exists with a restrictive
+ACL from a prior Chrome run or earlier agentcookie install, the
+strategy may fail; the install does not abort, prints a loud warning,
+and points at `docs/runbook-v0.10-keychain-access.md`. The runbook
+documents a one-time GUI fallback (open Keychain Access, click
+"Allow all applications to access this item" on the Chrome Safe Storage
+row, type your login password once) that clears the prior ACL state so
+a wizard re-run succeeds.
+
+`chrome.SafeStoragePassword` now tries the keybase/go-keychain CGO path
+first and falls back to shelling out to the `security` CLI. The keybase
+path is more reliable from LaunchAgent contexts where the legacy
+`security` CLI sometimes returns exit 44 with empty stdout despite the
+underlying keychain being readable.
+
+Validated live on a Mac mini: after one-time setup,
+`ssh matts-mac-mini 'instacart-pp-cli auth login'` returns
+`imported N cookies from Chrome` and exit 0 with no GUI prompt;
+`instacart-pp-cli doctor` reports `[ok] session: N cookies from chrome`
+(not "from paste") and `[ok] api: logged in as`. End-to-end runbook
+at `docs/runbook-v0.10-keychain-access.md`.
+
+Security trade-off: Chrome Safe Storage is now any-app-readable on
+sink machines. The practical threat model already assumes a sink-side
+process compromise means lost cookies (the plaintext sidecar at
+`~/.agentcookie/cookies-plain.db` is there too). Pass
+`--skip-keychain-access` to the wizard to opt out of the broader ACL.
+
 ### v0.9: plain v10 sink writes for headless kooky readers
 
 agentcookie's sink-side write now emits Chrome cookies in plain v10
