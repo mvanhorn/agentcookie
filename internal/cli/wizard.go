@@ -36,6 +36,7 @@ var (
 	wizardSkipExitNode       bool
 	wizardSkipKeychainPrompt bool
 	wizardSkipPartitionList  bool
+	wizardSkipKeychainAccess bool
 	wizardSkipBridgeHint     bool
 )
 
@@ -93,6 +94,7 @@ func init() {
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipExitNode, "skip-exit-node-hint", false, "do not detect Tailscale or print the sudo commands that route the sink's outbound traffic through the source machine")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipKeychainPrompt, "skip-keychain-prompt", false, "[sink] do not trigger the Chrome Safe Storage Keychain prompt during install; the sink daemon will prompt on first sync instead")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipPartitionList, "skip-partition-list", false, "[sink] do not expand the Chrome Safe Storage Keychain partition list; PP CLIs using Apple-tool callers may then prompt on first read")
+	wizardInstallCmd.Flags().BoolVar(&wizardSkipKeychainAccess, "skip-keychain-access", false, "[sink] do not run v0.10 set-keychain-access strategies (the kooky-CGO probe + partition/trust-list loop); kooky CLIs may then prompt on first read per binary")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipBridgeHint, "skip-bridge-hint", false, "[sink] do not print the cookie-bridge env-var integration hint at install end")
 
 	wizardUninstallCmd.Flags().StringVar(&wizardRole, "as", "", "source | sink (required)")
@@ -247,19 +249,24 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 		fmt.Fprintln(os.Stderr, "agentcookie wizard: Keychain access granted; sink daemon can run unattended")
 	}
 
-	// v0.9: expand the Chrome Safe Storage partition list so Apple-tool
-	// callers (e.g., the `security` CLI used by various PP-CLI side scripts)
-	// can read the password without a GUI prompt. macOS prompts once for
-	// the user's login keychain password to authorize the change. Ad-hoc-
-	// signed Go binaries (most PP CLIs) still need their own one-time
-	// Always Allow click on first read; the partition list is groundwork,
-	// not a blanket grant. See plan 2026-05-17-003.
-	if !wizardSkipPartitionList {
-		fmt.Fprintln(os.Stderr, "agentcookie wizard: expanding Chrome Safe Storage partition list (you may be prompted for your login keychain password)")
-		if err := chrome.SetSafeStoragePartitionList(""); err != nil {
-			return fmt.Errorf("partition list grant: %w (re-run after granting, or pass --skip-partition-list)", err)
+	// v0.10: run the set-keychain-access strategy loop. This supersedes the
+	// v0.9 partition-list step -- v0.10's first strategy IS the same
+	// partition-list expansion, plus it verifies the result via the
+	// keybase/go-keychain API path kooky-CGO uses, and falls back to
+	// per-binary trust-list entries if the partition list alone does not
+	// cover ad-hoc-signed Go binaries. The whole thing runs inside a
+	// one-shot LaunchAgent (auto-unlocked keychain) so no login password
+	// prompt fires. See plan 2026-05-17-004.
+	if !wizardSkipKeychainAccess {
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: running set-keychain-access strategy loop (broadens Chrome Safe Storage access for kooky-using CLIs)")
+		setKeychainExtraBinary = defaultKeychainTrustBinaries()
+		if err := runOuterWizard(setKeychainAccessCmd); err != nil {
+			// Do NOT abort install. Sink itself still works; only the
+			// per-CLI headless-read path is degraded.
+			fmt.Fprintf(os.Stderr, "agentcookie wizard: WARNING keychain access strategy loop failed: %v\n", err)
+			fmt.Fprintln(os.Stderr, "agentcookie wizard:   kooky-using CLIs on this sink will prompt for Keychain access on first read per binary")
+			fmt.Fprintln(os.Stderr, "agentcookie wizard:   see docs/runbook-v0.10-keychain-access.md for recovery")
 		}
-		fmt.Fprintln(os.Stderr, "agentcookie wizard: partition list granted (Apple-tool callers can now read Safe Storage silently)")
 	}
 
 	if !wizardSkipDaemon {
@@ -283,6 +290,37 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 
 	fmt.Fprintln(os.Stderr, "agentcookie wizard: sink install complete")
 	return nil
+}
+
+// defaultKeychainTrustBinaries returns kooky-using CLI binaries the wizard
+// should fall back to per-binary trust-list grants for, when the
+// partition-list strategies alone do not suffice. Tries a handful of known
+// PP CLI install paths; only includes paths that actually exist so the
+// trust-list strategy doesn't error on a missing file.
+func defaultKeychainTrustBinaries() []string {
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(home, "go", "bin", "instacart-pp-cli"),
+	}
+	// Common printing-press library install paths -- include any that
+	// actually exist on this machine.
+	ppDir := filepath.Join(home, "printing-press", "library")
+	if entries, err := os.ReadDir(ppDir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			bin := filepath.Join(ppDir, e.Name(), e.Name())
+			candidates = append(candidates, bin)
+		}
+	}
+	var present []string
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			present = append(present, c)
+		}
+	}
+	return present
 }
 
 // printBridgeHint tells the operator how PP CLIs use the cookie bridge.
