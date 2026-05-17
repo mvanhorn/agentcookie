@@ -56,12 +56,14 @@ func WriteCookies(dbPath string, cookies []Cookie, key []byte) (int, error) {
 
 	written := 0
 	for _, c := range cookies {
-		// Chrome 127+ App-Bound Encryption: the decrypted plaintext Chrome
-		// expects is `SHA256(host_key) || actual_value`. Without the
-		// 32-byte prefix Chrome silently drops the cookie on next launch.
-		// stripAppBoundPrefix on read undoes this; prepend on write.
-		appBoundPlaintext := prependAppBoundPrefix([]byte(c.Value), c.HostKey)
-		encrypted, err := encryptValueBytes(appBoundPlaintext, key)
+		// Plain v10 mode (v0.9): no App-Bound SHA256(host_key) prefix.
+		// PP CLIs on the sink read via kooky v0.2.2, which does not strip
+		// the prefix; emitting it here corrupts every cookie they read.
+		// The companion writeMetaVersion call below pins meta.version=18 so
+		// future kooky v0.2.9+ readers also skip the 32-byte strip. When the
+		// deferred PP/kooky bump lands, flip both: re-enable
+		// prependAppBoundPrefix and drop the meta.version=18 write.
+		encrypted, err := encryptValueBytes([]byte(c.Value), key)
 		if err != nil {
 			return written, fmt.Errorf("encrypt %s/%s: %w", c.HostKey, c.Name, err)
 		}
@@ -77,10 +79,31 @@ func WriteCookies(dbPath string, cookies []Cookie, key []byte) (int, error) {
 		written++
 	}
 
+	if err := writeMetaVersion(tx, "18"); err != nil {
+		return written, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return written, fmt.Errorf("commit tx: %w", err)
 	}
 	return written, nil
+}
+
+// writeMetaVersion pins the cookies SQLite's meta.version to v. v0.9 writes
+// "18" (pre-App-Bound). kooky v0.2.9+ strips a 32-byte prefix from decrypted
+// AES-CBC plaintext when dbVersion >= 24 (Chrome 134+'s App-Bound migration).
+// Plain v10 cookies (no SHA256(host_key) prefix) would be corrupted by that
+// strip; pinning meta.version=18 keeps both v0.2.2 and v0.2.9+ readers
+// correct against the same file. Safe because Mac mini Chrome stays quit
+// during agent operation, so Chrome's own version migration never fires.
+func writeMetaVersion(tx *sql.Tx, v string) error {
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS meta (key LONGVARCHAR NOT NULL UNIQUE PRIMARY KEY, value LONGVARCHAR)`); err != nil {
+		return fmt.Errorf("ensure meta table: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO meta(key, value) VALUES ('version', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, v); err != nil {
+		return fmt.Errorf("write meta.version=%s: %w", v, err)
+	}
+	return nil
 }
 
 func encryptValue(plaintext string, key []byte) ([]byte, error) {
