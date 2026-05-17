@@ -28,47 +28,8 @@ type SourceConfig struct {
 type SinkConfig struct {
 	Listen   ListenRef   `yaml:"listen" json:"listen"`
 	Chrome   ChromeRef   `yaml:"chrome" json:"chrome"`
-	CDP      CDPRef      `yaml:"cdp,omitempty" json:"cdp,omitempty"`
 	Peer     PeerRef     `yaml:"peer,omitempty" json:"peer,omitempty"`
 	Security SecurityRef `yaml:"security,omitempty" json:"security,omitempty"`
-}
-
-// CDPRef configures live-Chrome injection on the sink via Chrome DevTools
-// Protocol. When Enabled is set, the sink dispatches by Mode:
-//
-//   - Mode "attach" (v0.5 default): attach to the user's running Chrome via
-//     the chrome://inspect/#remote-debugging activation. AttachProfileDir
-//     overrides the discovery target (defaults to the user's default Chrome
-//     profile).
-//   - Mode "managed" (legacy): spawn an isolated Chrome subprocess at
-//     ProfileDir and write via hand-rolled CDP. Known to drop cookies
-//     silently. Retained for headless deployments only.
-type CDPRef struct {
-	Enabled bool `yaml:"enabled" json:"enabled"`
-	// Mode selects the cookie-write path. Values:
-	//   "attach"  - v0.5+ default; connect to the user's running Chrome via
-	//               chrome://inspect/#remote-debugging activation. Sink discovers
-	//               the CDP endpoint from DevToolsActivePort in the default
-	//               profile and connects via chromedp.
-	//   "managed" - legacy; sink spawns its own Chrome subprocess. Retained
-	//               for headless deployments where no one can flip the
-	//               chrome://inspect toggle. Cookie writes go through
-	//               hand-rolled CDP and are known to drop some cookies.
-	//   ""        - back-compat: derive mode from the legacy Managed field.
-	//               If Managed=true -> "managed"; otherwise -> "attach"
-	//               (v0.5 default).
-	//
-	// Set in YAML as `cdp.mode: attach` or `cdp.mode: managed`.
-	Mode         string `yaml:"mode,omitempty" json:"mode,omitempty"`
-	Managed      bool   `yaml:"managed,omitempty" json:"managed,omitempty"`
-	Host         string `yaml:"host,omitempty" json:"host,omitempty"`
-	Port         int    `yaml:"port,omitempty" json:"port,omitempty"`
-	ProfileDir   string `yaml:"profile_dir,omitempty" json:"profile_dir,omitempty"`
-	ChromeBinary string `yaml:"chrome_binary,omitempty" json:"chrome_binary,omitempty"`
-	// AttachProfileDir overrides the default Chrome profile directory used by
-	// attach mode. Default: ~/Library/Application Support/Google/Chrome on
-	// macOS. Useful for tests and multi-profile setups.
-	AttachProfileDir string `yaml:"attach_profile_dir,omitempty" json:"attach_profile_dir,omitempty"`
 }
 
 // PeerRef names the other side of a paired sync relationship. Hostname is
@@ -132,27 +93,6 @@ func LoadSink(dir string) (*SinkConfig, error) {
 	}
 	if cfg.Chrome.DBPath == "" {
 		cfg.Chrome.DBPath = DefaultChromeCookiesPath()
-	}
-	if cfg.CDP.Enabled {
-		if cfg.CDP.Mode == "" {
-			if cfg.CDP.Managed {
-				cfg.CDP.Mode = "managed"
-			} else {
-				cfg.CDP.Mode = "attach"
-			}
-		}
-		if cfg.CDP.Host == "" {
-			cfg.CDP.Host = "127.0.0.1"
-		}
-		if cfg.CDP.Port == 0 && !cfg.CDP.Managed {
-			cfg.CDP.Port = 9222
-		}
-		if cfg.CDP.Managed && cfg.CDP.ProfileDir == "" {
-			home, _ := os.UserHomeDir()
-			cfg.CDP.ProfileDir = filepath.Join(home, ".agentcookie", "chrome-profile")
-		}
-		cfg.CDP.ProfileDir = ExpandTilde(cfg.CDP.ProfileDir)
-		cfg.CDP.AttachProfileDir = ExpandTilde(cfg.CDP.AttachProfileDir)
 	}
 	return &cfg, nil
 }

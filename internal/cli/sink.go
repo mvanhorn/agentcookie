@@ -3,22 +3,18 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/mvanhorn/agentcookie/internal/cdp"
 	"github.com/mvanhorn/agentcookie/internal/chrome"
-	"github.com/mvanhorn/agentcookie/internal/chromeconn"
-	"github.com/mvanhorn/agentcookie/internal/chromemgr"
-	"github.com/mvanhorn/agentcookie/internal/clicker"
+	"github.com/mvanhorn/agentcookie/internal/chromectl"
+	"github.com/mvanhorn/agentcookie/internal/chromedirsync"
+	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"github.com/mvanhorn/agentcookie/internal/state"
@@ -60,45 +56,17 @@ func runSink(cmd *cobra.Command, args []string) error {
 	}
 
 	var key []byte
-	// Skip Chrome Safe Storage entirely when CDP is managed (we never write
-	// SQLite, so we never need the AES key) or when --dry-run is set.
-	skipKeychain := sinkDryRun || (cfg.CDP.Enabled && cfg.CDP.Managed)
-	if !skipKeychain {
+	if !sinkDryRun {
 		password, err := chrome.SafeStoragePassword()
 		if err != nil {
-			return fmt.Errorf("read Chrome Safe Storage from Keychain: %w", err)
+			return fmt.Errorf("read Chrome Safe Storage from Keychain: %w (run 'agentcookie wizard install --as sink' to trigger the one-time Keychain Always-Allow prompt)", err)
 		}
 		key, err = chrome.DeriveAESKey(password)
 		if err != nil {
 			return err
 		}
-	} else if sinkDryRun {
-		fmt.Fprintln(os.Stderr, "agentcookie sink: --dry-run set; skipping Chrome Safe Storage and all write paths")
 	} else {
-		fmt.Fprintln(os.Stderr, "agentcookie sink: cdp.managed=true; skipping Chrome Safe Storage (CDP path needs no key)")
-	}
-
-	// Start the managed Chrome subprocess if configured. The supervisor inside
-	// chromemgr handles restart-on-crash for the lifetime of the sink.
-	// Managed mode is legacy; v0.5 attach mode (the default) does not spawn
-	// any Chrome.
-	var chromeMgr *chromemgr.Manager
-	if cfg.CDP.Enabled && cfg.CDP.Managed && !sinkDryRun {
-		mgr, err := chromemgr.New(chromemgr.Config{
-			ChromeBinary: cfg.CDP.ChromeBinary,
-			ProfileDir:   cfg.CDP.ProfileDir,
-		})
-		if err != nil {
-			return fmt.Errorf("init chromemgr: %w", err)
-		}
-		startCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := mgr.Start(startCtx); err != nil {
-			return fmt.Errorf("start managed Chrome: %w", err)
-		}
-		defer mgr.Stop()
-		chromeMgr = mgr
-		fmt.Fprintf(os.Stderr, "agentcookie sink: managed Chrome up at %s (profile=%s)\n", mustDebuggerURL(mgr), cfg.CDP.ProfileDir)
+		fmt.Fprintln(os.Stderr, "agentcookie sink: --dry-run set; skipping Chrome Safe Storage and all write paths")
 	}
 	transportSecret, err := resolveTransportSecret(common.ConfigDir, cfg.Peer.Hostname, cfg.Security.SharedSecret)
 	if err != nil {
@@ -124,7 +92,6 @@ func runSink(cmd *cobra.Command, args []string) error {
 	sinkState := &state.SinkState{
 		Role:       "sink",
 		ListenAddr: cfg.Listen.Addr,
-		CDPManaged: cfg.CDP.Enabled && cfg.CDP.Managed,
 	}
 
 	mux := http.NewServeMux()
@@ -151,8 +118,8 @@ func runSink(cmd *cobra.Command, args []string) error {
 			http.Error(w, "unmarshal envelope: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		if envelope.ProtocolVersion != protocol.Version {
-			http.Error(w, fmt.Sprintf("protocol version mismatch: got %d, sink speaks %d", envelope.ProtocolVersion, protocol.Version), http.StatusBadRequest)
+		if envelope.ProtocolVersion < protocol.MinVersion || envelope.ProtocolVersion > protocol.Version {
+			http.Error(w, fmt.Sprintf("protocol version mismatch: got %d, sink speaks %d-%d", envelope.ProtocolVersion, protocol.MinVersion, protocol.Version), http.StatusBadRequest)
 			return
 		}
 		if !seqTracker.Accept(envelope.SourceHostname, envelope.Sequence) {
@@ -191,188 +158,103 @@ func runSink(cmd *cobra.Command, args []string) error {
 			return
 		}
 
-		written, mode, err := writeCookiesToSink(r.Context(), cfg, cookies, key, chromeMgr)
+		result, err := applyEnvelopeToSink(r.Context(), cfg, &envelope, cookies, key)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "agentcookie sink: write failed after %d cookies (mode=%s): %v\n", written, mode, err)
+			fmt.Fprintf(os.Stderr, "agentcookie sink: write failed (cookies=%d ls=%d idb=%d): %v\n", result.Cookies, result.LocalStorage, result.IndexedDB, err)
 			sinkState.LastError = err.Error()
 			sinkState.LastErrorAt = time.Now().UTC()
 			sinkState.TotalRejects++
 			_ = stateWriter.Save(sinkState)
-			http.Error(w, fmt.Sprintf("write cookies: %v", err), http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("apply envelope: %v", err), http.StatusInternalServerError)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies via %s (dropped %d non-allowlisted)\n", written, mode, dropped)
+		fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies + %d localStorage origins + %d indexedDB origins (dropped %d non-allowlisted cookies)\n", result.Cookies, result.LocalStorage, result.IndexedDB, dropped)
 		sinkState.LastWrite = time.Now().UTC()
-		sinkState.LastWriteCount = written
-		sinkState.LastWriteMode = mode
+		sinkState.LastWriteCount = result.Cookies
+		sinkState.LastWriteMode = "sqlite+leveldb"
 		sinkState.TotalWrites++
 		sinkState.TotalDropped += dropped
 		_ = stateWriter.Save(sinkState)
-		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies via %s; dropped %d non-allowlisted\n", written, mode, dropped)
+		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies, %d localStorage origins, %d indexedDB origins; dropped %d non-allowlisted cookies\n", result.Cookies, result.LocalStorage, result.IndexedDB, dropped)
 	})
 
 	srv := &http.Server{Addr: cfg.Listen.Addr, Handler: mux}
 	if sinkDryRun {
 		fmt.Fprintf(os.Stderr, "agentcookie sink: listening on http://%s (dry-run; no Chrome state will be modified)\n", cfg.Listen.Addr)
 	} else {
-		fmt.Fprintf(os.Stderr, "agentcookie sink: listening on http://%s (db=%s cdp=%v)\n", cfg.Listen.Addr, cfg.Chrome.DBPath, cfg.CDP.Enabled)
+		fmt.Fprintf(os.Stderr, "agentcookie sink: listening on http://%s (db=%s)\n", cfg.Listen.Addr, cfg.Chrome.DBPath)
 	}
 	return srv.ListenAndServe()
 }
 
-// writeCookiesToSink chooses the appropriate write path based on cfg.CDP.Mode:
-//
-//   - "attach" (v0.5 default): connect to the user's running Chrome via the
-//     chrome://inspect-activated CDP endpoint. chromedp writes cookies with
-//     correct SameSite, partitionKey, and expiry handling.
-//   - "managed" (legacy): the sink supervises its own Chrome subprocess and
-//     writes via hand-rolled CDP. Retained for headless deployments where no
-//     human can flip the chrome://inspect toggle. Known to drop cookies that
-//     fail Chrome's per-cookie validation (SameSite=None without Secure,
-//     CHIPS edge cases, expiry overflow). Use attach mode whenever possible.
-//   - "" (back-compat): same as managed when CDP.Managed=true; otherwise
-//     probes an externally-launched Chrome at host:port. Pre-v0.5 behavior.
-//   - CDP.Enabled=false: SQLite is the only path.
-func writeCookiesToSink(ctx context.Context, cfg *config.SinkConfig, cookies []chrome.Cookie, key []byte, mgr *chromemgr.Manager) (int, string, error) {
-	if cfg.CDP.Enabled && cfg.CDP.Mode == "attach" {
-		profileDir := cfg.CDP.AttachProfileDir
-		if profileDir == "" {
-			profileDir = chromeconn.DefaultProfileDir()
-		}
-		ep, derr := chromeconn.Discover(profileDir)
-		if derr != nil {
-			return 0, "attach", fmt.Errorf("chromeconn discover: %w", derr)
-		}
-		probeCtx, cancelProbe := context.WithTimeout(ctx, 1500*time.Millisecond)
-		if perr := chromeconn.ProbeReachable(probeCtx, ep); perr != nil {
-			cancelProbe()
-			return 0, "attach", fmt.Errorf("chromeconn probe: %w", perr)
-		}
-		cancelProbe()
-		attachCtx, cancelAttach, aerr := chromeconn.Attach(ctx, ep)
-		if aerr != nil {
-			return 0, "attach", fmt.Errorf("chromeconn attach: %w", aerr)
-		}
-		defer cancelAttach()
-
-		// Chrome shows an "Allow remote debugging" dialog when this WebSocket
-		// first attempts to connect. Start the auto-clicker concurrently so
-		// the sink does not need a human at the keyboard. If the session is
-		// already trusted (subsequent sync after the first one), the clicker
-		// times out silently after 6 seconds. See docs/research/
-		// chrome-inspect-allow-dialog.md (v0.6 U1) for the dialog locator.
-		clickerDone := make(chan error, 1)
-		go func() {
-			clickerCtx, clickerCancel := context.WithTimeout(ctx, 6*time.Second)
-			defer clickerCancel()
-			clickerDone <- clicker.WaitForAndClick(clickerCtx, 6*time.Second, 250*time.Millisecond)
-		}()
-
-		callCtx, cancelCall := context.WithTimeout(attachCtx, 35*time.Second)
-		defer cancelCall()
-		written, failures, werr := chromeconn.WriteCookiesChunked(callCtx, cookies, 500)
-
-		// Drain the clicker without blocking on it. Surface anything actionable.
-		select {
-		case clickErr := <-clickerDone:
-			switch {
-			case clickErr == nil:
-				// Clicker fired successfully; the dialog appeared and was clicked.
-			case errors.Is(clickErr, clicker.ErrDialogTimeout):
-				// No dialog appeared (already trusted, or Chrome did not gate).
-			case errors.Is(clickErr, clicker.ErrChromeNotRunning):
-				fmt.Fprintln(os.Stderr, "agentcookie sink: clicker reports Chrome is not running")
-			case errors.Is(clickErr, clicker.ErrAccessibilityDenied):
-				fmt.Fprintln(os.Stderr, "agentcookie sink: Accessibility permission not granted; auto-click cannot run. Re-run 'agentcookie wizard install --as sink' to fix.")
-			default:
-				fmt.Fprintf(os.Stderr, "agentcookie sink: clicker errored: %v\n", clickErr)
-			}
-		default:
-			// Clicker goroutine still running after the chromedp.Run returned;
-			// it will finish on its own (deadline-bounded, won't leak).
-		}
-		if werr != nil {
-			return written, "attach", fmt.Errorf("chromeconn write: %w", werr)
-		}
-		if total := failureTotal(failures); total > 0 {
-			fmt.Fprintf(os.Stderr, "agentcookie sink: attach mode reported %d per-cookie failures across %d hosts\n", total, len(failures))
-		}
-		return written, "attach", nil
-	}
-
-	if cfg.CDP.Enabled && cfg.CDP.Managed {
-		if mgr == nil || !mgr.IsRunning() {
-			return 0, "cdp-managed", fmt.Errorf("managed Chrome is not currently running")
-		}
-		wsURL, err := mgr.DebuggerURL()
-		if err != nil {
-			return 0, "cdp-managed", fmt.Errorf("managed Chrome debugger URL: %w", err)
-		}
-		dialCtx, cancelDial := context.WithTimeout(ctx, 3*time.Second)
-		defer cancelDial()
-		conn, derr := cdp.Dial(dialCtx, wsURL)
-		if derr != nil {
-			return 0, "cdp-managed", fmt.Errorf("dial managed Chrome: %w", derr)
-		}
-		defer conn.Close()
-		callCtx, cancelCall := context.WithTimeout(ctx, 10*time.Second)
-		defer cancelCall()
-		written, serr := cdp.SetCookies(callCtx, conn, cookies)
-		if serr != nil {
-			return written, "cdp-managed", fmt.Errorf("Storage.setCookies on managed Chrome: %w", serr)
-		}
-		return written, "cdp-managed", nil
-	}
-	if cfg.CDP.Enabled {
-		probeCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
-		defer cancel()
-		info, err := cdp.Probe(probeCtx, cfg.CDP.Host, cfg.CDP.Port)
-		if err == nil && info.WebSocketDebuggerURL != "" {
-			dialCtx, cancelDial := context.WithTimeout(ctx, 3*time.Second)
-			defer cancelDial()
-			conn, derr := cdp.Dial(dialCtx, info.WebSocketDebuggerURL)
-			if derr == nil {
-				defer conn.Close()
-				callCtx, cancelCall := context.WithTimeout(ctx, 10*time.Second)
-				defer cancelCall()
-				written, serr := cdp.SetCookies(callCtx, conn, cookies)
-				if serr == nil {
-					return written, "cdp", nil
-				}
-				fmt.Fprintf(os.Stderr, "agentcookie sink: CDP injection failed (%v), falling back to SQLite\n", serr)
-			} else {
-				fmt.Fprintf(os.Stderr, "agentcookie sink: CDP dial failed (%v), falling back to SQLite\n", derr)
-			}
-		} else if err != nil {
-			fmt.Fprintf(os.Stderr, "agentcookie sink: CDP probe failed (%v), falling back to SQLite\n", err)
-		}
-	}
-	written, err := chrome.WriteCookies(cfg.Chrome.DBPath, cookies, key)
-	return written, "sqlite", err
+// writeResult counts what landed on the sink during one /sync.
+type writeResult struct {
+	Cookies      int
+	LocalStorage int // top-level origin subdirs in the live leveldb after the write
+	IndexedDB    int // origin subdirs in the live IndexedDB dir after the write
 }
 
-func failureTotal(m map[string]int) int {
-	t := 0
-	for _, v := range m {
-		t += v
-	}
-	return t
+// applyEnvelopeToSink wraps the three on-disk Chrome writes in a single
+// quit-Chrome / write / relaunch-Chrome ceremony. Direct file writes are
+// the only path in v0.7: cookies via SQLite (encrypted with the
+// Keychain-derived AES key), localStorage via leveldb dir replacement,
+// IndexedDB via dir replacement.
+func applyEnvelopeToSink(
+	ctx context.Context,
+	cfg *config.SinkConfig,
+	env *protocol.SyncEnvelope,
+	cookies []chrome.Cookie,
+	key []byte,
+) (writeResult, error) {
+	var result writeResult
+	err := chromectl.WithChromeQuit(ctx, 20*time.Second, 30*time.Second, func() error {
+		if len(cookies) > 0 {
+			n, err := chrome.WriteCookies(cfg.Chrome.DBPath, cookies, key)
+			result.Cookies = n
+			if err != nil {
+				return fmt.Errorf("cookies: %w", err)
+			}
+		}
+		if len(env.LocalStorageTarball) > 0 {
+			n, err := replaceLevelDBDir(env.LocalStorageTarball, chromepaths.LocalStorageLevelDB())
+			result.LocalStorage = n
+			if err != nil {
+				return fmt.Errorf("local storage: %w", err)
+			}
+		}
+		if len(env.IndexedDBTarball) > 0 {
+			n, err := replaceLevelDBDir(env.IndexedDBTarball, chromepaths.IndexedDBDir())
+			result.IndexedDB = n
+			if err != nil {
+				return fmt.Errorf("indexed db: %w", err)
+			}
+		}
+		return nil
+	})
+	return result, err
 }
 
-// mustDebuggerURL formats the manager's current debugger URL with the host
-// portion redacted to just the port for logging. Returns the raw URL when
-// parsing fails. Used for stderr lines only.
-func mustDebuggerURL(mgr *chromemgr.Manager) string {
-	u, err := mgr.DebuggerURL()
-	if err != nil {
-		return "(not yet up)"
+// replaceLevelDBDir unpacks a tarball into a staging dir adjacent to
+// liveDir, then atomic-renames it over liveDir. Returns the count of
+// top-level subdirs in the new live dir (a useful proxy for "origins
+// installed" since both leveldb LocalStorage and IndexedDB lay out one
+// subdir per origin at the top level).
+func replaceLevelDBDir(payload []byte, liveDir string) (int, error) {
+	stagingDir := liveDir + ".agentcookie.staging"
+	_ = os.RemoveAll(stagingDir)
+	if err := chromedirsync.Unpack(payload, stagingDir); err != nil {
+		return 0, err
 	}
-	parsed, perr := url.Parse(u)
-	if perr != nil || parsed.Port() == "" {
-		return u
+	originCount := 0
+	if entries, err := os.ReadDir(stagingDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				originCount++
+			}
+		}
 	}
-	if _, err := strconv.Atoi(parsed.Port()); err != nil {
-		return u
+	if err := chromedirsync.AtomicReplaceDir(stagingDir, liveDir); err != nil {
+		return originCount, err
 	}
-	return "ws://127.0.0.1:" + parsed.Port() + parsed.Path
+	return originCount, nil
 }

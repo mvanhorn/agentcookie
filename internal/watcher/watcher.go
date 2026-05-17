@@ -21,6 +21,16 @@ type Config struct {
 	// watches the file's parent directory.
 	CookiesPath string
 
+	// LocalStorageDir is the absolute path to Chrome's Local Storage/leveldb
+	// directory. v0.7+ optional; when set, the watcher fires on any change
+	// to files in that directory.
+	LocalStorageDir string
+
+	// IndexedDBDir is the absolute path to Chrome's IndexedDB directory. v0.7+
+	// optional; when set, the watcher fires on origin-add/-remove events at
+	// the IndexedDB top level. In-origin writes are picked up by BaselineTick.
+	IndexedDBDir string
+
 	// Push is the per-event callback the watcher invokes after debounce. It
 	// returns the number of cookies pushed and an error (recorded but does
 	// not stop the watcher).
@@ -58,7 +68,9 @@ func (c Config) minInterval() time.Duration {
 	if c.MinInterval > 0 {
 		return c.MinInterval
 	}
-	return 2 * time.Second
+	// v0.7: bumped from 2s to 30s because each sync now quits/relaunches
+	// Chrome on the sink (cookies SQLite + leveldb file lock).
+	return 30 * time.Second
 }
 
 func (c Config) baselineTick() time.Duration {
@@ -111,6 +123,23 @@ func (w *Watcher) Run(ctx context.Context) error {
 	parent := filepath.Dir(w.cfg.CookiesPath)
 	if err := fsw.Add(parent); err != nil {
 		return fmt.Errorf("watch %s: %w", parent, err)
+	}
+	// v0.7: also watch Local Storage and IndexedDB if configured. Missing
+	// dirs are tolerated (Chrome may not have created them yet); the
+	// startup baseline-tick will pick them up later if they appear.
+	if w.cfg.LocalStorageDir != "" {
+		if _, err := os.Stat(w.cfg.LocalStorageDir); err == nil {
+			if err := fsw.Add(w.cfg.LocalStorageDir); err != nil {
+				fmt.Fprintf(os.Stderr, "agentcookie source --watch: localStorage watch failed (%v); continuing without it\n", err)
+			}
+		}
+	}
+	if w.cfg.IndexedDBDir != "" {
+		if _, err := os.Stat(w.cfg.IndexedDBDir); err == nil {
+			if err := fsw.Add(w.cfg.IndexedDBDir); err != nil {
+				fmt.Fprintf(os.Stderr, "agentcookie source --watch: indexedDB watch failed (%v); continuing without it\n", err)
+			}
+		}
 	}
 
 	// Kick off one push at startup so the sink is current from t=0.
@@ -176,13 +205,22 @@ func (w *Watcher) Run(ctx context.Context) error {
 	}
 }
 
-// isInteresting returns true if the event path is the Cookies file or one of
-// Chrome's WAL / journal companions.
+// isInteresting returns true if the event path is one of the surfaces the
+// watcher is configured to push on: Chrome's Cookies SQLite (or WAL/journal
+// companions), any file under Local Storage/leveldb, or any file directly
+// under IndexedDB.
 func (w *Watcher) isInteresting(p string) bool {
 	base := filepath.Base(p)
 	cookies := filepath.Base(w.cfg.CookiesPath)
 	switch base {
 	case cookies, cookies + "-wal", cookies + "-journal", cookies + "-shm":
+		return true
+	}
+	dir := filepath.Dir(p)
+	if w.cfg.LocalStorageDir != "" && dir == w.cfg.LocalStorageDir {
+		return true
+	}
+	if w.cfg.IndexedDBDir != "" && dir == w.cfg.IndexedDBDir {
 		return true
 	}
 	return false

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
+	"github.com/mvanhorn/agentcookie/internal/chromedirsync"
+	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/pairing"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
@@ -110,10 +113,14 @@ func runSource(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// --watch mode: long-running fsnotify watcher.
+	// --watch mode: long-running fsnotify watcher across all three sync
+	// surfaces (cookies + Local Storage + IndexedDB). v0.7 single debounce
+	// window: a write to any surface coalesces into one full envelope push.
 	w, err := watcher.New(watcher.Config{
-		CookiesPath: cfg.Chrome.DBPath,
-		Push:        push,
+		CookiesPath:     cfg.Chrome.DBPath,
+		LocalStorageDir: chromepaths.LocalStorageLevelDB(),
+		IndexedDBDir:    chromepaths.IndexedDBDir(),
+		Push:            push,
 		OnEvent: func(ev watcher.Event) {
 			if sourceVerbose {
 				fmt.Fprintf(os.Stderr, "agentcookie source --watch: %s\n", ev.String())
@@ -173,11 +180,34 @@ func pushOnce(
 		return 0, nil
 	}
 
+	// v0.7: pack Local Storage and IndexedDB alongside cookies. Both are
+	// directories of LevelDB files in Chrome's Default profile; we tar
+	// them, the envelope carries the bytes, the sink unpacks into its
+	// real Chrome profile. Errors fetching either are non-fatal so the
+	// source still pushes whatever it could read.
+	var lsTarball []byte
+	var idbTarball []byte
+	var idbSkipped []string
+	if lt, _, err := chromedirsync.Pack(chromepaths.LocalStorageLevelDB(), 0); err == nil {
+		lsTarball = lt
+	} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
+		fmt.Fprintf(os.Stderr, "agentcookie source: localStorage pack failed (%v); continuing without it\n", err)
+	}
+	if it, sk, err := chromedirsync.Pack(chromepaths.IndexedDBDir(), 50*1024*1024); err == nil {
+		idbTarball = it
+		idbSkipped = sk
+	} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
+		fmt.Fprintf(os.Stderr, "agentcookie source: indexedDB pack failed (%v); continuing without it\n", err)
+	}
+
 	envelope := protocol.SyncEnvelope{
-		ProtocolVersion: protocol.Version,
-		SourceHostname:  pairing.LocalHostname(),
-		Sequence:        time.Now().Unix(),
-		Cookies:         all,
+		ProtocolVersion:     protocol.Version,
+		SourceHostname:      pairing.LocalHostname(),
+		Sequence:            time.Now().Unix(),
+		Cookies:             all,
+		LocalStorageTarball: lsTarball,
+		IndexedDBTarball:    idbTarball,
+		IndexedDBSkipped:    idbSkipped,
 	}
 	payload, err := json.Marshal(envelope)
 	if err != nil {

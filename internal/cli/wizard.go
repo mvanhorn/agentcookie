@@ -14,8 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/mvanhorn/agentcookie/internal/chromeconn"
-	"github.com/mvanhorn/agentcookie/internal/clicker"
+	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/launchd"
 	"github.com/mvanhorn/agentcookie/internal/pairing"
@@ -34,11 +33,8 @@ var (
 	wizardRepair             bool
 	wizardForce              bool
 	wizardSkipDaemon         bool
-	wizardNoRestartChrome    bool
-	wizardSkipRemoteDebug    bool
 	wizardSkipExitNode       bool
-	wizardSkipAccessibility  bool
-	wizardAccessibilityWait  time.Duration
+	wizardSkipKeychainPrompt bool
 )
 
 var wizardCmd = &cobra.Command{
@@ -92,11 +88,8 @@ func init() {
 	wizardInstallCmd.Flags().BoolVar(&wizardRepair, "repair", false, "force a fresh pairing handshake even if a key already exists")
 	wizardInstallCmd.Flags().BoolVar(&wizardForce, "force", false, "overwrite existing source.yaml / sink.yaml / allowlist.yaml")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipDaemon, "skip-daemon", false, "skip installing the LaunchAgent (configs + pairing only)")
-	wizardInstallCmd.Flags().BoolVar(&wizardNoRestartChrome, "no-restart-chrome", false, "[sink] do not auto-quit/relaunch Chrome to activate the chrome://inspect remote-debugging toggle; Chrome must be restarted manually for attach mode to discover the CDP endpoint")
-	wizardInstallCmd.Flags().BoolVar(&wizardSkipRemoteDebug, "skip-remote-debug", false, "[sink] do not write the chrome://inspect remote-debugging preference; useful when running the wizard for managed-mode sink installs")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipExitNode, "skip-exit-node-hint", false, "do not detect Tailscale or print the sudo commands that route the sink's outbound traffic through the source machine")
-	wizardInstallCmd.Flags().BoolVar(&wizardSkipAccessibility, "skip-accessibility", false, "[sink] do not request macOS Accessibility permission; if attach mode requires the Allow-dialog auto-clicker, sink.yaml is downgraded to cdp.mode: managed")
-	wizardInstallCmd.Flags().DurationVar(&wizardAccessibilityWait, "accessibility-timeout", 5*time.Minute, "[sink] how long to wait for the user to toggle Accessibility for agentcookie in System Settings before falling back to managed mode")
+	wizardInstallCmd.Flags().BoolVar(&wizardSkipKeychainPrompt, "skip-keychain-prompt", false, "[sink] do not trigger the Chrome Safe Storage Keychain prompt during install; the sink daemon will prompt on first sync instead")
 
 	wizardUninstallCmd.Flags().StringVar(&wizardRole, "as", "", "source | sink (required)")
 	wizardUninstallCmd.Flags().BoolVar(&wizardForce, "purge", false, "also delete configs and paired keys")
@@ -238,43 +231,16 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 		fmt.Fprintf(os.Stderr, "agentcookie wizard: paired with source %q (fingerprint %s)\n", wizardPeer, res.Fingerprint)
 	}
 
-	// Decide attach vs managed before touching Chrome. Attach mode needs
-	// macOS Accessibility for the auto-clicker; managed mode does not. If
-	// Accessibility is denied or skipped, downgrade sink.yaml to managed
-	// mode so the daemon does not start in a broken state.
-	fallbackToManaged := false
-	if !wizardSkipAccessibility {
-		fmt.Fprintln(os.Stderr, "agentcookie wizard: checking macOS Accessibility permission for the chrome://inspect Allow-dialog auto-clicker")
-		accessibilityCtx, cancel := context.WithTimeout(ctx, wizardAccessibilityWait)
-		err := clicker.EnsureGranted(accessibilityCtx, wizardAccessibilityWait, 1*time.Second)
-		cancel()
-		switch {
-		case err == nil:
-			fmt.Fprintln(os.Stderr, "agentcookie wizard: Accessibility permission granted; attach mode will auto-dismiss Chrome's Allow dialog")
-		case errors.Is(err, clicker.ErrAccessibilityTimeout):
-			fmt.Fprintf(os.Stderr, "agentcookie wizard: Accessibility permission was not granted within %s; falling back to managed mode (sink will spawn its own Chrome; some cookies may drop on Chrome's per-cookie validation)\n", wizardAccessibilityWait)
-			fallbackToManaged = true
-		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-			fmt.Fprintln(os.Stderr, "agentcookie wizard: Accessibility check was canceled; falling back to managed mode")
-			fallbackToManaged = true
-		default:
-			return fmt.Errorf("Accessibility check: %w", err)
+	// v0.7: trigger the one-time Keychain Always-Allow prompt for Chrome
+	// Safe Storage. The sink LaunchAgent reads this key on every startup
+	// to encrypt cookies for SQLite writes; without Always-Allow, the
+	// daemon would block on a Keychain prompt nobody can see.
+	if !wizardSkipKeychainPrompt {
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: triggering Chrome Safe Storage Keychain prompt (click 'Always Allow' when macOS asks)")
+		if _, err := chrome.SafeStoragePassword(); err != nil {
+			return fmt.Errorf("Keychain access: %w (re-run after granting Always Allow, or pass --skip-keychain-prompt)", err)
 		}
-	} else {
-		fmt.Fprintln(os.Stderr, "agentcookie wizard: --skip-accessibility set; using managed mode (sink will spawn its own Chrome)")
-		fallbackToManaged = true
-	}
-
-	if fallbackToManaged {
-		if err := rewriteSinkYAMLToManaged(common.ConfigDir); err != nil {
-			return fmt.Errorf("downgrade sink.yaml to managed mode: %w", err)
-		}
-	}
-
-	if !wizardSkipRemoteDebug && !fallbackToManaged {
-		if err := ensureRemoteDebuggingEnabled(ctx); err != nil {
-			return fmt.Errorf("activate Chrome remote debugging: %w", err)
-		}
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: Keychain access granted; sink daemon can run unattended")
 	}
 
 	if !wizardSkipDaemon {
@@ -293,38 +259,6 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 	}
 
 	fmt.Fprintln(os.Stderr, "agentcookie wizard: sink install complete")
-	return nil
-}
-
-// rewriteSinkYAMLToManaged flips the cdp section of sink.yaml from attach
-// mode to managed mode in place. Used when the wizard's Accessibility
-// check fails (or is skipped) and attach mode would not work headlessly.
-//
-// The rewrite is a literal substring replacement against the canonical
-// renderSinkYAML output ("  mode: attach"). If the user has edited
-// sink.yaml in a non-canonical way (extra indentation, multiple cdp
-// blocks, etc.) the substring will not match and the rewrite is a no-op;
-// in that case the operator must edit by hand. The wizard surfaces this
-// case loudly so it does not fail silently.
-func rewriteSinkYAMLToManaged(configDir string) error {
-	path := filepath.Join(configDir, "sink.yaml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", path, err)
-	}
-	contents := string(data)
-	const attachLine = "  mode: attach"
-	const managedLine = "  managed: true"
-	if !strings.Contains(contents, attachLine) {
-		// Already managed mode or hand-edited; nothing to do.
-		fmt.Fprintf(os.Stderr, "agentcookie wizard: sink.yaml already uses managed mode (or has been hand-edited); leaving in place\n")
-		return nil
-	}
-	updated := strings.Replace(contents, attachLine, managedLine, 1)
-	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	fmt.Fprintln(os.Stderr, "agentcookie wizard: sink.yaml downgraded to cdp.managed: true")
 	return nil
 }
 
@@ -383,91 +317,6 @@ func printExitNodeHint(ctx context.Context, role, peerHost string) {
 		fmt.Fprintln(os.Stderr, "  # verify with: curl -s https://api.ipify.org && echo")
 		fmt.Fprintln(os.Stderr, "  # to undo: sudo tailscale set --exit-node=")
 	}
-}
-
-// ensureRemoteDebuggingEnabled walks the sink machine's real Chrome through
-// the chrome://inspect/#remote-debugging activation contract documented in
-// docs/research/chrome-144-remote-debugging.md. The full flow when starting
-// from cold:
-//
-//  1. Check whether the toggle pref is already set. If yes, skip.
-//  2. If Chrome is running, quit it cleanly via osascript so it can save
-//     session state and persist Local State.
-//  3. Write devtools.remote_debugging.user-enabled=true into Local State.
-//  4. Relaunch Chrome via 'open -a "Google Chrome"' (unless --no-restart-chrome).
-//  5. Wait for DevToolsActivePort to appear (proves CDP is active).
-//
-// On first sink-to-Chrome connect, Chrome shows a permission dialog the user
-// must click Allow on. Subsequent CDP traffic over the same WebSocket does
-// not re-prompt. This is the residual user click after autonomous activation.
-func ensureRemoteDebuggingEnabled(ctx context.Context) error {
-	profileDir := chromeconn.DefaultProfileDir()
-
-	// Step 1: already on?
-	if ep, err := chromeconn.Discover(profileDir); err == nil {
-		fmt.Fprintf(os.Stderr, "agentcookie wizard: Chrome remote debugging already active at %s\n", ep.WebSocketURL())
-		return nil
-	}
-	prefSet, err := chromeconn.IsRemoteDebuggingPrefSet(profileDir)
-	if err != nil {
-		return fmt.Errorf("read Local State: %w", err)
-	}
-	if prefSet {
-		fmt.Fprintln(os.Stderr, "agentcookie wizard: chrome://inspect toggle already on in Local State, but Chrome has not been restarted yet")
-	}
-
-	chromeRunning, err := chromeconn.IsChromeRunning()
-	if err != nil {
-		return fmt.Errorf("probe Chrome process: %w", err)
-	}
-
-	if wizardNoRestartChrome {
-		// Lights-off mode: write the pref but do not touch the running Chrome.
-		if !prefSet {
-			if err := chromeconn.SetRemoteDebuggingPref(profileDir); err != nil {
-				return err
-			}
-			fmt.Fprintln(os.Stderr, "agentcookie wizard: wrote chrome://inspect remote-debugging pref to Local State; restart Chrome manually to activate CDP")
-		}
-		if chromeRunning {
-			fmt.Fprintln(os.Stderr, "agentcookie wizard: Chrome is currently running; the new pref takes effect on the next Chrome launch")
-		}
-		return nil
-	}
-
-	if chromeRunning {
-		fmt.Fprintln(os.Stderr, "agentcookie wizard: quitting Chrome to write the chrome://inspect remote-debugging pref (it will be relaunched immediately)")
-		quitCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		if err := chromeconn.QuitChromeGracefully(quitCtx, 15*time.Second); err != nil {
-			cancel()
-			return fmt.Errorf("quit Chrome: %w (pass --no-restart-chrome and restart Chrome yourself)", err)
-		}
-		cancel()
-	}
-
-	if !prefSet {
-		if err := chromeconn.SetRemoteDebuggingPref(profileDir); err != nil {
-			return err
-		}
-		fmt.Fprintln(os.Stderr, "agentcookie wizard: chrome://inspect remote-debugging pref written")
-	}
-
-	launchCtx, cancelLaunch := context.WithTimeout(ctx, 10*time.Second)
-	if err := chromeconn.LaunchChrome(launchCtx); err != nil {
-		cancelLaunch()
-		return fmt.Errorf("relaunch Chrome: %w", err)
-	}
-	cancelLaunch()
-
-	waitCtx, cancelWait := context.WithTimeout(ctx, 30*time.Second)
-	defer cancelWait()
-	ep, err := chromeconn.WaitForRemoteDebugging(waitCtx, profileDir, 30*time.Second)
-	if err != nil {
-		return fmt.Errorf("wait for Chrome to publish DevToolsActivePort: %w", err)
-	}
-	fmt.Fprintf(os.Stderr, "agentcookie wizard: Chrome CDP active at %s\n", ep.WebSocketURL())
-	fmt.Fprintln(os.Stderr, "agentcookie wizard: the first time the sink attaches, Chrome will show an 'Allow remote debugging' dialog; click Allow once")
-	return nil
 }
 
 func runWizardUninstall(cmd *cobra.Command, args []string) error {
@@ -625,15 +474,11 @@ peer:
 func renderSinkYAML(peer string) string {
 	// Bind to the local tailnet IP for sink listener if available; otherwise 0.0.0.0:9999.
 	listenAddr := defaultSinkListenAddr()
-	// v0.5 default: cdp.mode=attach. Sink connects to the user's real
-	// Chrome via the chrome://inspect/#remote-debugging activation, which
-	// the wizard wires up at install time. Legacy managed-Chrome mode is
-	// still available by setting `cdp.mode: managed` (see U3 for cleanup).
+	// v0.7: cdp.enabled is gone. Direct SQLite + leveldb file writes are
+	// the only path. The Chrome quit/relaunch ceremony around each sync
+	// is handled by the chromectl package.
 	return fmt.Sprintf(`listen:
   addr: %s
-cdp:
-  enabled: true
-  mode: attach
 peer:
   hostname: %s
 `, listenAddr, peer)
