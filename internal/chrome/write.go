@@ -56,7 +56,12 @@ func WriteCookies(dbPath string, cookies []Cookie, key []byte) (int, error) {
 
 	written := 0
 	for _, c := range cookies {
-		encrypted, err := encryptValue(c.Value, key)
+		// Chrome 127+ App-Bound Encryption: the decrypted plaintext Chrome
+		// expects is `SHA256(host_key) || actual_value`. Without the
+		// 32-byte prefix Chrome silently drops the cookie on next launch.
+		// stripAppBoundPrefix on read undoes this; prepend on write.
+		appBoundPlaintext := prependAppBoundPrefix([]byte(c.Value), c.HostKey)
+		encrypted, err := encryptValueBytes(appBoundPlaintext, key)
 		if err != nil {
 			return written, fmt.Errorf("encrypt %s/%s: %w", c.HostKey, c.Name, err)
 		}
@@ -79,6 +84,10 @@ func WriteCookies(dbPath string, cookies []Cookie, key []byte) (int, error) {
 }
 
 func encryptValue(plaintext string, key []byte) ([]byte, error) {
+	return encryptValueBytes([]byte(plaintext), key)
+}
+
+func encryptValueBytes(plaintext, key []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
@@ -171,15 +180,17 @@ func buildUpsert(cols map[string]bool) (string, func(rowInput) []any) {
 		placeholders = append(placeholders, "?")
 		// Skip primary-key columns and creation_utc from the UPDATE clause.
 		switch f.name {
-		case "host_key", "top_frame_site_key", "name", "path", "source_scheme", "source_port", "creation_utc":
+		case "host_key", "top_frame_site_key", "has_cross_site_ancestor", "name", "path", "source_scheme", "source_port", "creation_utc":
 			continue
 		}
 		updates = append(updates, fmt.Sprintf("%s=excluded.%s", f.name, f.name))
 	}
 
 	// Build conflict target from the columns that are actually present and form
-	// the unique key on every modern Chromium schema.
-	conflictCandidates := []string{"host_key", "top_frame_site_key", "name", "path", "source_scheme", "source_port"}
+	// the unique key on every modern Chromium schema. Chrome 134+ added
+	// has_cross_site_ancestor to the unique index; older Chromes don't have it
+	// in the schema at all and the present-filter below drops it.
+	conflictCandidates := []string{"host_key", "top_frame_site_key", "has_cross_site_ancestor", "name", "path", "source_scheme", "source_port"}
 	var conflictCols []string
 	for _, c := range conflictCandidates {
 		if cols[c] {

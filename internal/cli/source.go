@@ -193,11 +193,18 @@ func pushOnce(
 	} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
 		fmt.Fprintf(os.Stderr, "agentcookie source: localStorage pack failed (%v); continuing without it\n", err)
 	}
-	if it, sk, err := chromedirsync.Pack(chromepaths.IndexedDBDir(), 50*1024*1024); err == nil {
-		idbTarball = it
-		idbSkipped = sk
-	} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
-		fmt.Fprintf(os.Stderr, "agentcookie source: indexedDB pack failed (%v); continuing without it\n", err)
+	// IndexedDB is opt-in for v0.7: typical user dirs are 400MB+ (Gmail caches,
+	// Slack message history) and inlining that in the JSON envelope blows
+	// past the source-side POST timeout. Most PP CLIs auth via localStorage
+	// or cookies; IndexedDB is rarely an auth-state surface in practice.
+	// Set AGENTCOOKIE_SYNC_INDEXEDDB=1 to opt in.
+	if os.Getenv("AGENTCOOKIE_SYNC_INDEXEDDB") == "1" {
+		if it, sk, err := chromedirsync.Pack(chromepaths.IndexedDBDir(), 5*1024*1024); err == nil {
+			idbTarball = it
+			idbSkipped = sk
+		} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
+			fmt.Fprintf(os.Stderr, "agentcookie source: indexedDB pack failed (%v); continuing without it\n", err)
+		}
 	}
 
 	envelope := protocol.SyncEnvelope{
