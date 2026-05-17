@@ -214,6 +214,9 @@ func applyEnvelopeToSink(
 			if err != nil {
 				return fmt.Errorf("cookies: %w", err)
 			}
+			if rowCount, qerr := chrome.SqliteRowCount(cfg.Chrome.DBPath, "cookies"); qerr == nil {
+				fmt.Fprintf(os.Stderr, "agentcookie sink: post-commit verify: %d rows in cookies table (just wrote %d)\n", rowCount, n)
+			}
 		}
 		if len(env.LocalStorageTarball) > 0 {
 			n, err := replaceLevelDBDir(env.LocalStorageTarball, chromepaths.LocalStorageLevelDB())
