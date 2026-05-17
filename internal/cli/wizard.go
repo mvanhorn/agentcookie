@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mvanhorn/agentcookie/internal/chromeconn"
+	"github.com/mvanhorn/agentcookie/internal/clicker"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/launchd"
 	"github.com/mvanhorn/agentcookie/internal/pairing"
@@ -36,6 +37,8 @@ var (
 	wizardNoRestartChrome    bool
 	wizardSkipRemoteDebug    bool
 	wizardSkipExitNode       bool
+	wizardSkipAccessibility  bool
+	wizardAccessibilityWait  time.Duration
 )
 
 var wizardCmd = &cobra.Command{
@@ -92,6 +95,8 @@ func init() {
 	wizardInstallCmd.Flags().BoolVar(&wizardNoRestartChrome, "no-restart-chrome", false, "[sink] do not auto-quit/relaunch Chrome to activate the chrome://inspect remote-debugging toggle; Chrome must be restarted manually for attach mode to discover the CDP endpoint")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipRemoteDebug, "skip-remote-debug", false, "[sink] do not write the chrome://inspect remote-debugging preference; useful when running the wizard for managed-mode sink installs")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipExitNode, "skip-exit-node-hint", false, "do not detect Tailscale or print the sudo commands that route the sink's outbound traffic through the source machine")
+	wizardInstallCmd.Flags().BoolVar(&wizardSkipAccessibility, "skip-accessibility", false, "[sink] do not request macOS Accessibility permission; if attach mode requires the Allow-dialog auto-clicker, sink.yaml is downgraded to cdp.mode: managed")
+	wizardInstallCmd.Flags().DurationVar(&wizardAccessibilityWait, "accessibility-timeout", 5*time.Minute, "[sink] how long to wait for the user to toggle Accessibility for agentcookie in System Settings before falling back to managed mode")
 
 	wizardUninstallCmd.Flags().StringVar(&wizardRole, "as", "", "source | sink (required)")
 	wizardUninstallCmd.Flags().BoolVar(&wizardForce, "purge", false, "also delete configs and paired keys")
@@ -233,7 +238,40 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 		fmt.Fprintf(os.Stderr, "agentcookie wizard: paired with source %q (fingerprint %s)\n", wizardPeer, res.Fingerprint)
 	}
 
-	if !wizardSkipRemoteDebug {
+	// Decide attach vs managed before touching Chrome. Attach mode needs
+	// macOS Accessibility for the auto-clicker; managed mode does not. If
+	// Accessibility is denied or skipped, downgrade sink.yaml to managed
+	// mode so the daemon does not start in a broken state.
+	fallbackToManaged := false
+	if !wizardSkipAccessibility {
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: checking macOS Accessibility permission for the chrome://inspect Allow-dialog auto-clicker")
+		accessibilityCtx, cancel := context.WithTimeout(ctx, wizardAccessibilityWait)
+		err := clicker.EnsureGranted(accessibilityCtx, wizardAccessibilityWait, 1*time.Second)
+		cancel()
+		switch {
+		case err == nil:
+			fmt.Fprintln(os.Stderr, "agentcookie wizard: Accessibility permission granted; attach mode will auto-dismiss Chrome's Allow dialog")
+		case errors.Is(err, clicker.ErrAccessibilityTimeout):
+			fmt.Fprintf(os.Stderr, "agentcookie wizard: Accessibility permission was not granted within %s; falling back to managed mode (sink will spawn its own Chrome; some cookies may drop on Chrome's per-cookie validation)\n", wizardAccessibilityWait)
+			fallbackToManaged = true
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			fmt.Fprintln(os.Stderr, "agentcookie wizard: Accessibility check was canceled; falling back to managed mode")
+			fallbackToManaged = true
+		default:
+			return fmt.Errorf("Accessibility check: %w", err)
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: --skip-accessibility set; using managed mode (sink will spawn its own Chrome)")
+		fallbackToManaged = true
+	}
+
+	if fallbackToManaged {
+		if err := rewriteSinkYAMLToManaged(common.ConfigDir); err != nil {
+			return fmt.Errorf("downgrade sink.yaml to managed mode: %w", err)
+		}
+	}
+
+	if !wizardSkipRemoteDebug && !fallbackToManaged {
 		if err := ensureRemoteDebuggingEnabled(ctx); err != nil {
 			return fmt.Errorf("activate Chrome remote debugging: %w", err)
 		}
@@ -255,6 +293,38 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 	}
 
 	fmt.Fprintln(os.Stderr, "agentcookie wizard: sink install complete")
+	return nil
+}
+
+// rewriteSinkYAMLToManaged flips the cdp section of sink.yaml from attach
+// mode to managed mode in place. Used when the wizard's Accessibility
+// check fails (or is skipped) and attach mode would not work headlessly.
+//
+// The rewrite is a literal substring replacement against the canonical
+// renderSinkYAML output ("  mode: attach"). If the user has edited
+// sink.yaml in a non-canonical way (extra indentation, multiple cdp
+// blocks, etc.) the substring will not match and the rewrite is a no-op;
+// in that case the operator must edit by hand. The wizard surfaces this
+// case loudly so it does not fail silently.
+func rewriteSinkYAMLToManaged(configDir string) error {
+	path := filepath.Join(configDir, "sink.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	contents := string(data)
+	const attachLine = "  mode: attach"
+	const managedLine = "  managed: true"
+	if !strings.Contains(contents, attachLine) {
+		// Already managed mode or hand-edited; nothing to do.
+		fmt.Fprintf(os.Stderr, "agentcookie wizard: sink.yaml already uses managed mode (or has been hand-edited); leaving in place\n")
+		return nil
+	}
+	updated := strings.Replace(contents, attachLine, managedLine, 1)
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	fmt.Fprintln(os.Stderr, "agentcookie wizard: sink.yaml downgraded to cdp.managed: true")
 	return nil
 }
 

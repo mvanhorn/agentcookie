@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/chromeconn"
 	"github.com/mvanhorn/agentcookie/internal/chromemgr"
+	"github.com/mvanhorn/agentcookie/internal/clicker"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"github.com/mvanhorn/agentcookie/internal/state"
@@ -252,9 +254,43 @@ func writeCookiesToSink(ctx context.Context, cfg *config.SinkConfig, cookies []c
 			return 0, "attach", fmt.Errorf("chromeconn attach: %w", aerr)
 		}
 		defer cancelAttach()
+
+		// Chrome shows an "Allow remote debugging" dialog when this WebSocket
+		// first attempts to connect. Start the auto-clicker concurrently so
+		// the sink does not need a human at the keyboard. If the session is
+		// already trusted (subsequent sync after the first one), the clicker
+		// times out silently after 6 seconds. See docs/research/
+		// chrome-inspect-allow-dialog.md (v0.6 U1) for the dialog locator.
+		clickerDone := make(chan error, 1)
+		go func() {
+			clickerCtx, clickerCancel := context.WithTimeout(ctx, 6*time.Second)
+			defer clickerCancel()
+			clickerDone <- clicker.WaitForAndClick(clickerCtx, 6*time.Second, 250*time.Millisecond)
+		}()
+
 		callCtx, cancelCall := context.WithTimeout(attachCtx, 35*time.Second)
 		defer cancelCall()
 		written, failures, werr := chromeconn.WriteCookiesChunked(callCtx, cookies, 500)
+
+		// Drain the clicker without blocking on it. Surface anything actionable.
+		select {
+		case clickErr := <-clickerDone:
+			switch {
+			case clickErr == nil:
+				// Clicker fired successfully; the dialog appeared and was clicked.
+			case errors.Is(clickErr, clicker.ErrDialogTimeout):
+				// No dialog appeared (already trusted, or Chrome did not gate).
+			case errors.Is(clickErr, clicker.ErrChromeNotRunning):
+				fmt.Fprintln(os.Stderr, "agentcookie sink: clicker reports Chrome is not running")
+			case errors.Is(clickErr, clicker.ErrAccessibilityDenied):
+				fmt.Fprintln(os.Stderr, "agentcookie sink: Accessibility permission not granted; auto-click cannot run. Re-run 'agentcookie wizard install --as sink' to fix.")
+			default:
+				fmt.Fprintf(os.Stderr, "agentcookie sink: clicker errored: %v\n", clickErr)
+			}
+		default:
+			// Clicker goroutine still running after the chromedp.Run returned;
+			// it will finish on its own (deadline-bounded, won't leak).
+		}
 		if werr != nil {
 			return written, "attach", fmt.Errorf("chromeconn write: %w", werr)
 		}
