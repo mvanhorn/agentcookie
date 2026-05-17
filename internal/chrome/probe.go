@@ -69,7 +69,14 @@ func ProbeCookiesFile(path string, key []byte, maxRows int) (ProbeResult, error)
 	}
 	defer db.Close()
 
-	rows, err := db.Query(`SELECT host_key, encrypted_value FROM cookies WHERE LENGTH(encrypted_value) > 0 LIMIT ?`, maxRows)
+	// ORDER BY last_update_utc DESC so the probe samples the cookies the
+	// sink JUST wrote, not whatever legacy rows SQLite happens to return
+	// first. Without this, a sink running against a Cookies file that
+	// still contains stale v0.7/v0.8-era cookies (with the App-Bound
+	// 32-byte plaintext prefix) reports app-bound-leaks > 0 even when
+	// v0.9's fresh writes are correct, because the probe's sample never
+	// touches the new rows.
+	rows, err := db.Query(`SELECT host_key, encrypted_value FROM cookies WHERE LENGTH(encrypted_value) > 0 ORDER BY last_update_utc DESC LIMIT ?`, maxRows)
 	if err != nil {
 		return result, fmt.Errorf("probe query cookies: %w", err)
 	}
