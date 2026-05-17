@@ -18,6 +18,7 @@ Pre-release. v0.1 in active development. Watch the repo for the launch announcem
 - Pairing handshake: X25519 + HKDF-SHA256 salted with a one-time code. Derived 32-byte keys land at `~/.config/agentcookie/keys/<peer>.json` mode 0600.
 - Cookie acquisition on macOS: read Chrome cookies SQLite read-only with `immutable=1`, decrypt v10 ciphertext using the Keychain Safe Storage key.
 - Cookie write (v0.9): plain v10 mode + `meta.version=18` pin so any kooky v0.2.2 caller on the Mac mini sink reads cookies directly without paste-from-laptop ceremony. Schema-aware INSERT ... ON CONFLICT adapts to Chrome's evolving column set (`top_frame_site_key`, `source_type`, `has_cross_site_ancestor`). Sink stays Chrome-quit so the version migration never fires.
+- Keychain access (v0.10): one-time wizard step broadens Chrome Safe Storage ACL via `add-generic-password -A` inside a one-shot LaunchAgent, so every kooky-using CLI on the sink (instacart-pp-cli, bird, future PP CLIs) reads silently from SSH or LaunchAgent context. No per-binary Always-Allow clicks.
 - Live-Chrome injection: sink probes Chrome's DevTools port and uses `Storage.setCookies` for instant in-memory visibility. Falls back to SQLite write if Chrome isn't debuggable.
 - Wire protocol v1: versioned `SyncEnvelope` with monotonic Sequence (replay defense), source hostname, cookies. Documented in `docs/protocol.md`.
 - Sink-side allowlist enforcement: defense in depth even if the source is compromised.

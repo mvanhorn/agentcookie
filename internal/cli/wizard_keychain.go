@@ -1,6 +1,8 @@
 package cli
 
 import (
+	cryptorand "crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -155,18 +157,35 @@ type kcStrategy struct {
 func buildStrategies(extraBinaries []string) []kcStrategy {
 	out := []kcStrategy{
 		{
+			// Primary v0.10 strategy: delete the existing Chrome Safe Storage
+			// item, recreate it with -A ("any application may access without
+			// warning") and a fresh random password. The delete works from
+			// LaunchAgent context with an unlocked login keychain; the
+			// add-with-A works on a fresh (no-prior-ACL) item without a
+			// login-password prompt. Rotates the password as a side effect;
+			// agentcookie sink re-reads on next operation and the next source
+			// sync overwrites cookies with the new derivation. Mac mini Chrome
+			// stays quit, so Chrome's own cookies-encrypted-with-old-password
+			// concern does not bite.
+			name: "delete-and-recreate-with-A",
+			apply: func() (string, error) {
+				_, _ = execSecurity("delete-generic-password",
+					"-s", "Chrome Safe Storage", "-a", "Chrome") // best-effort; ok if item missing
+				pw := randomKeychainPassword()
+				return execSecurity("add-generic-password",
+					"-s", "Chrome Safe Storage", "-a", "Chrome",
+					"-w", pw, "-A")
+			},
+		},
+		{
+			// Fallback 1: try the partition-list expansion. Requires the
+			// login password in practice on modern macOS, so this usually
+			// fails from a LaunchAgent; kept here in case a future macOS
+			// version relaxes the requirement.
 			name: "partition-list:apple-tool,apple",
 			apply: func() (string, error) {
 				return execSecurity("set-generic-password-partition-list",
 					"-S", "apple-tool:,apple:",
-					"-s", "Chrome Safe Storage", "-a", "Chrome")
-			},
-		},
-		{
-			name: "partition-list:apple-tool,apple,teamid",
-			apply: func() (string, error) {
-				return execSecurity("set-generic-password-partition-list",
-					"-S", "apple-tool:,apple:,teamid:",
 					"-s", "Chrome Safe Storage", "-a", "Chrome")
 			},
 		},
@@ -177,9 +196,6 @@ func buildStrategies(extraBinaries []string) []kcStrategy {
 		out = append(out, kcStrategy{
 			name: "trust-list:" + filepath.Base(bin),
 			apply: func() (string, error) {
-				// Update existing item: preserve password, add this binary to trust list.
-				// Requires reading the current password first (which works from LaunchAgent
-				// context because keychain is unlocked).
 				pw, err := chrome.SafeStoragePassword()
 				if err != nil {
 					return "", fmt.Errorf("read existing password: %w", err)
@@ -192,6 +208,20 @@ func buildStrategies(extraBinaries []string) []kcStrategy {
 	}
 
 	return out
+}
+
+// randomKeychainPassword returns 16 random bytes base64-encoded (~22 chars).
+// Chrome uses a similar 16-byte random secret for its Safe Storage item;
+// matching the shape keeps any future Chrome interop reasonable.
+func randomKeychainPassword() string {
+	b := make([]byte, 16)
+	if _, err := cryptorand.Read(b); err != nil {
+		// Fall back to a less-random but non-empty default. This branch is
+		// essentially unreachable on darwin where crypto/rand is the system
+		// RNG; the fallback exists so the caller never gets an empty password.
+		return "agentcookie-fallback-secret"
+	}
+	return base64.RawStdEncoding.EncodeToString(b)
 }
 
 // tryStrategy applies one strategy, then probes via the keybase/go-keychain

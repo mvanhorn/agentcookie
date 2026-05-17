@@ -35,42 +35,51 @@ func TestLastJSONLine_TrailingNewlinesIgnored(t *testing.T) {
 	}
 }
 
-func TestBuildStrategies_DefaultsToTwoPartitionStrategies(t *testing.T) {
+func TestBuildStrategies_PrimaryIsDeleteAndRecreate(t *testing.T) {
 	s := buildStrategies(nil)
-	if len(s) != 2 {
-		t.Errorf("default strategy count: got %d, want 2", len(s))
+	if len(s) < 1 {
+		t.Fatal("expected at least one default strategy")
 	}
-	if !strings.Contains(s[0].name, "apple-tool,apple") || strings.Contains(s[0].name, "teamid") {
-		t.Errorf("first strategy should be apple-tool,apple without teamid, got %q", s[0].name)
-	}
-	if !strings.Contains(s[1].name, "teamid") {
-		t.Errorf("second strategy should include teamid, got %q", s[1].name)
+	if s[0].name != "delete-and-recreate-with-A" {
+		t.Errorf("primary strategy: got %q, want delete-and-recreate-with-A (this is the only strategy proven to work headlessly on macOS 25+)", s[0].name)
 	}
 }
 
-func TestBuildStrategies_ExtraBinariesAppearAsTrustListStrategies(t *testing.T) {
-	s := buildStrategies([]string{"/Users/me/go/bin/instacart-pp-cli", "/Users/me/go/bin/bird"})
-	if len(s) != 4 {
-		t.Fatalf("expected 2 default + 2 extra-binary strategies, got %d", len(s))
+func TestBuildStrategies_PartitionListFallbackComesSecond(t *testing.T) {
+	s := buildStrategies(nil)
+	if len(s) < 2 {
+		t.Fatal("expected partition-list fallback to exist")
 	}
-	if !strings.Contains(s[2].name, "trust-list:") || !strings.Contains(s[2].name, "instacart-pp-cli") {
-		t.Errorf("third strategy: got %q, want trust-list:instacart-pp-cli", s[2].name)
-	}
-	if !strings.Contains(s[3].name, "trust-list:") || !strings.Contains(s[3].name, "bird") {
-		t.Errorf("fourth strategy: got %q, want trust-list:bird", s[3].name)
+	if !strings.HasPrefix(s[1].name, "partition-list:") {
+		t.Errorf("second strategy should be partition-list fallback, got %q", s[1].name)
 	}
 }
 
-func TestBuildStrategies_PartitionListStrategiesComeFirst(t *testing.T) {
-	// Sequence matters: partition list is the cheaper, more universal fix.
-	// Per-binary trust list is a fallback. Verify ordering.
-	s := buildStrategies([]string{"/path/to/cli"})
-	for i := 0; i < 2; i++ {
-		if !strings.HasPrefix(s[i].name, "partition-list:") {
-			t.Errorf("strategy %d should be partition-list, got %q", i, s[i].name)
-		}
+func TestBuildStrategies_ExtraBinariesAppearAfterDefaultStrategies(t *testing.T) {
+	defaults := buildStrategies(nil)
+	withExtras := buildStrategies([]string{"/Users/me/go/bin/instacart-pp-cli", "/Users/me/go/bin/bird"})
+	if len(withExtras) != len(defaults)+2 {
+		t.Fatalf("expected %d default + 2 extra-binary strategies, got %d", len(defaults), len(withExtras))
 	}
-	if !strings.HasPrefix(s[2].name, "trust-list:") {
-		t.Errorf("strategy 2 should be trust-list, got %q", s[2].name)
+	last2 := withExtras[len(defaults):]
+	if !strings.Contains(last2[0].name, "trust-list:") || !strings.Contains(last2[0].name, "instacart-pp-cli") {
+		t.Errorf("first extra strategy: got %q, want trust-list:instacart-pp-cli", last2[0].name)
+	}
+	if !strings.Contains(last2[1].name, "trust-list:") || !strings.Contains(last2[1].name, "bird") {
+		t.Errorf("second extra strategy: got %q, want trust-list:bird", last2[1].name)
+	}
+}
+
+func TestRandomKeychainPassword_NonEmptyAndUnique(t *testing.T) {
+	a := randomKeychainPassword()
+	b := randomKeychainPassword()
+	if a == "" {
+		t.Error("password is empty")
+	}
+	if a == b {
+		t.Errorf("two consecutive calls returned same value: %q", a)
+	}
+	if len(a) < 16 {
+		t.Errorf("password unexpectedly short (%d chars): %q", len(a), a)
 	}
 }
