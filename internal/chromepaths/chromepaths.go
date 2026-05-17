@@ -38,3 +38,13 @@ func LocalStorageLevelDB() string {
 func IndexedDBDir() string {
 	return filepath.Join(DefaultProfileDir(), "IndexedDB")
 }
+
+// SidecarCookiesDB returns the agentcookie bridge sidecar path. PP CLIs
+// read from this file (or honor the AGENTCOOKIE_PLAIN_COOKIES env var
+// pointing at it) to get cookies without Keychain access. Plaintext
+// values, Chrome-shaped schema. Default location is
+// ~/.agentcookie/cookies-plain.db, mode 0600.
+func SidecarCookiesDB() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".agentcookie", "cookies-plain.db")
+}
