@@ -218,6 +218,15 @@ func applyEnvelopeToSink(
 			if rowCount, qerr := chrome.SqliteRowCount(cfg.Chrome.DBPath, "cookies"); qerr == nil {
 				fmt.Fprintf(os.Stderr, "agentcookie sink: post-commit verify: %d rows in cookies table (just wrote %d)\n", rowCount, n)
 			}
+			// v0.9 probe: decrypt a few rows the way kooky v0.2.2 would and
+			// confirm no App-Bound prefix leakage + meta.version=18 pin.
+			// Fails loud in sink stderr so a regression is visible before
+			// any agent run hits broken cookies.
+			if probe, perr := chrome.ProbeCookiesFile(cfg.Chrome.DBPath, key, 3); perr != nil {
+				fmt.Fprintf(os.Stderr, "agentcookie sink: %s (error: %v)\n", "probe error", perr)
+			} else {
+				fmt.Fprintf(os.Stderr, "agentcookie sink: %s\n", probe.Summary())
+			}
 			// v0.8 bridge: also write a plaintext-value sidecar at
 			// ~/.agentcookie/cookies-plain.db. PP CLIs reading this path
 			// get cookies without Keychain prompts and without kooky's
