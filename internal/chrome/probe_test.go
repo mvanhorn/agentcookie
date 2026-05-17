@@ -128,6 +128,63 @@ func TestProbeCookiesFile_FileMissingReturnsError(t *testing.T) {
 	}
 }
 
+func TestProbeCookiesFile_SamplesRecentlyWrittenCookies(t *testing.T) {
+	// Regression: a Cookies file that contains legacy v0.7/v0.8-style
+	// cookies (App-Bound 32-byte prefix in plaintext) plus a fresh v0.9
+	// write should report probe.OK() based on the FRESH cookies, not
+	// the stale ones SQLite happens to return first. Without ORDER BY
+	// last_update_utc DESC, the probe samples whichever rows SQLite
+	// returns and falsely reports app-bound-leaks > 0 even though the
+	// sink's actual fresh writes are correct.
+	path := filepath.Join(t.TempDir(), "Cookies")
+	seedEmptyCookiesDB(t, path)
+
+	host := ".instacart.com"
+	value := "fresh-session-token"
+
+	// Insert one OLD App-Bound-shaped cookie (last_update_utc=100).
+	staleEnc, err := encryptValueBytes(prependAppBoundPrefix([]byte("legacy-value"), host), testKey)
+	if err != nil {
+		t.Fatalf("encrypt stale: %v", err)
+	}
+	db, _ := sql.Open("sqlite3", "file:"+path)
+	if _, err := db.Exec(`INSERT INTO cookies (creation_utc, host_key, top_frame_site_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent, priority, samesite, source_scheme, source_port, last_update_utc, source_type, has_cross_site_ancestor) VALUES (0, ?, '', 'stale', '', ?, '/', 0, 1, 0, 0, 0, 0, 1, 0, 2, 443, 100, 0, 1)`, host, staleEnc); err != nil {
+		t.Fatalf("insert stale: %v", err)
+	}
+
+	// Insert one fresh plain-v10 cookie (last_update_utc=999999).
+	freshEnc, err := encryptValueBytes([]byte(value), testKey)
+	if err != nil {
+		t.Fatalf("encrypt fresh: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO cookies (creation_utc, host_key, top_frame_site_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent, priority, samesite, source_scheme, source_port, last_update_utc, source_type, has_cross_site_ancestor) VALUES (0, ?, '', 'fresh', '', ?, '/', 0, 1, 0, 0, 0, 0, 1, 0, 2, 443, 999999, 0, 1)`, host, freshEnc); err != nil {
+		t.Fatalf("insert fresh: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS meta (key LONGVARCHAR NOT NULL UNIQUE PRIMARY KEY, value LONGVARCHAR)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO meta(key, value) VALUES ('version', '18')`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	// Probe with maxRows=1: should sample the FRESH cookie (highest
+	// last_update_utc) and report no leaks.
+	probe, err := ProbeCookiesFile(path, testKey, 1)
+	if err != nil {
+		t.Fatalf("ProbeCookiesFile: %v", err)
+	}
+	if probe.RowsChecked != 1 {
+		t.Errorf("RowsChecked: got %d, want 1", probe.RowsChecked)
+	}
+	if probe.AppBoundLeaks != 0 {
+		t.Errorf("AppBoundLeaks: got %d, want 0 (probe sampled stale row, not fresh)", probe.AppBoundLeaks)
+	}
+	if !probe.OK() {
+		t.Errorf("OK() should be true after fresh write; got %#v", probe)
+	}
+}
+
 func TestProbeResult_SummaryShape(t *testing.T) {
 	ok := ProbeResult{RowsChecked: 5, AppBoundLeaks: 0, MetaVersion: "18"}
 	if got := ok.Summary(); got == "" {
