@@ -55,6 +55,13 @@ func IsRunning() (bool, error) {
 // QuitAndWait sends Chrome a graceful AppleEvent quit and polls until the
 // process is gone. Returns nil immediately if Chrome was not running.
 // Use this before any write to Chrome's on-disk state.
+//
+// "quit saving no" tells Chrome to skip any beforeunload prompts. Chrome's
+// Cmd+Q-confirmation setting is also bypassed. If AppleScript still gets
+// canceled (-128, "User canceled" — happens when Chrome's quit-on-Cmd+Q
+// warning is on AND a page has beforeunload AND Chrome decides to
+// suppress the AppleEvent), the function falls back to SIGTERM via pkill,
+// then SIGKILL if SIGTERM doesn't take.
 func QuitAndWait(ctx context.Context, timeout time.Duration) error {
 	running, err := IsRunning()
 	if err != nil {
@@ -63,10 +70,15 @@ func QuitAndWait(ctx context.Context, timeout time.Duration) error {
 	if !running {
 		return nil
 	}
-	cmd := exec.CommandContext(ctx, "/usr/bin/osascript", "-e", `tell application "Google Chrome" to quit`)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("chromectl: osascript quit: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
+
+	// First try: AppleScript with "saving no" to bypass beforeunload prompts.
+	cmd := exec.CommandContext(ctx, "/usr/bin/osascript", "-e", `tell application "Google Chrome" to quit saving no`)
+	out, err := cmd.CombinedOutput()
+	stderr := strings.TrimSpace(string(out))
+	appleScriptFailed := err != nil
+
+	// Even if AppleScript reported success, poll briefly to confirm. Chrome
+	// can swallow the quit AppleEvent and stay running.
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		select {
@@ -81,6 +93,49 @@ func QuitAndWait(ctx context.Context, timeout time.Duration) error {
 		if !running {
 			return nil
 		}
+		// If the AppleScript reported "user canceled" and Chrome is still up,
+		// bail out of the polite path early and use signals.
+		if appleScriptFailed && strings.Contains(stderr, "-128") {
+			break
+		}
+	}
+
+	// Fallback: SIGTERM the Chrome processes directly.
+	_ = exec.CommandContext(ctx, "/usr/bin/pkill", "-TERM", "-x", "Google Chrome").Run()
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+		running, err := IsRunning()
+		if err != nil {
+			return err
+		}
+		if !running {
+			return nil
+		}
+	}
+
+	// Last resort: SIGKILL.
+	_ = exec.CommandContext(ctx, "/usr/bin/pkill", "-KILL", "-x", "Google Chrome").Run()
+	hardDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(hardDeadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+		running, err := IsRunning()
+		if err != nil {
+			return err
+		}
+		if !running {
+			return nil
+		}
+	}
+	if appleScriptFailed {
+		return fmt.Errorf("chromectl: %w (osascript: %s; signals did not stop Chrome)", ErrQuitTimeout, stderr)
 	}
 	return ErrQuitTimeout
 }

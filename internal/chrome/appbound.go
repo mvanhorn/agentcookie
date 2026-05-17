@@ -26,3 +26,16 @@ func stripAppBoundPrefix(plaintext []byte, hostKey string) []byte {
 	}
 	return plaintext[sha256.Size:]
 }
+
+// prependAppBoundPrefix is the inverse of stripAppBoundPrefix: prepends the
+// SHA256(host_key) prefix before v10 encryption so Chrome 127+ accepts the
+// cookie on decrypt. Without the prefix, Chrome silently drops the cookie
+// on the next launch (cookie passes SQLite write but doesn't survive the
+// in-memory load).
+func prependAppBoundPrefix(plaintext []byte, hostKey string) []byte {
+	prefix := sha256.Sum256([]byte(hostKey))
+	out := make([]byte, sha256.Size+len(plaintext))
+	copy(out, prefix[:])
+	copy(out[sha256.Size:], plaintext)
+	return out
+}
