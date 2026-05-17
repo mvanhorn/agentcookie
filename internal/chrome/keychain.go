@@ -6,6 +6,7 @@ import (
 	"crypto/pbkdf2"
 	"crypto/sha1"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -44,4 +45,50 @@ func DeriveAESKey(password string) ([]byte, error) {
 		return nil, fmt.Errorf("pbkdf2: %w", err)
 	}
 	return key, nil
+}
+
+// DefaultPartitionList is the partition string SetSafeStoragePartitionList
+// uses when its argument is empty. Apple-signed binaries and Apple-tool
+// callers (like the `security` CLI) read Chrome Safe Storage without a GUI
+// prompt under this list. Ad-hoc-signed Go binaries (most PP CLIs) still
+// need a one-time "Always Allow" click on first read; the partition list
+// is groundwork, not a complete grant.
+const DefaultPartitionList = "apple-tool:,apple:"
+
+// buildPartitionListArgv returns the argv for the `security` command that
+// updates the Chrome Safe Storage partition list. Split out from
+// SetSafeStoragePartitionList so the argv shape is unit-testable without
+// shelling out.
+func buildPartitionListArgv(partitions string) []string {
+	if partitions == "" {
+		partitions = DefaultPartitionList
+	}
+	return []string{
+		"set-generic-password-partition-list",
+		"-S", partitions,
+		"-s", keychainService,
+		"-a", keychainAccount,
+	}
+}
+
+// SetSafeStoragePartitionList expands the partition list on the Chrome
+// Safe Storage Keychain item so headless callers can read it with no GUI
+// prompt. macOS prompts the user for their login keychain password the
+// first time this runs; subsequent runs with the same list are no-ops.
+// Idempotent.
+//
+// Passing partitions = "" uses DefaultPartitionList. Ad-hoc-signed
+// binaries (most Go CLIs) are NOT covered by the default and still need
+// their own one-time Always Allow click on first read; the partition list
+// covers Apple-tool intermediaries (e.g., the `security` CLI itself).
+func SetSafeStoragePartitionList(partitions string) error {
+	argv := buildPartitionListArgv(partitions)
+	cmd := exec.Command("security", argv...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("set Chrome Safe Storage partition list (login keychain password required): %w", err)
+	}
+	return nil
 }

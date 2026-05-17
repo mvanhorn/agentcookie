@@ -35,6 +35,7 @@ var (
 	wizardSkipDaemon         bool
 	wizardSkipExitNode       bool
 	wizardSkipKeychainPrompt bool
+	wizardSkipPartitionList  bool
 	wizardSkipBridgeHint     bool
 )
 
@@ -91,6 +92,7 @@ func init() {
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipDaemon, "skip-daemon", false, "skip installing the LaunchAgent (configs + pairing only)")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipExitNode, "skip-exit-node-hint", false, "do not detect Tailscale or print the sudo commands that route the sink's outbound traffic through the source machine")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipKeychainPrompt, "skip-keychain-prompt", false, "[sink] do not trigger the Chrome Safe Storage Keychain prompt during install; the sink daemon will prompt on first sync instead")
+	wizardInstallCmd.Flags().BoolVar(&wizardSkipPartitionList, "skip-partition-list", false, "[sink] do not expand the Chrome Safe Storage Keychain partition list; PP CLIs using Apple-tool callers may then prompt on first read")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipBridgeHint, "skip-bridge-hint", false, "[sink] do not print the cookie-bridge env-var integration hint at install end")
 
 	wizardUninstallCmd.Flags().StringVar(&wizardRole, "as", "", "source | sink (required)")
@@ -243,6 +245,21 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 			return fmt.Errorf("Keychain access: %w (re-run after granting Always Allow, or pass --skip-keychain-prompt)", err)
 		}
 		fmt.Fprintln(os.Stderr, "agentcookie wizard: Keychain access granted; sink daemon can run unattended")
+	}
+
+	// v0.9: expand the Chrome Safe Storage partition list so Apple-tool
+	// callers (e.g., the `security` CLI used by various PP-CLI side scripts)
+	// can read the password without a GUI prompt. macOS prompts once for
+	// the user's login keychain password to authorize the change. Ad-hoc-
+	// signed Go binaries (most PP CLIs) still need their own one-time
+	// Always Allow click on first read; the partition list is groundwork,
+	// not a blanket grant. See plan 2026-05-17-003.
+	if !wizardSkipPartitionList {
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: expanding Chrome Safe Storage partition list (you may be prompted for your login keychain password)")
+		if err := chrome.SetSafeStoragePartitionList(""); err != nil {
+			return fmt.Errorf("partition list grant: %w (re-run after granting, or pass --skip-partition-list)", err)
+		}
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: partition list granted (Apple-tool callers can now read Safe Storage silently)")
 	}
 
 	if !wizardSkipDaemon {
