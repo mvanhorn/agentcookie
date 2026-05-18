@@ -66,16 +66,36 @@ Shipped:
   AES-256-GCM cipher; legacy free-form `security.shared_secret`
   values below 32 bytes are now refused at config load.
 
+Sealing posture in v0.12: shipped but off by default.
+
+The at-rest sealing for the sidecar (U6) and adapter session files
+(U7) is wired into the writers but the wizard install does NOT
+create the `agentcookie-master` Keychain item by default. The PP
+CLI consumer side of the sealing handshake (U12, tracked in
+cli-printing-press) has not shipped yet; turning sealing on
+without that release would break v0.11 PP CLIs that read plaintext
+sidecars and adapter session files.
+
+To opt in once the matching cli-printing-press release lands:
+
+```
+agentcookie wizard set-keychain-access --enable-sealing
+```
+
+Threat-survey finding S5 (plaintext cookie sidecar at rest) stays
+open in the default install. Operators who only run agentcookie-
+controlled binaries on the sink can opt in immediately and close
+S5 themselves; the rest wait on U12. Chrome Safe Storage's `-T`
+ACL (replacing v0.10's any-app `-A`) is installed in both modes;
+only the master key step is gated.
+
 Pending follow-up:
 
 - U12: PP CLI sidecar-reader migration in cli-printing-press. Each
   of the five built-in adapter PP CLIs gains a small import of
   `pkg/sidecar` so it reads sealed session caches transparently.
-  v0.12 ships the writer side and the public reader API; the PP CLI
-  consumer-side change tracks in cli-printing-press. Until that
-  migration lands, PP CLIs continue to work against v0.11-shape
-  plaintext sidecars (the sink falls back when the master key
-  Keychain item is absent).
+  Unblocks flipping `--enable-sealing` to the default in a future
+  agentcookie release.
 
 ### v0.11: sinkpush adapter pushes cookies into each PP CLI's session cache
 

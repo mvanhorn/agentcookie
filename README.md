@@ -126,18 +126,18 @@ Pre-release. macOS-only on both ends today: source-side cookie paths and decrypt
 
 Working today:
 
-- Continuous laptop -> sink sync (fsnotify on Chrome's Cookies file, debounced, allowlist-filtered, AES-256-GCM-sealed)
-- Sink writes Chrome's Cookies SQLite plus a sealed sidecar at `~/.agentcookie/cookies-plain.db`; PP CLIs link `pkg/sidecar.ReadSidecar` to unseal transparently
-- Five built-in PP CLI adapters push sealed session caches after every sync
+- Continuous laptop -> sink sync (fsnotify on Chrome's Cookies file, debounced, allowlist-filtered, AES-256-GCM over Tailscale)
+- Sink writes Chrome's Cookies SQLite plus a sidecar at `~/.agentcookie/cookies-plain.db`. At-rest sealing of the sidecar and adapter session files is wired up but off by default; turns on via `wizard set-keychain-access --enable-sealing` once U12 PP CLI support ships in cli-printing-press
+- Five built-in PP CLI adapters push session caches after every sync (plaintext today; sealed when sealing is opted in)
 - Tailnet-only listeners on both ends (sink and pair endpoints refuse `0.0.0.0`); pair endpoint rate-limited with a 64-bit code
 - Sink-side blocklist + allowlist, persistent replay defense (nanosecond sequence survives restart)
-- Apple Developer ID signed binaries; per-binary Keychain ACL on both Chrome Safe Storage and the new `agentcookie-master` key
+- Apple Developer ID signed binaries; per-binary `-T` Keychain ACL on Chrome Safe Storage replaces v0.10's any-app ACL
 - One-time install ceremony covered by `agentcookie wizard install`
-- 258 unit tests across 22 packages
+- 261 unit tests across 22 packages
 
 Not yet:
 
-- PP CLI sidecar-reader migration in cli-printing-press so each adapter PP CLI links `pkg/sidecar` directly (U12; the sink falls back to plaintext when older PP CLIs are detected)
+- PP CLI sidecar-reader migration in cli-printing-press so each adapter PP CLI links `pkg/sidecar` directly (U12). Unblocks flipping at-rest sealing on by default and closes threat-survey finding S5
 - `agentcookie pair --rotate` for live key rotation
 - One-to-many fan-out (one laptop, multiple sinks)
 - Linux + Windows source and sink support

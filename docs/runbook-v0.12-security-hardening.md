@@ -17,14 +17,31 @@ What changed behind the curtain:
 
 ## One-time install
 
-On a fresh Mac mini sink, the v0.12 wizard install runs the same `agentcookie wizard install --as sink ...` command as v0.11. The added steps run automatically:
+On a fresh Mac mini sink, the v0.12 wizard install runs the same `agentcookie wizard install --as sink ...` command as v0.11. Steps:
 
 1. Detect the Tailscale 100.x interface and write it as `listen.addr` in `sink.yaml`.
 2. Build a trust list naming the agentcookie sink binary (resolved via `os.Executable` + `filepath.EvalSymlinks`) plus each adapter binary passed via `--extra-binary`.
-3. Recreate the Chrome Safe Storage Keychain item with the v0.12 `-T` ACL.
-4. Create the `agentcookie-master` Keychain item (32 random bytes, hex-encoded) with the same `-T` ACL.
+3. Recreate the Chrome Safe Storage Keychain item with the v0.12 `-T` ACL. Replaces the v0.10 `-A` (any-app) ACL.
 
 A single Keychain unlock prompt fires once. After that, every silent read from the sink binary and registered adapter binaries works headlessly.
+
+## At-rest sealing (opt-in, off by default in v0.12)
+
+The sidecar SQLite and adapter session files have at-rest sealing wired up under the `agentcookie-master` Keychain item, but the wizard install does NOT create that Keychain item by default. The PP CLI consumer side of sealing (U12) has not shipped in cli-printing-press yet; turning sealing on without the matching PP CLI release would break v0.11 PP CLI reads.
+
+To opt in once the matching cli-printing-press release lands:
+
+```
+agentcookie wizard set-keychain-access --enable-sealing
+```
+
+After that command, the `agentcookie-master` Keychain item exists and the next sync writes sealed envelopes to the sidecar and adapter session files. To revert:
+
+```
+security delete-generic-password -s agentcookie-master -a agentcookie
+```
+
+The sink falls back to plaintext writes on the next sync.
 
 ## Verify
 
@@ -33,9 +50,10 @@ A single Keychain unlock prompt fires once. After that, every silent read from t
 security find-identity -v -p codesigning
 # Expect one identity matching "Developer ID Application: ... (NM8VT393AR)"
 
-# Confirm master key Keychain item exists
+# Confirm master key Keychain item is OFF (v0.12 default)
 security find-generic-password -s agentcookie-master -a agentcookie
-# Expect a "keychain:" line; no value (the -w flag would print it)
+# Expect: "could not be found in the keychain" (sealing off by default)
+# After `wizard set-keychain-access --enable-sealing`: expect a "keychain:" line
 
 # Confirm Chrome Safe Storage carries the v0.12 -T allowlist
 security dump-keychain | grep -A 5 "Chrome Safe Storage"
@@ -56,8 +74,8 @@ strings ~/.agentcookie/cookies-plain.db | head
 |---|---|---|
 | Sink fails to start with "listen.addr is required" | `sink.yaml` was generated before v0.12 | Re-run `agentcookie wizard install --as sink` to detect the Tailscale interface and write a concrete listen address. |
 | Sink fails to start with "Tailscale not running" | `tailscaled` is stopped | Start Tailscale (`tailscale up`) then re-run the wizard install. |
-| `agentcookie status` shows `master key: missing` | The `agentcookie-master` Keychain item was deleted | Re-run `agentcookie wizard install --as sink`; the master key is recreated and the trust list reapplied. Existing sealed sidecar / adapter session files become unreadable until the next source sync repopulates them. |
-| Sealed sidecar present but a PP CLI returns empty cookies | PP CLI is still on v0.11 and reads `value` directly; sees the `agc1:` prefix as gibberish | Update the PP CLI to import `pkg/sidecar.ReadSidecar` (U12 work in cli-printing-press). Until then, the sink falls back to plaintext when the master key is absent; deleting the master key Keychain item is a temporary workaround. |
+| `agentcookie status` shows `master key: missing` AND sealing is supposed to be on | The `agentcookie-master` Keychain item was deleted or never created | Run `agentcookie wizard set-keychain-access --enable-sealing`. The master key is created with the trust list reapplied. Existing sealed sidecar / adapter session files become unreadable until the next source sync repopulates them. |
+| Sealed sidecar present but a PP CLI returns empty cookies | PP CLI is still on v0.11 and reads `value` directly; sees the `agc1:` prefix as gibberish | Either update the PP CLI to import `pkg/sidecar.ReadSidecar` (U12 work in cli-printing-press) or revert sealing with `security delete-generic-password -s agentcookie-master -a agentcookie`. |
 | Pair endpoint returns 429 | Per-IP rate limit hit | Wait 500ms per token (max 5 tokens accumulate). Confirm the source's pair URL is correct; a typo in the URL hostname leads to repeated wrong-code POSTs. |
 | Pair endpoint hangs | Pre-v0.12 source talking to a v0.12 sink | The PairTimeout (10 minutes) still applies; the 30-second client-side timeout is the new floor. Update both ends to v0.12. |
 
