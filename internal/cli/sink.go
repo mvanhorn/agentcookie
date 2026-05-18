@@ -17,6 +17,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/cli/httpserver"
 	"github.com/mvanhorn/agentcookie/internal/config"
+	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 	"github.com/mvanhorn/agentcookie/internal/state"
@@ -308,12 +309,26 @@ func applyEnvelopeToSink(
 			} else {
 				fmt.Fprintf(os.Stderr, "agentcookie sink: %s\n", probe.Summary())
 			}
-			// v0.8 bridge: also write a plaintext-value sidecar at
-			// ~/.agentcookie/cookies-plain.db. PP CLIs reading this path
-			// get cookies without Keychain prompts and without kooky's
-			// App-Bound-decryption complaint. Sidecar errors are logged
-			// but non-fatal: the real Chrome write is the source of truth.
-			if sidecarN, sidecarErr := chrome.WriteCookiesSidecar(chromepaths.SidecarCookiesDB(), cookies); sidecarErr != nil {
+			// v0.8 bridge: also write a sidecar at
+			// ~/.agentcookie/cookies-plain.db. PP CLIs reading via
+			// pkg/sidecar get cookies without Keychain prompts and
+			// without kooky's App-Bound-decryption complaint. Sidecar
+			// errors are logged but non-fatal: the real Chrome write
+			// is the source of truth.
+			//
+			// v0.12: if the agentcookie-master Keychain item exists
+			// (set up by `wizard install`), the sink seals each value
+			// before writing. PP CLIs that link pkg/sidecar.ReadSidecar
+			// unseal transparently; older PP CLIs that read `value`
+			// directly see opaque envelopes (a v0.12 transition cost
+			// resolved by U12).
+			var sidecarMaster []byte
+			if keystore.MasterKeyExists() {
+				if mk, err := keystore.ReadMasterKey(); err == nil {
+					sidecarMaster = mk
+				}
+			}
+			if sidecarN, sidecarErr := chrome.WriteCookiesSidecar(chromepaths.SidecarCookiesDB(), cookies, sidecarMaster); sidecarErr != nil {
 				fmt.Fprintf(os.Stderr, "agentcookie sink: sidecar write failed (%v); PP CLIs will fall back to Chrome's encrypted store\n", sidecarErr)
 			} else {
 				result.SidecarCookies = sidecarN
