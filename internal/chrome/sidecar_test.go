@@ -14,7 +14,7 @@ func TestWriteCookiesSidecar_HappyPath(t *testing.T) {
 		{HostKey: "github.com", Name: "user_session", Value: "github-token-12345", Path: "/", IsSecure: 1},
 		{HostKey: ".claude.ai", Name: "csrf", Value: "csrf-token", SameSite: 1},
 	}
-	n, err := WriteCookiesSidecar(target, cookies)
+	n, err := WriteCookiesSidecar(target, cookies, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,12 +69,12 @@ func TestWriteCookiesSidecar_AtomicReplace(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "cookies-plain.db")
 	if _, err := WriteCookiesSidecar(target, []Cookie{
 		{HostKey: "a.com", Name: "first", Value: "old"},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := WriteCookiesSidecar(target, []Cookie{
 		{HostKey: "b.com", Name: "second", Value: "new"},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	db, _ := sql.Open("sqlite3", "file:"+target+"?mode=ro")
@@ -97,7 +97,7 @@ func TestWriteCookiesSidecar_AtomicReplace(t *testing.T) {
 
 func TestWriteCookiesSidecar_ParentDirCreated(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "nested", "sub", "cookies.db")
-	if _, err := WriteCookiesSidecar(target, []Cookie{{HostKey: "x.com", Name: "n"}}); err != nil {
+	if _, err := WriteCookiesSidecar(target, []Cookie{{HostKey: "x.com", Name: "n"}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(target); err != nil {
@@ -115,7 +115,7 @@ func TestWriteCookiesSidecar_EmptyValuesAllowed(t *testing.T) {
 		{HostKey: ".example.com", Name: "consent_flag", Value: ""},
 		{HostKey: ".example.com", Name: "with_value", Value: "actual-value"},
 	}
-	n, err := WriteCookiesSidecar(target, cookies)
+	n, err := WriteCookiesSidecar(target, cookies, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestWriteCookiesSidecar_DuplicateRowsTolerated(t *testing.T) {
 		{HostKey: "x.com", Name: "dup", Path: "/", Value: "first"},
 		{HostKey: "x.com", Name: "dup", Path: "/", Value: "second"},
 	}
-	if _, err := WriteCookiesSidecar(target, cookies); err != nil {
+	if _, err := WriteCookiesSidecar(target, cookies, nil); err != nil {
 		t.Fatal(err)
 	}
 	db, _ := sql.Open("sqlite3", "file:"+target+"?mode=ro")
