@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
@@ -110,9 +109,9 @@ func (a *TableReservationAdapter) Push(cookies []chrome.Cookie) error {
 		}
 		sc := chromeToSessionCookie(c)
 		switch {
-		case strings.HasSuffix(c.HostKey, "opentable.com"):
+		case HostSuffixMatch(c.HostKey, "opentable.com"):
 			env.OpentableCookies = append(env.OpentableCookies, sc)
-		case strings.HasSuffix(c.HostKey, "exploretock.com"):
+		case HostSuffixMatch(c.HostKey, "exploretock.com"):
 			env.TockCookies = append(env.TockCookies, sc)
 		}
 	}

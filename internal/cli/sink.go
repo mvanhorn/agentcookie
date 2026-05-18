@@ -211,6 +211,7 @@ func toStateAdapterResults(rs []sinkpush.Result) []state.AdapterResult {
 		sr := state.AdapterResult{
 			Name:          r.Name,
 			Pushed:        r.Pushed,
+			Invalid:       r.Invalid,
 			Skipped:       r.Skipped,
 			SkippedReason: r.SkippedReason,
 			RanAt:         now,
@@ -235,7 +236,11 @@ func logAdapterResults(rs []sinkpush.Result) {
 		case r.Skipped:
 			fmt.Fprintf(os.Stderr, "agentcookie sink: adapter %s skipped (%s)\n", r.Name, r.SkippedReason)
 		default:
-			fmt.Fprintf(os.Stderr, "agentcookie sink: adapter %s pushed %d cookies\n", r.Name, r.Pushed)
+			if r.Invalid > 0 {
+				fmt.Fprintf(os.Stderr, "agentcookie sink: adapter %s pushed %d cookies (%d invalid dropped)\n", r.Name, r.Pushed, r.Invalid)
+			} else {
+				fmt.Fprintf(os.Stderr, "agentcookie sink: adapter %s pushed %d cookies\n", r.Name, r.Pushed)
+			}
 		}
 	}
 }
