@@ -20,6 +20,7 @@ import (
 var (
 	setKeychainExtraBinary []string
 	innerRunnerMode        bool
+	setKeychainEnableSeal  bool
 )
 
 var setKeychainAccessCmd = &cobra.Command{
@@ -49,6 +50,13 @@ func init() {
 	setKeychainAccessCmd.Flags().StringArrayVar(&setKeychainExtraBinary, "extra-binary", nil, "absolute path to a kooky-using CLI binary; added to the trust-list fallback if partition-list strategies do not cover it; repeatable")
 	setKeychainAccessCmd.Flags().BoolVar(&innerRunnerMode, "inner-runner", false, "run the strategy loop in this process (used internally when invoked as a one-shot LaunchAgent); end users do not pass this")
 	_ = setKeychainAccessCmd.Flags().MarkHidden("inner-runner")
+	// --enable-sealing: hidden v0.12 flag that turns on at-rest sealing
+	// of the sidecar SQLite and adapter session files. Off by default
+	// because the PP CLI side of the sealing handshake (U12) has not
+	// shipped yet; flipping this on without that work breaks PP CLI
+	// reads. Will become default-on once U12 lands in cli-printing-press.
+	setKeychainAccessCmd.Flags().BoolVar(&setKeychainEnableSeal, "enable-sealing", false, "create the agentcookie-master Keychain item and turn on at-rest sealing of the sidecar SQLite and adapter session files")
+	_ = setKeychainAccessCmd.Flags().MarkHidden("enable-sealing")
 	wizardCmd.AddCommand(setKeychainAccessCmd)
 }
 
@@ -91,6 +99,9 @@ func runOuterWizard(cmd *cobra.Command) error {
 	for _, b := range setKeychainExtraBinary {
 		argv = append(argv, "--extra-binary", b)
 	}
+	if setKeychainEnableSeal {
+		argv = append(argv, "--enable-sealing")
+	}
 
 	fmt.Fprintln(os.Stderr, "agentcookie wizard: running keychain strategies via a one-shot LaunchAgent (no prompts expected; if a Mac mini desktop prompt appears, click Always Allow and re-run)")
 
@@ -128,7 +139,7 @@ func runOuterWizard(cmd *cobra.Command) error {
 // the login keychain is unlocked. Iterates strategies, probes after
 // each, emits structured JSON on stdout for the outer wizard to parse.
 func runInnerStrategyLoop(cmd *cobra.Command) error {
-	strategies := buildStrategies(setKeychainExtraBinary)
+	strategies := buildStrategies(setKeychainExtraBinary, setKeychainEnableSeal)
 
 	var result runResult
 	for _, s := range strategies {
@@ -155,7 +166,7 @@ type kcStrategy struct {
 	apply func() (detail string, err error)
 }
 
-func buildStrategies(extraBinaries []string) []kcStrategy {
+func buildStrategies(extraBinaries []string, enableSealing bool) []kcStrategy {
 	// Trust list: the running agentcookie binary plus every adapter
 	// binary in extraBinaries. Master key + Chrome Safe Storage ACLs
 	// both use this same list so any allowlisted process can read
@@ -179,9 +190,16 @@ func buildStrategies(extraBinaries []string) []kcStrategy {
 			// agentcookie binary carries a Developer ID Application
 			// designated requirement, the ACL stays valid across
 			// rebuilds with the same identity.
+			//
+			// When enableSealing is true, the strategy also installs the
+			// agentcookie-master Keychain item that the sidecar and
+			// adapter writers use for at-rest sealing. Off by default
+			// in v0.12 because the PP CLI consumer-side of sealing
+			// (U12) has not shipped; turning sealing on without that
+			// would break v0.11 PP CLIs that read plaintext.
 			name: "delete-and-recreate-with-T",
 			apply: func() (string, error) {
-				_, _ = execSecurity("delete-generic-password",
+				_, _ = execSecurityFunc("delete-generic-password",
 					"-s", "Chrome Safe Storage", "-a", "Chrome")
 				pw := randomKeychainPassword()
 				args := append([]string{
@@ -189,13 +207,13 @@ func buildStrategies(extraBinaries []string) []kcStrategy {
 					"-s", "Chrome Safe Storage", "-a", "Chrome",
 					"-w", pw,
 				}, trustArgs...)
-				if detail, err := execSecurity(args...); err != nil {
+				if detail, err := execSecurityFunc(args...); err != nil {
 					return detail, err
 				}
-				// Also (re)install the agentcookie-master Keychain item
-				// in the same flow so the entire v0.12 install is
-				// idempotent in one strategy step.
-				if err := keystore.CreateMasterKey(trustList, extraBinaries); err != nil {
+				if !enableSealing {
+					return "Chrome Safe Storage installed with -T allowlist (sealing not enabled; pass --enable-sealing once PP CLI U12 ships)", nil
+				}
+				if err := createMasterKeyFunc(trustList, extraBinaries); err != nil {
 					return "", fmt.Errorf("create agentcookie-master: %w", err)
 				}
 				return "Chrome Safe Storage + agentcookie-master installed with -T allowlist", nil
@@ -292,6 +310,12 @@ func tryStrategy(s kcStrategy) strategyOutcome {
 
 // execSecurity runs /usr/bin/security with the given args, returns
 // "stdout||stderr" as detail. Caller treats non-zero exit as failure.
+//
+// Indirection via execSecurityFunc lets tests inject a stub that records
+// invocations without shelling out. Production code calls the real
+// execSecurity via the function pointer.
+var execSecurityFunc = execSecurity
+
 func execSecurity(args ...string) (string, error) {
 	cmd := exec.Command("/usr/bin/security", args...)
 	out, err := cmd.CombinedOutput()
@@ -301,6 +325,11 @@ func execSecurity(args ...string) (string, error) {
 	}
 	return detail, nil
 }
+
+// createMasterKeyFunc indirects keystore.CreateMasterKey so tests can
+// observe whether the sealing-on path was taken without actually
+// writing to the macOS Keychain.
+var createMasterKeyFunc = keystore.CreateMasterKey
 
 func lastJSONLine(s string) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")

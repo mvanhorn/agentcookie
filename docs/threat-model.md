@@ -19,7 +19,7 @@ agentcookie trusts:
 ## What agentcookie protects against
 
 - Plaintext cookies in transit. Every payload is AES-256-GCM-sealed with a per-pair key. The key never appears unencrypted on the wire.
-- Plaintext cookies at rest on the sink. When the v0.12 `agentcookie-master` Keychain item is present, the sink's plaintext sidecar SQLite is stored as sealed envelopes per value, and each adapter session file's secret-bearing fields are sealed under the same key. A non-allowlisted user-uid process reading those files sees opaque envelopes, not cookie values.
+- Plaintext cookies at rest on the sink (opt-in in v0.12). The sealing infrastructure is shipped: when the `agentcookie-master` Keychain item is present, the sink's sidecar SQLite is stored as sealed envelopes per value and each adapter session file's secret-bearing fields are sealed under the same key. The wizard install does NOT create the master key by default in v0.12 because the PP CLI consumer-side of sealing (U12) has not shipped in cli-printing-press yet. Pass `wizard set-keychain-access --enable-sealing` to opt in once the matching PP CLI release lands. Until then, the sidecar and adapter session files are plaintext on disk; finding S5 (plaintext sidecar) stays open in the default configuration.
 - Plaintext access to Chrome's own cookie store on the sink. v0.12 replaces the v0.10 `-A` (any-app) Keychain ACL on the Chrome Safe Storage password with a `-T` per-binary list. Only the agentcookie sink and registered adapter binaries can decrypt Chrome's Cookies SQLite silently; everything else needs a user prompt.
 - Online brute force of the pairing code. v0.12: 12 base32 characters (64 bits of entropy) and a per-IP token bucket capped at 5 attempts before a 429.
 - MITM during pairing. X25519 + HKDF salted with the pairing code means an attacker who intercepts the channel without knowing the code derives a different key, and the next AEAD message fails its tag check.
@@ -52,7 +52,7 @@ agentcookie trusts:
 
 ## What changes when
 
-- v0.12 (this release) closes every Critical and High finding from the v0.11 threat survey except U12 (PP CLI sidecar-reader migration). Until U12 lands, the PP CLI consumer side reads v0.11 plaintext sidecars; the sink writer detects the v0.11 client and emits plaintext rather than sealed envelopes.
+- v0.12 (this release) closes every Critical and High finding from the v0.11 threat survey except S5 (plaintext sidecar at rest), which stays open in the default install because turning sealing on requires the PP CLI consumer-side (U12) to ship in cli-printing-press first. Operators who only run agentcookie-controlled binaries on the sink can pass `wizard set-keychain-access --enable-sealing` to opt in; the on-disk sidecar and adapter session files become sealed and S5 closes for them.
 - v0.13 (planned) will migrate the paired key keystore at `~/.config/agentcookie/keys/<peer>.json` into the macOS Keychain, closing the last on-disk plaintext credential.
 - v0.14 or later may add Linux sink support, a Chrome extension on the sink, and one-to-many fan-out. Each of those reopens parts of this document; re-read before adopting.
 

@@ -36,7 +36,7 @@ func TestLastJSONLine_TrailingNewlinesIgnored(t *testing.T) {
 }
 
 func TestBuildStrategies_PrimaryIsDeleteAndRecreate(t *testing.T) {
-	s := buildStrategies(nil)
+	s := buildStrategies(nil, false)
 	if len(s) < 1 {
 		t.Fatal("expected at least one default strategy")
 	}
@@ -49,7 +49,7 @@ func TestBuildStrategies_PrimaryIsDeleteAndRecreate(t *testing.T) {
 }
 
 func TestBuildStrategies_PartitionListFallbackComesSecond(t *testing.T) {
-	s := buildStrategies(nil)
+	s := buildStrategies(nil, false)
 	if len(s) < 2 {
 		t.Fatal("expected partition-list fallback to exist")
 	}
@@ -59,8 +59,8 @@ func TestBuildStrategies_PartitionListFallbackComesSecond(t *testing.T) {
 }
 
 func TestBuildStrategies_ExtraBinariesAppearAfterDefaultStrategies(t *testing.T) {
-	defaults := buildStrategies(nil)
-	withExtras := buildStrategies([]string{"/Users/me/go/bin/instacart-pp-cli", "/Users/me/go/bin/bird"})
+	defaults := buildStrategies(nil, false)
+	withExtras := buildStrategies([]string{"/Users/me/go/bin/instacart-pp-cli", "/Users/me/go/bin/bird"}, false)
 	if len(withExtras) != len(defaults)+2 {
 		t.Fatalf("expected %d default + 2 extra-binary strategies, got %d", len(defaults), len(withExtras))
 	}
