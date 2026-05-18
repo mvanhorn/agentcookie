@@ -108,7 +108,12 @@ func runSource(cmd *cobra.Command, args []string) error {
 	}
 
 	if sourceOnce {
-		ctx, cancel := context.WithTimeout(cmd.Context(), 60*time.Second)
+		// --once mode: bound the whole push by SyncClient's timeout
+		// plus a small slack for envelope packing. Pre-v0.12 this was
+		// hardcoded at 60s, which was tight even for v0.10-shape
+		// payloads. The inner HTTP request also bounds itself; this
+		// outer cancel is the belt to the request's suspenders.
+		ctx, cancel := context.WithTimeout(cmd.Context(), httpserver.Defaults(httpserver.SyncClient).ClientTimeout+30*time.Second)
 		defer cancel()
 		_, err := push(ctx)
 		return err
@@ -226,7 +231,13 @@ func pushOnce(
 		return 0, fmt.Errorf("seal payload: %w", err)
 	}
 
-	postCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Bound the POST by the SyncClient profile's timeout (5 minutes
+	// in v0.12) so a heavy LocalStorage / IndexedDB payload over a
+	// slow tailnet link does not get cut off at the pre-v0.12 30s
+	// floor. The Client.Timeout itself still applies; context.Done
+	// is just the cooperative path that gives the handler a clean
+	// cancellation.
+	postCtx, cancel := context.WithTimeout(ctx, httpserver.Defaults(httpserver.SyncClient).ClientTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(postCtx, "POST", cfg.Sink.URL, bytes.NewReader(sealed))
 	if err != nil {

@@ -46,25 +46,24 @@ func OpenWithSecret(ciphertext []byte, secret string) ([]byte, error) {
 
 // newGCM returns an AES-256-GCM cipher derived from secret.
 //
-// Two paths:
+// The derivation always runs the secret through SHA-256 to produce
+// the 32-byte AES key, regardless of input length. A v0.12 plan unit
+// (U10) initially short-circuited 32-byte inputs as pass-through,
+// reasoning that the pairing-derived HKDF output is already a
+// uniformly random 32 bytes. That change was reverted because v0.11
+// sinks and v0.12 sources cannot interoperate without a coordinated
+// upgrade: the pass-through and the SHA-256 path produce different
+// AES keys, and the AEAD tag fails on any mixed pair.
 //
-//   - When secret is exactly 32 bytes long, it is treated as an
-//     already-uniform key (the pairing-derived HKDF-SHA256 output is
-//     32 bytes of uniformly random data) and used directly. No
-//     redundant SHA-256 step.
-//
-//   - Otherwise, secret goes through SHA-256 to produce a 32-byte
-//     AES key. This covers the legacy security.shared_secret YAML
-//     path. The config layer rejects secrets below a 32-byte entropy
-//     floor so attackers cannot drive this path with a weak secret.
+// Running SHA-256 over an already-uniform 32-byte input is
+// structurally harmless (output is still uniformly random 32 bytes,
+// distinguishable only by a trivial amount of compute). The entropy
+// floor on legacy security.shared_secret at config load (also from
+// U10) stays in place independently — that part is config-time
+// validation and does not touch the wire.
 func newGCM(secret string) (cipher.AEAD, error) {
-	var key [32]byte
-	if len(secret) == 32 {
-		copy(key[:], secret)
-	} else {
-		key = sha256.Sum256([]byte(secret))
-	}
-	block, err := aes.NewCipher(key[:])
+	keyHash := sha256.Sum256([]byte(secret))
+	block, err := aes.NewCipher(keyHash[:])
 	if err != nil {
 		return nil, err
 	}
