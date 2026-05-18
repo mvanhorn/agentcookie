@@ -108,6 +108,14 @@ func (a *TableReservationAdapter) Push(cookies []chrome.Cookie) error {
 			continue
 		}
 		sc := chromeToSessionCookie(c)
+		// v0.12: seal the cookie value when the agentcookie master
+		// key is installed. PP CLI reads the value, detects the
+		// SealedPrefix, unseals via pkg/sidecar's keystore.
+		sealed, err := maybeSeal(sc.Value)
+		if err != nil {
+			return fmt.Errorf("seal cookie value: %w", err)
+		}
+		sc.Value = sealed
 		switch {
 		case HostSuffixMatch(c.HostKey, "opentable.com"):
 			env.OpentableCookies = append(env.OpentableCookies, sc)

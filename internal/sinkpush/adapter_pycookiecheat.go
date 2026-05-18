@@ -72,18 +72,28 @@ func (a *PycookiecheatStyleAdapter) CookieHostPatterns() []string {
 // and a matching cookies.json. Atomic writes via temp + rename. If
 // config.toml already exists, only the access_token line is rewritten
 // (preserves user-customized base_url and any other fields).
+//
+// v0.12: when the agentcookie master key Keychain item is present, the
+// header value is sealed (SealedPrefix + base64) before being written
+// to either file. PP CLIs that consume these files detect the prefix
+// and unseal transparently. Sinks without the master key fall back to
+// plaintext (v0.11 shape) so partial installs still work.
 func (a *PycookiecheatStyleAdapter) Push(cookies []chrome.Cookie) error {
 	header := formatCookieHeader(cookies)
 	if header == "" {
 		return nil
 	}
+	onDiskHeader, err := maybeSeal(header)
+	if err != nil {
+		return fmt.Errorf("seal header: %w", err)
+	}
 	if err := os.MkdirAll(a.configDir, 0o700); err != nil {
 		return fmt.Errorf("mkdir %s: %w", a.configDir, err)
 	}
-	if err := a.writeConfigTOML(header); err != nil {
+	if err := a.writeConfigTOML(onDiskHeader); err != nil {
 		return fmt.Errorf("write config.toml: %w", err)
 	}
-	if err := a.writeCookiesJSON(header); err != nil {
+	if err := a.writeCookiesJSON(onDiskHeader); err != nil {
 		return fmt.Errorf("write cookies.json: %w", err)
 	}
 	return nil
