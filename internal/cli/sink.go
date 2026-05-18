@@ -85,10 +85,19 @@ func runSink(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "agentcookie sink: blocklist has %d opt-out patterns\n", blockMatcher.PatternCount())
 	}
 
-	seqTracker := protocol.NewSequenceTracker()
+	// Persistent replay-defense state. Survives sink restart so a
+	// captured /sync envelope cannot be replayed after a reboot. A
+	// corrupt sequence.json fails the sink boot rather than silently
+	// resetting the high-water marks (which would reopen the replay
+	// window). Operator recovery: delete ~/.agentcookie/sequence.json.
+	home, _ := os.UserHomeDir()
+	seqStore := protocol.NewFileSequenceStore(protocol.DefaultSequencePath(home))
+	seqTracker, err := protocol.NewTrackerFromStore(seqStore)
+	if err != nil {
+		return fmt.Errorf("load replay-defense state: %w", err)
+	}
 
 	// State writer for `agentcookie status` to read.
-	home, _ := os.UserHomeDir()
 	stateWriter := state.NewWriter(state.SinkPath(home))
 	sinkState := &state.SinkState{
 		Role:       "sink",
