@@ -32,8 +32,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+
 	"strings"
 	"time"
+
+	"github.com/mvanhorn/agentcookie/internal/cli/httpserver"
 )
 
 const (
@@ -104,11 +107,11 @@ type SourceResponse struct {
 
 // HandshakeResult carries the derived state both sides write to disk.
 type HandshakeResult struct {
-	Key          []byte
-	Fingerprint  string
-	LocalRole    string // "source" or "sink"
-	RemotePeer   string // the OTHER side's hostname
-	PairedAt     time.Time
+	Key         []byte
+	Fingerprint string
+	LocalRole   string // "source" or "sink"
+	RemotePeer  string // the OTHER side's hostname
+	PairedAt    time.Time
 }
 
 // DeriveKey runs HKDF over the X25519 shared secret salted with the code.
@@ -145,6 +148,7 @@ func RunSource(ctx context.Context, listenAddr, localHostname string, w io.Write
 			http.Error(rw, "POST only", http.StatusMethodNotAllowed)
 			return
 		}
+		httpserver.LimitedReader(r, httpserver.Defaults(httpserver.Pair).MaxBodyBytes)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(rw, "read body: "+err.Error(), http.StatusBadRequest)
@@ -196,7 +200,7 @@ func RunSource(ctx context.Context, listenAddr, localHostname string, w io.Write
 		}
 	})
 
-	srv := &http.Server{Addr: listenAddr, Handler: mux}
+	srv := httpserver.Configure(&http.Server{Addr: listenAddr, Handler: mux}, httpserver.Pair)
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return nil, "", fmt.Errorf("listen %s: %w", listenAddr, err)
@@ -260,7 +264,7 @@ func RunSink(ctx context.Context, sourcePairURL string, providedCode Code, local
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := httpserver.Client(httpserver.PairClient).Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("POST %s: %w", sourcePairURL, err)
 	}
