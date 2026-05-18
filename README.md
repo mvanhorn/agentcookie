@@ -122,7 +122,7 @@ last run: 4s ago
 
 ## Status
 
-Pre-release. macOS-only sink. Linux/Windows sinks are on the roadmap (`agentcookie source` already runs on Linux; only the sink needs platform work).
+Pre-release. macOS-only on both ends today: source-side cookie paths and decryption are Chrome-on-macOS specific, and the sink relies on macOS Keychain + LaunchAgent. Linux and Windows support is on the roadmap but not yet wired up.
 
 Working today:
 
@@ -137,7 +137,7 @@ Not yet:
 
 - `agentcookie pair --rotate` for live key rotation
 - One-to-many fan-out (one laptop, multiple sinks)
-- Linux + Windows sink support
+- Linux + Windows source and sink support
 - Signed release binaries (until then, `go install` is the only path; binary cdhash churn affects only the install ceremony, not steady state)
 
 ## Documentation
