@@ -40,8 +40,11 @@ func TestBuildStrategies_PrimaryIsDeleteAndRecreate(t *testing.T) {
 	if len(s) < 1 {
 		t.Fatal("expected at least one default strategy")
 	}
-	if s[0].name != "delete-and-recreate-with-A" {
-		t.Errorf("primary strategy: got %q, want delete-and-recreate-with-A (this is the only strategy proven to work headlessly on macOS 25+)", s[0].name)
+	// v0.12: primary strategy moved from -A (any app) to -T (per-binary
+	// trust list anchored on the Developer-ID-signed designated
+	// requirement). v0.10 -A is no longer in the strategy chain.
+	if s[0].name != "delete-and-recreate-with-T" {
+		t.Errorf("primary strategy: got %q, want delete-and-recreate-with-T (v0.12 ACL pin via Developer ID signed binary)", s[0].name)
 	}
 }
 

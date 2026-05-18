@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
+	"github.com/mvanhorn/agentcookie/internal/keystore"
 )
 
 var (
@@ -155,33 +156,56 @@ type kcStrategy struct {
 }
 
 func buildStrategies(extraBinaries []string) []kcStrategy {
+	// Trust list: the running agentcookie binary plus every adapter
+	// binary in extraBinaries. Master key + Chrome Safe Storage ACLs
+	// both use this same list so any allowlisted process can read
+	// either secret.
+	trustList := agentcookieBinaryPath()
+	trustArgs := []string{"-T", trustList}
+	for _, b := range extraBinaries {
+		ab, _ := filepath.Abs(b)
+		if ab == "" {
+			continue
+		}
+		trustArgs = append(trustArgs, "-T", ab)
+	}
+
 	out := []kcStrategy{
 		{
-			// Primary v0.10 strategy: delete the existing Chrome Safe Storage
-			// item, recreate it with -A ("any application may access without
-			// warning") and a fresh random password. The delete works from
-			// LaunchAgent context with an unlocked login keychain; the
-			// add-with-A works on a fresh (no-prior-ACL) item without a
-			// login-password prompt. Rotates the password as a side effect;
-			// agentcookie sink re-reads on next operation and the next source
-			// sync overwrites cookies with the new derivation. Mac mini Chrome
-			// stays quit, so Chrome's own cookies-encrypted-with-old-password
-			// concern does not bite.
-			name: "delete-and-recreate-with-A",
+			// Primary v0.12 strategy: delete the existing Chrome Safe
+			// Storage item, recreate with a per-binary -T trust list
+			// instead of the v0.10 -A (any-app). The agentcookie binary
+			// and each adapter binary are named explicitly. Because the
+			// agentcookie binary carries a Developer ID Application
+			// designated requirement, the ACL stays valid across
+			// rebuilds with the same identity.
+			name: "delete-and-recreate-with-T",
 			apply: func() (string, error) {
 				_, _ = execSecurity("delete-generic-password",
-					"-s", "Chrome Safe Storage", "-a", "Chrome") // best-effort; ok if item missing
+					"-s", "Chrome Safe Storage", "-a", "Chrome")
 				pw := randomKeychainPassword()
-				return execSecurity("add-generic-password",
+				args := append([]string{
+					"add-generic-password",
 					"-s", "Chrome Safe Storage", "-a", "Chrome",
-					"-w", pw, "-A")
+					"-w", pw,
+				}, trustArgs...)
+				if detail, err := execSecurity(args...); err != nil {
+					return detail, err
+				}
+				// Also (re)install the agentcookie-master Keychain item
+				// in the same flow so the entire v0.12 install is
+				// idempotent in one strategy step.
+				if err := keystore.CreateMasterKey(trustList, extraBinaries); err != nil {
+					return "", fmt.Errorf("create agentcookie-master: %w", err)
+				}
+				return "Chrome Safe Storage + agentcookie-master installed with -T allowlist", nil
 			},
 		},
 		{
-			// Fallback 1: try the partition-list expansion. Requires the
-			// login password in practice on modern macOS, so this usually
-			// fails from a LaunchAgent; kept here in case a future macOS
-			// version relaxes the requirement.
+			// Fallback diagnostic: partition-list expansion. Rarely
+			// succeeds from a LaunchAgent on modern macOS; included so
+			// the wizard output surfaces a clear "this strategy did
+			// not apply" line when the primary strategy fails.
 			name: "partition-list:apple-tool,apple",
 			apply: func() (string, error) {
 				return execSecurity("set-generic-password-partition-list",
@@ -208,6 +232,26 @@ func buildStrategies(extraBinaries []string) []kcStrategy {
 	}
 
 	return out
+}
+
+// agentcookieBinaryPath returns the absolute path of the running
+// agentcookie binary, resolved through symlinks. Used as the primary
+// -T target so the v0.12 trust list pins the agentcookie sink alone.
+// Returns the empty string on a resolution failure; callers treat
+// that as a fatal install error rather than guessing.
+func agentcookieBinaryPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		// EvalSymlinks failing usually means a missing target on the
+		// filesystem; fall back to the unresolved path rather than
+		// returning empty.
+		return exe
+	}
+	return resolved
 }
 
 // randomKeychainPassword returns 16 random bytes base64-encoded (~22 chars).
