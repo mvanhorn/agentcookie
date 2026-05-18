@@ -2,12 +2,32 @@ package chrome
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/mvanhorn/agentcookie/internal/keystore"
 )
+
+// SidecarSealedPrefix mirrors pkg/sidecar.SealedPrefix. Duplicated here
+// to avoid an import cycle: pkg/sidecar imports internal/keystore, and
+// this file already imports internal/keystore. internal/chrome can't
+// import pkg/sidecar without flipping the cycle. The two constants
+// are kept in sync by test.
+const SidecarSealedPrefix = "agc1:"
+
+// sealSidecarValue produces the on-disk form of a value-column entry
+// sealed under masterKey.
+func sealSidecarValue(masterKey []byte, plaintext string) (string, error) {
+	env, err := keystore.Seal(masterKey, []byte(plaintext))
+	if err != nil {
+		return "", err
+	}
+	return SidecarSealedPrefix + base64.StdEncoding.EncodeToString(env), nil
+}
 
 // sidecarSchema is the cookies-table schema we create in the sidecar SQLite.
 // Matches Chrome's modern (134+) schema exactly so kooky and other Chrome-
@@ -43,18 +63,25 @@ CREATE UNIQUE INDEX IF NOT EXISTS cookies_unique_index ON cookies(
 );
 `
 
-// WriteCookiesSidecar writes cookies as plaintext into a Chrome-shaped
-// SQLite at targetPath. Used by agentcookie to publish a kooky-readable
-// cookies file that PP CLIs (and any cookie-reading library) can use
-// without Keychain access. See docs/plans/2026-05-17-001 for the bridge
-// architecture.
+// WriteCookiesSidecar writes cookies into a Chrome-shaped SQLite at
+// targetPath. v0.11 wrote the `value` column as raw plaintext; v0.12
+// optionally seals each value under the agentcookie master key. The
+// helper is invoked by agentcookie sink and produces a file that
+// kooky-style libraries (PP CLIs) can open via pkg/sidecar.
 //
-// The write is atomic: we write to a temp file in the same directory and
-// rename it into place once the transaction commits. Readers either see
-// the previous file or the new file, never a half-state.
+// When masterKey is nil, behaviour is identical to v0.11: each value
+// is stored as plaintext UTF-8. When masterKey is non-nil (32 bytes,
+// the keystore master key), each value is replaced with
+// pkg/sidecar.SealedPrefix + base64(seal(masterKey, plaintext)).
+// Downstream readers either auto-detect via the prefix or use the
+// pkg/sidecar.ReadSidecar reader.
+//
+// The write is atomic: temp file in the same directory, renamed into
+// place once the transaction commits. Readers either see the previous
+// file or the new file, never a half-state.
 //
 // Returns the number of cookies written.
-func WriteCookiesSidecar(targetPath string, cookies []Cookie) (int, error) {
+func WriteCookiesSidecar(targetPath string, cookies []Cookie, masterKey []byte) (int, error) {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
 		return 0, fmt.Errorf("mkdir sidecar parent: %w", err)
 	}
@@ -97,7 +124,19 @@ func WriteCookiesSidecar(targetPath string, cookies []Cookie) (int, error) {
 			creationUTC:   nowChrome,
 			lastUpdateUTC: nowChrome,
 		})
-		patchPlaintextValue(row, cols, c.Value)
+		valueOnDisk := c.Value
+		if len(masterKey) > 0 {
+			sealed, err := sealSidecarValue(masterKey, c.Value)
+			if err != nil {
+				stmt.Close()
+				tx.Rollback()
+				db.Close()
+				_ = os.Remove(tmpPath)
+				return written, fmt.Errorf("seal sidecar value %s/%s: %w", c.HostKey, c.Name, err)
+			}
+			valueOnDisk = sealed
+		}
+		patchPlaintextValue(row, cols, valueOnDisk)
 		if _, err := stmt.Exec(row...); err != nil {
 			if isUniqueConstraintError(err) {
 				continue
