@@ -2,6 +2,81 @@
 
 ## [Unreleased]
 
+### v0.12: security hardening (sealed master key, tailnet-only listeners, rate-limited pairing, sealed sidecar + adapter files)
+
+A friend with a security background looked at agentcookie after v0.11
+and called it a nightmare. A code-grounded threat survey confirmed
+it: v0.10 and v0.11 silently expanded the sink's attack surface in
+ways the threat-model doc never documented. On a sink running
+v0.10 + v0.11, every cookie value on every synced domain, every
+per-CLI session token for every adapter, and the Chrome Safe Storage
+AES key itself were readable by any process running as the user,
+while the listener was on every network interface by default and the
+pairing endpoint accepted unlimited guesses against a 40-bit code.
+
+v0.12 closes that picture without adding a single new prompt in
+steady-state operation. The wizard install ceremony stays one
+Keychain unlock; everything else happens headlessly forever after.
+
+Shipped:
+
+- Apple Developer ID signing (U0). Every agentcookie binary is
+  signed with a stable Developer ID, hardened-runtime + timestamped.
+  Stable designated requirement across rebuilds is the property the
+  rest of the work depends on.
+- Tailnet-only listeners (U1). `agentcookie sink` and the source
+  pair listener refuse to start on `0.0.0.0` or any non-Tailscale
+  interface. Wizard install fails loud if the Tailscale 100.x
+  interface is missing rather than silently falling back.
+- HTTP server + client timeouts and body caps (U2 + U11 + U14). One
+  `internal/cli/httpserver` helper defines the policy. Sink and pair
+  listeners get ReadHeaderTimeout / ReadTimeout / WriteTimeout /
+  MaxBodyBytes. The pairing client gets a 30-second timeout.
+- Persistent replay defense + nanosecond sequence (U3). Sink restart
+  no longer opens a one-shot replay window. Rapid syncs within the
+  same second no longer collide.
+- Hardened pair endpoint (U4). Pair code bumped from 8 base32 chars
+  (40 bits) to 12 (64 bits). Per-IP token bucket caps wrong-code
+  attempts (5 before 429, 500ms refill).
+- Sealed master key (U5). New `agentcookie-master` Keychain item
+  protected by a per-binary `-T` ACL that names the Developer-ID-
+  signed agentcookie binary plus each adapter binary. Replaces
+  v0.10's `-A` ACL on Chrome Safe Storage with the same list. Any
+  non-allowlisted user process can no longer silently read Chrome's
+  cookie-encryption key.
+- Sealed cookie sidecar (U6). When the master key is available, the
+  sink seals each cookie value in `~/.agentcookie/cookies-plain.db`
+  before write. New `pkg/sidecar.ReadSidecar` is the public API PP
+  CLIs link.
+- Sealed adapter session files (U7). Pycookiecheat-style adapters
+  (Airbnb, eBay, Pagliacci) and the table-reservation adapter
+  (OpenTable, Tock) seal their secret-bearing fields. Plaintext
+  fallback when no master key is present preserves partial-install
+  paths.
+- Cookie input validation (U8). Names, values, and host_keys flowing
+  through adapters pass an RFC 6265 token + control-char validator.
+  Drops surface in `wizard verify-adapters` as the new `Invalid`
+  count. Fixes the unanchored host-suffix bug that matched
+  `xopentable.com` for the OpenTable filter.
+- Tarball unpack hardening (U9). Sink rejects LocalStorage /
+  IndexedDB tarballs over 256 MB, with more than 100,000 members,
+  or containing `..` / absolute-path / symlink / hardlink entries.
+- Legacy shared_secret entropy floor + drop SHA-256 double-hash
+  (U10). Pairing-derived 32-byte keys pass directly through to the
+  AES-256-GCM cipher; legacy free-form `security.shared_secret`
+  values below 32 bytes are now refused at config load.
+
+Pending follow-up:
+
+- U12: PP CLI sidecar-reader migration in cli-printing-press. Each
+  of the five built-in adapter PP CLIs gains a small import of
+  `pkg/sidecar` so it reads sealed session caches transparently.
+  v0.12 ships the writer side and the public reader API; the PP CLI
+  consumer-side change tracks in cli-printing-press. Until that
+  migration lands, PP CLIs continue to work against v0.11-shape
+  plaintext sidecars (the sink falls back when the master key
+  Keychain item is absent).
+
 ### v0.11: sinkpush adapter pushes cookies into each PP CLI's session cache
 
 The product UX gap after v0.10: each new PP CLI on the Mac mini
