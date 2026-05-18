@@ -42,21 +42,23 @@ import (
 const (
 	// ProtocolVersion is bumped on incompatible wire-format changes.
 	ProtocolVersion = 1
-	// CodeLength controls how many base32 characters the pairing code uses.
-	CodeLength = 8
+	// CodeLength is how many base32 characters the pairing code uses.
+	// v0.12 bumped from 8 (40 bits) to 12 (64 bits). The wizard install
+	// auto-pastes the code; the four extra characters add no UX cost.
+	CodeLength = 12
 	// HKDFInfo is mixed into every derived key. Bump on protocol revisions.
 	HKDFInfo = "agentcookie-pair-v1"
 	// PairTimeout caps how long the source side listens for a sink.
 	PairTimeout = 10 * time.Minute
 )
 
-// Code is the short human-typable pairing token. Display format is "XXXX-XXXX".
+// Code is the short human-typable pairing token. Display format is "XXXX-XXXX-XXXX".
 type Code string
 
 // NewCode returns a fresh random code.
 func NewCode() (Code, error) {
 	enc := base32.StdEncoding
-	raw := make([]byte, 5) // 40 bits -> 8 base32 chars
+	raw := make([]byte, 8) // 64 bits -> 13 base32 chars; we use the first 12
 	if _, err := rand.Read(raw); err != nil {
 		return "", fmt.Errorf("read random: %w", err)
 	}
@@ -65,16 +67,16 @@ func NewCode() (Code, error) {
 		return "", fmt.Errorf("code too short: %d", len(s))
 	}
 	s = s[:CodeLength]
-	return Code(s[:4] + "-" + s[4:]), nil
+	return Code(s[:4] + "-" + s[4:8] + "-" + s[8:]), nil
 }
 
-// Normalize returns the canonical form of c (uppercase, single hyphen).
+// Normalize returns the canonical form of c (uppercase, hyphen-separated 4-char groups).
 func (c Code) Normalize() Code {
 	s := strings.ToUpper(strings.ReplaceAll(strings.ReplaceAll(string(c), "-", ""), " ", ""))
 	if len(s) != CodeLength {
 		return c
 	}
-	return Code(s[:4] + "-" + s[4:])
+	return Code(s[:4] + "-" + s[4:8] + "-" + s[8:])
 }
 
 // String renders the code in the canonical form.
@@ -141,11 +143,16 @@ func RunSource(ctx context.Context, listenAddr, localHostname string, w io.Write
 
 	resultCh := make(chan *HandshakeResult, 1)
 	errCh := make(chan error, 1)
+	limiter := newRateLimiter()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/pair", func(rw http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(rw, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		if !limiter.allow(clientIP(r)) {
+			http.Error(rw, "too many pairing attempts", http.StatusTooManyRequests)
 			return
 		}
 		httpserver.LimitedReader(r, httpserver.Defaults(httpserver.Pair).MaxBodyBytes)

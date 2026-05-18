@@ -19,20 +19,21 @@ func TestNewCodeIsCanonical(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(c)
-	if len(s) != CodeLength+1 {
-		t.Fatalf("expected %d chars including hyphen, got %d (%q)", CodeLength+1, len(s), s)
+	// 12 chars + 2 hyphens = 14
+	if len(s) != CodeLength+2 {
+		t.Fatalf("expected %d chars including hyphens, got %d (%q)", CodeLength+2, len(s), s)
 	}
-	if s[4] != '-' {
-		t.Errorf("expected hyphen at index 4, got %q", s)
+	if s[4] != '-' || s[9] != '-' {
+		t.Errorf("expected hyphens at index 4 and 9, got %q", s)
 	}
 }
 
 func TestCodeNormalize(t *testing.T) {
 	cases := map[string]string{
-		"abcd-efgh":   "ABCD-EFGH",
-		"ABCDEFGH":    "ABCD-EFGH",
-		"abcdefgh":    "ABCD-EFGH",
-		"ab cd-ef gh": "ABCD-EFGH",
+		"abcd-efgh-ijkl":   "ABCD-EFGH-IJKL",
+		"ABCDEFGHIJKL":     "ABCD-EFGH-IJKL",
+		"abcdefghijkl":     "ABCD-EFGH-IJKL",
+		"ab cd-ef gh-ijkl": "ABCD-EFGH-IJKL",
 	}
 	for in, want := range cases {
 		got := Code(in).Normalize().String()
@@ -43,18 +44,18 @@ func TestCodeNormalize(t *testing.T) {
 }
 
 func TestCodeEqualConstantTime(t *testing.T) {
-	a := Code("ABCD-EFGH")
-	if !a.Equal(Code("abcd-efgh")) {
+	a := Code("ABCD-EFGH-IJKL")
+	if !a.Equal(Code("abcd-efgh-ijkl")) {
 		t.Error("case-insensitive equal failed")
 	}
-	if a.Equal(Code("ZZZZ-ZZZZ")) {
+	if a.Equal(Code("ZZZZ-ZZZZ-ZZZZ")) {
 		t.Error("different codes reported equal")
 	}
 }
 
 func TestDeriveKeySymmetric(t *testing.T) {
 	secret := bytes.Repeat([]byte{0xAB}, 32)
-	code := Code("ABCD-EFGH")
+	code := Code("ABCD-EFGH-IJKL")
 	k1, fp1, err := DeriveKey(secret, code)
 	if err != nil {
 		t.Fatal(err)
@@ -76,15 +77,15 @@ func TestDeriveKeySymmetric(t *testing.T) {
 
 func TestDeriveKeyDiffersOnDifferentCode(t *testing.T) {
 	secret := bytes.Repeat([]byte{0xAB}, 32)
-	k1, _, _ := DeriveKey(secret, Code("ABCD-EFGH"))
-	k2, _, _ := DeriveKey(secret, Code("ZZZZ-ZZZZ"))
+	k1, _, _ := DeriveKey(secret, Code("ABCD-EFGH-IJKL"))
+	k2, _, _ := DeriveKey(secret, Code("ZZZZ-ZZZZ-ZZZZ"))
 	if bytes.Equal(k1, k2) {
 		t.Error("different codes must produce different derived keys (MITM defense)")
 	}
 }
 
 func TestDeriveKeyDiffersOnDifferentSecret(t *testing.T) {
-	code := Code("ABCD-EFGH")
+	code := Code("ABCD-EFGH-IJKL")
 	k1, _, _ := DeriveKey(bytes.Repeat([]byte{0x01}, 32), code)
 	k2, _, _ := DeriveKey(bytes.Repeat([]byte{0x02}, 32), code)
 	if bytes.Equal(k1, k2) {
@@ -127,7 +128,7 @@ func TestRunSourceRejectsBadCode(t *testing.T) {
 	// Post with a known-wrong code.
 	curve := ecdh.X25519()
 	priv, _ := curve.GenerateKey(rand.Reader)
-	_, err := RunSink(ctx, "http://"+addr+"/pair", Code("WRONG-CODE"), "macmini.test")
+	_, err := RunSink(ctx, "http://"+addr+"/pair", Code("WRON-GCOD-EXXX"), "macmini.test")
 	if err == nil {
 		t.Error("sink should fail with wrong code")
 	}
