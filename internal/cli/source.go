@@ -210,7 +210,7 @@ func pushOnce(
 	envelope := protocol.SyncEnvelope{
 		ProtocolVersion:     protocol.Version,
 		SourceHostname:      pairing.LocalHostname(),
-		Sequence:            time.Now().Unix(),
+		Sequence:            time.Now().UnixNano(),
 		Cookies:             all,
 		LocalStorageTarball: lsTarball,
 		IndexedDBTarball:    idbTarball,
