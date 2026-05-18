@@ -62,9 +62,30 @@ sink:
 	}
 }
 
-func TestLoadSinkDefaultsListenAddr(t *testing.T) {
+func TestLoadSinkEmptyListenIsError(t *testing.T) {
+	// v0.12 S1: a sink.yaml without listen.addr used to fall through to
+	// 127.0.0.1:9999. That made the wizard's silent-detection-failure
+	// path one layer harder to spot. Now empty is a config error and the
+	// wizard install is the only place that writes the address.
 	dir := t.TempDir()
 	writeFile(t, dir, "sink.yaml", `
+security:
+  shared_secret: not-empty
+`)
+	if _, err := LoadSink(dir); err == nil {
+		t.Fatal("expected error for missing listen.addr, got nil")
+	} else if !strings.Contains(err.Error(), "listen.addr is required") {
+		t.Errorf("error should name listen.addr, got %v", err)
+	}
+}
+
+func TestLoadSinkHonorsExplicitListenAddr(t *testing.T) {
+	// Regression for v0.11 -> v0.12: an existing sink.yaml that already
+	// has a 100.x address keeps working without re-detection prompting.
+	dir := t.TempDir()
+	writeFile(t, dir, "sink.yaml", `
+listen:
+  addr: 100.80.229.80:9999
 security:
   shared_secret: not-empty
 `)
@@ -72,8 +93,8 @@ security:
 	if err != nil {
 		t.Fatalf("LoadSink: %v", err)
 	}
-	if cfg.Listen.Addr != "127.0.0.1:9999" {
-		t.Errorf("expected default listen 127.0.0.1:9999, got %q", cfg.Listen.Addr)
+	if cfg.Listen.Addr != "100.80.229.80:9999" {
+		t.Errorf("listen addr: got %q", cfg.Listen.Addr)
 	}
 }
 

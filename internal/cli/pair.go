@@ -10,6 +10,7 @@ import (
 
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/pairing"
+	"github.com/mvanhorn/agentcookie/internal/tsclient"
 )
 
 var (
@@ -47,7 +48,11 @@ than reading 'security.shared_secret' from those files.`,
 
 func init() {
 	pairCmd.Flags().StringVar(&pairRole, "as", "", "role: source | sink (required)")
-	pairCmd.Flags().StringVar(&pairListenAddr, "listen", "0.0.0.0:9998", "[source] address to listen on for the sink handshake")
+	// v0.12 S1: --listen no longer defaults to 0.0.0.0:9998. Empty
+	// triggers tailnet auto-detection; an explicit value is validated
+	// against the same tailnet-or-loopback policy. The detection-failed
+	// path fails loud rather than falling through to every interface.
+	pairCmd.Flags().StringVar(&pairListenAddr, "listen", "", "[source] address to listen on for the sink handshake (default: this machine's Tailscale 100.x:9998)")
 	pairCmd.Flags().StringVar(&pairLocalName, "local-name", "", "hostname identifier announced to the peer (defaults to os.Hostname)")
 	pairCmd.Flags().StringVar(&pairPeerURL, "pair-url", "", "[sink] full URL of the source's /pair endpoint")
 	pairCmd.Flags().StringVar(&pairCode, "code", "", "[sink] pairing code printed by the source")
@@ -69,7 +74,20 @@ func runPair(cmd *cobra.Command, args []string) error {
 }
 
 func runPairAsSource(ctx context.Context) error {
-	res, _, err := pairing.RunSource(ctx, pairListenAddr, pairLocalName, os.Stderr)
+	// v0.12 S1: resolve and validate the pair listener address before
+	// binding. Empty -> auto-detect tailnet 100.x; explicit -> must be
+	// tailnet or loopback. 0.0.0.0 is refused.
+	listenAddr := pairListenAddr
+	if listenAddr == "" {
+		ip, err := tsclient.RequireTailnetIP(ctx)
+		if err != nil {
+			return fmt.Errorf("detect Tailscale 100.x address for pair listener: %w", err)
+		}
+		listenAddr = fmt.Sprintf("%s:9998", ip)
+	} else if err := validateListenAddr(listenAddr); err != nil {
+		return fmt.Errorf("pair listen %q: %w", listenAddr, err)
+	}
+	res, _, err := pairing.RunSource(ctx, listenAddr, pairLocalName, os.Stderr)
 	if err != nil {
 		return err
 	}
