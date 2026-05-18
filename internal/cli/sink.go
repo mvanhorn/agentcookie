@@ -15,6 +15,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chromectl"
 	"github.com/mvanhorn/agentcookie/internal/chromedirsync"
 	"github.com/mvanhorn/agentcookie/internal/chromepaths"
+	"github.com/mvanhorn/agentcookie/internal/cli/httpserver"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"github.com/mvanhorn/agentcookie/internal/sinkpush"
@@ -121,6 +122,7 @@ func runSink(cmd *cobra.Command, args []string) error {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
 			return
 		}
+		httpserver.LimitedReader(r, httpserver.Defaults(httpserver.SinkSync).MaxBodyBytes)
 		sealed, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
@@ -209,7 +211,7 @@ func runSink(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies (%d sidecar), %d localStorage origins, %d indexedDB origins; dropped %d non-allowlisted cookies\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, dropped)
 	})
 
-	srv := &http.Server{Addr: cfg.Listen.Addr, Handler: mux}
+	srv := httpserver.Configure(&http.Server{Addr: cfg.Listen.Addr, Handler: mux}, httpserver.SinkSync)
 	if sinkDryRun {
 		fmt.Fprintf(os.Stderr, "agentcookie sink: listening on http://%s (dry-run; no Chrome state will be modified)\n", cfg.Listen.Addr)
 	} else {
