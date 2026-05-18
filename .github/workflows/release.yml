@@ -19,6 +19,38 @@ jobs:
         with:
           go-version: "1.24"
           cache: true
+
+      # Import the Developer ID Application certificate into a temporary
+      # keychain so codesign can find it. The .p12 bundle and its password
+      # are repo secrets. The action creates an ephemeral keychain, unlocks
+      # it, and adds it to the search list for the rest of the job.
+      #
+      # TODO: maintainer must add the following GitHub Actions secrets
+      # before the first signed release ships:
+      #   - CERTIFICATE_OSX_APPLICATION : base64-encoded .p12 of the
+      #     Developer ID Application cert + private key
+      #   - CERTIFICATE_OSX_APPLICATION_PASSWORD : password for the .p12
+      # The matching cert is Common Name
+      #   "Developer ID Application: Matthew Charles Van Horn (NM8VT393AR)"
+      # See docs/runbook-v0.12-codesign.md for the export / renewal flow.
+      - name: import Developer ID cert
+        if: ${{ secrets.CERTIFICATE_OSX_APPLICATION != '' }}
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.CERTIFICATE_OSX_APPLICATION }}
+          p12-password: ${{ secrets.CERTIFICATE_OSX_APPLICATION_PASSWORD }}
+
+      # Sanity: print which codesigning identities are visible to this
+      # runner. On a properly configured release this lists the Developer
+      # ID Application identity NM8VT393AR. If the secret is unset, the
+      # list will be empty and goreleaser's signing post-hook will fail
+      # fast with the runbook pointer.
+      - name: list codesigning identities
+        run: security find-identity -v -p codesigning
+
+      # GoReleaser invokes scripts/sign.sh as a build post-hook, so every
+      # darwin binary is signed before archives are zipped. See
+      # .goreleaser.yaml `builds[].hooks.post`.
       - name: goreleaser
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -27,3 +59,4 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AGENTCOOKIE_SIGN_IDENTITY: "Developer ID Application: Matthew Charles Van Horn (NM8VT393AR)"
