@@ -12,10 +12,10 @@
    |  agentcookie source       |                    |  agentcookie sink (launchd) |
    |    - read SQLite (RO)     |                    |    - listen :9999/sync      |
    |    - decrypt w/ local key |     AES-GCM        |    - decrypt seal           |
-   |    - filter by allowlist  |    over HTTPS      |    - check proto + seq      |
+   |    - filter by allowlist  |    over HTTP       |    - check proto + seq      |
    |    - wrap in envelope     | ================>  |    - filter by allowlist    |
-   |    - seal w/ peer key     |    on tailnet      |    - try CDP injection      |
-   |                           |                    |    - else write SQLite      |
+   |    - seal w/ peer key     |    on tailnet      |    - write Chrome SQLite    |
+   |                           |    (WireGuard)     |    - write sealed sidecar   |
    +---------------------------+                    +-----------------------------+
             ^                                                  ^
             |                                                  |

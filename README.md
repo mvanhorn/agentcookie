@@ -126,19 +126,21 @@ Pre-release. macOS-only on both ends today: source-side cookie paths and decrypt
 
 Working today:
 
-- Continuous laptop -> sink sync (fsnotify on Chrome's Cookies file, debounced, allowlist-filtered, encrypted)
-- Sink writes Chrome's Cookies SQLite in plain-v10 format + plaintext sidecar at `~/.agentcookie/cookies-plain.db`
-- Five built-in PP CLI adapters push directly into each CLI's session cache after every sync
-- Sink-side blocklist (defense in depth), sink-side replay defense (monotonic sequence per source)
+- Continuous laptop -> sink sync (fsnotify on Chrome's Cookies file, debounced, allowlist-filtered, AES-256-GCM-sealed)
+- Sink writes Chrome's Cookies SQLite plus a sealed sidecar at `~/.agentcookie/cookies-plain.db`; PP CLIs link `pkg/sidecar.ReadSidecar` to unseal transparently
+- Five built-in PP CLI adapters push sealed session caches after every sync
+- Tailnet-only listeners on both ends (sink and pair endpoints refuse `0.0.0.0`); pair endpoint rate-limited with a 64-bit code
+- Sink-side blocklist + allowlist, persistent replay defense (nanosecond sequence survives restart)
+- Apple Developer ID signed binaries; per-binary Keychain ACL on both Chrome Safe Storage and the new `agentcookie-master` key
 - One-time install ceremony covered by `agentcookie wizard install`
-- 165 unit tests across 20 packages
+- 258 unit tests across 22 packages
 
 Not yet:
 
+- PP CLI sidecar-reader migration in cli-printing-press so each adapter PP CLI links `pkg/sidecar` directly (U12; the sink falls back to plaintext when older PP CLIs are detected)
 - `agentcookie pair --rotate` for live key rotation
 - One-to-many fan-out (one laptop, multiple sinks)
 - Linux + Windows source and sink support
-- Signed release binaries (until then, `go install` is the only path; binary cdhash churn affects only the install ceremony, not steady state)
 
 ## Documentation
 
@@ -151,6 +153,8 @@ Not yet:
 | [FAQ](docs/faq.md) | common questions |
 | [v0.10 keychain runbook](docs/runbook-v0.10-keychain-access.md) | how the sink's one-time Keychain ACL setup works |
 | [v0.11 adapter runbook](docs/runbook-v0.11-adapter-cookie-push.md) | adapter mechanism, validation, and how to add your own |
+| [v0.12 security runbook](docs/runbook-v0.12-security-hardening.md) | sealed master key, tailnet-only listeners, rate-limited pairing, verify + recover |
+| [v0.12 codesign runbook](docs/runbook-v0.12-codesign.md) | Developer ID signing pipeline, CI secrets, renewal |
 | [Install skill](skill/SKILL.md) | Claude Code / gstack-style skill so an agent can drive the install |
 
 ## License
