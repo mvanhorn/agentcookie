@@ -71,6 +71,9 @@ func LoadSource(dir string) (*SourceConfig, error) {
 	if cfg.Peer.Hostname == "" && cfg.Security.SharedSecret == "" {
 		return nil, fmt.Errorf("%s: either peer.hostname (paired key) or security.shared_secret (legacy) is required", path)
 	}
+	if err := validateSharedSecret(path, cfg.Security.SharedSecret); err != nil {
+		return nil, err
+	}
 	if cfg.Chrome.DBPath == "" {
 		cfg.Chrome.DBPath = DefaultChromeCookiesPath()
 	}
@@ -97,10 +100,30 @@ func LoadSink(dir string) (*SinkConfig, error) {
 	if cfg.Peer.Hostname == "" && cfg.Security.SharedSecret == "" {
 		return nil, fmt.Errorf("%s: either peer.hostname (paired key) or security.shared_secret (legacy) is required", path)
 	}
+	if err := validateSharedSecret(path, cfg.Security.SharedSecret); err != nil {
+		return nil, err
+	}
 	if cfg.Chrome.DBPath == "" {
 		cfg.Chrome.DBPath = DefaultChromeCookiesPath()
 	}
 	return &cfg, nil
+}
+
+// validateSharedSecret enforces a 32-byte minimum on the legacy
+// security.shared_secret YAML field. v0.12 rejects shorter values
+// because newGCM derives the AES key by SHA-256-hashing the secret;
+// a short secret produced a weak AEAD key. Pairing-derived 32-byte
+// keys bypass the SHA-256 step entirely and never fail this check.
+// Empty secret is permitted here: the paired-key path is the
+// canonical credential and the legacy field is optional.
+func validateSharedSecret(path, secret string) error {
+	if secret == "" {
+		return nil
+	}
+	if len(secret) < 32 {
+		return fmt.Errorf("%s: security.shared_secret must be at least 32 bytes (got %d); prefer pairing (`agentcookie pair`) over a typed secret", path, len(secret))
+	}
+	return nil
 }
 
 func loadYAML(path string, out any) error {

@@ -14,8 +14,10 @@ func resolveTransportSecret(configDir, peerHost, legacy string) (string, error) 
 	if peerHost != "" {
 		pk, err := keystore.Load(configDir, peerHost)
 		if err == nil {
-			// The raw 32-byte key is passed through SealWithSecret's SHA256
-			// derivation. Both sides do the same so the AES key matches.
+			// pk.Key is the 32-byte HKDF output from pairing. transport.newGCM
+			// recognizes 32-byte secrets and uses them directly as the AES
+			// key, skipping the SHA-256 step that legacy shared_secret
+			// values go through (see internal/transport/crypto.go).
 			return string(pk.Key), nil
 		}
 		if legacy == "" {
