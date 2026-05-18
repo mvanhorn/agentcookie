@@ -85,8 +85,14 @@ func LoadSink(dir string) (*SinkConfig, error) {
 		return nil, err
 	}
 	cfg.Chrome.DBPath = ExpandTilde(cfg.Chrome.DBPath)
+	// v0.12 S1: no permissive default for listen.addr. Pre-v0.12 sink.yaml
+	// files that omit the address used to fall through to 127.0.0.1:9999;
+	// that masked the wizard's silent-detection-failure -> 0.0.0.0 path
+	// further upstream. Empty here is now a config error; the wizard
+	// install writes a concrete tailnet 100.x address (see
+	// internal/tsclient.RequireTailnetIP).
 	if cfg.Listen.Addr == "" {
-		cfg.Listen.Addr = "127.0.0.1:9999"
+		return nil, fmt.Errorf("%s: listen.addr is required (run `agentcookie wizard install --as sink` to detect your Tailscale 100.x address, or set it explicitly)", path)
 	}
 	if cfg.Peer.Hostname == "" && cfg.Security.SharedSecret == "" {
 		return nil, fmt.Errorf("%s: either peer.hostname (paired key) or security.shared_secret (legacy) is required", path)

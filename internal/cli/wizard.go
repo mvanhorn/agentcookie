@@ -159,9 +159,20 @@ func wizardInstallSource(ctx context.Context, binPath, logDir string) error {
 		fmt.Fprintf(os.Stderr, "agentcookie wizard: existing paired key for %q found; skipping pairing (use --repair to force)\n", wizardPeer)
 	} else {
 		// Step 3: run source-side pairing in foreground.
+		// v0.12 S1: refuse 0.0.0.0. The pair listener is reached over
+		// the tailnet; binding on every interface makes a flaky
+		// detection at install time silently turn a personal pair
+		// endpoint into an internet-reachable one. The wizard now
+		// fails loud if Tailscale isn't usable.
 		listen := wizardListen
 		if listen == "" {
-			listen = "0.0.0.0:9998"
+			ip, err := tsclient.RequireTailnetIP(ctx)
+			if err != nil {
+				return fmt.Errorf("detect Tailscale 100.x address for pair listener: %w", err)
+			}
+			listen = fmt.Sprintf("%s:9998", ip)
+		} else if err := validateListenAddr(listen); err != nil {
+			return fmt.Errorf("--listen %q: %w", listen, err)
 		}
 		// Write a pairing info file so an SSH'ing agent can grab it.
 		pairingInfo, code, err := beginSourcePairing(ctx, listen, wizardLocalName, binPath, logDir)
@@ -201,12 +212,27 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 		return err
 	}
 
-	if err := writeYAMLIfMissing(
-		filepath.Join(common.ConfigDir, "sink.yaml"),
-		renderSinkYAML(wizardPeer),
-		wizardForce,
-	); err != nil {
-		return err
+	// v0.12 S1: resolve the tailnet 100.x address BEFORE writing
+	// sink.yaml. If Tailscale is not up the helper returns a
+	// structured error and we refuse to write a permissive default.
+	// On an existing v0.11 install the sink.yaml already has a
+	// concrete 100.x address; writeYAMLIfMissing skips re-writing
+	// it unless --force is set, so this detection only fires for
+	// fresh installs and explicit --force overwrites.
+	sinkYAMLPath := filepath.Join(common.ConfigDir, "sink.yaml")
+	if wizardForce || !fileExists(sinkYAMLPath) {
+		ip, err := tsclient.RequireTailnetIP(ctx)
+		if err != nil {
+			return fmt.Errorf("detect Tailscale 100.x address for sink listener: %w", err)
+		}
+		listenAddr := fmt.Sprintf("%s:9999", ip)
+		if err := writeYAMLIfMissing(
+			sinkYAMLPath,
+			renderSinkYAML(wizardPeer, listenAddr),
+			wizardForce,
+		); err != nil {
+			return err
+		}
 	}
 	if err := writeYAMLIfMissing(
 		filepath.Join(common.ConfigDir, "blocklist.yaml"),
@@ -548,9 +574,12 @@ peer:
 `, sinkURL, peer)
 }
 
-func renderSinkYAML(peer string) string {
-	// Bind to the local tailnet IP for sink listener if available; otherwise 0.0.0.0:9999.
-	listenAddr := defaultSinkListenAddr()
+// renderSinkYAML formats sink.yaml with a caller-resolved listen
+// address. The wizard install path is the only place that calls this,
+// and it resolves listenAddr via tsclient.RequireTailnetIP first so a
+// detection failure refuses to write sink.yaml rather than silently
+// falling through to a permissive default. See v0.12 S1.
+func renderSinkYAML(peer, listenAddr string) string {
 	// v0.7: cdp.enabled is gone. Direct SQLite + leveldb file writes are
 	// the only path. The Chrome quit/relaunch ceremony around each sync
 	// is handled by the chromectl package.
@@ -561,22 +590,32 @@ peer:
 `, listenAddr, peer)
 }
 
-func defaultSinkListenAddr() string {
-	// Prefer a Tailscale IP if we can find one in 100.64.0.0/10 on a local interface.
-	addrs, err := net.InterfaceAddrs()
-	if err == nil {
-		for _, a := range addrs {
-			ipnet, ok := a.(*net.IPNet)
-			if !ok || ipnet.IP.To4() == nil {
-				continue
-			}
-			ip := ipnet.IP.To4()
-			if ip[0] == 100 && ip[1] >= 64 && ip[1] <= 127 {
-				return fmt.Sprintf("%s:9999", ip.String())
-			}
-		}
+// validateListenAddr enforces the v0.12 binding policy on a configured
+// listen address: must be tailnet (100.x) or an explicit local-dev
+// loopback. 0.0.0.0 and other any-interface binds are rejected. Used
+// by the wizard when --listen is passed explicitly, and by the sink
+// and pair runtime startup guards.
+//
+// The address string is in "host:port" form. Anything that does not
+// parse cleanly is rejected with a wrapping error so the caller can
+// surface "what you passed" plus the policy explanation.
+func validateListenAddr(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("parse host:port: %w (v0.12 requires a tailnet 100.x address; see docs/quickstart.md)", err)
 	}
-	return "0.0.0.0:9999"
+	switch host {
+	case "0.0.0.0", "::", "":
+		return fmt.Errorf("refuses to bind on %q (every interface); v0.12 requires a tailnet 100.x address (run `tailscale status` and re-run; see docs/quickstart.md)", host)
+	case "127.0.0.1", "::1", "localhost":
+		// Explicit loopback is allowed for local-dev / test setups.
+		// Not the default fallback path; the operator typed it.
+		return nil
+	}
+	if tsclient.IsTailnetIP(host) {
+		return nil
+	}
+	return fmt.Errorf("refuses to bind on %q: not a Tailscale 100.x address (v0.12 hardening; pin a 100.x IP from `tailscale status` or use 127.0.0.1 for local dev)", host)
 }
 
 func starterBlocklistYAML() string {

@@ -56,6 +56,14 @@ func runSink(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// v0.12 S1: refuse to start on 0.0.0.0 or any non-tailnet address.
+	// Catches the case where an old sink.yaml has the v0.11 permissive
+	// default baked in, OR a user hand-edited the file. Explicit
+	// 127.0.0.1 stays allowed for local-dev binding (operator typed it).
+	if err := validateListenAddr(cfg.Listen.Addr); err != nil {
+		return fmt.Errorf("sink listen %q: %w", cfg.Listen.Addr, err)
+	}
+
 	var key []byte
 	if !sinkDryRun {
 		password, err := chrome.SafeStoragePassword()
