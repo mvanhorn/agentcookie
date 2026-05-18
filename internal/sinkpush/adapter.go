@@ -84,6 +84,13 @@ type Result struct {
 	// success. Zero when the adapter was skipped or errored.
 	Pushed int
 
+	// Invalid is the count of cookies dropped by the validator
+	// before reaching Push: cookies whose Name, Value, or HostKey
+	// failed the safety check in validate.go. A non-zero Invalid
+	// is interesting on its own (a source pushing garbage) but
+	// does NOT itself fail the adapter.
+	Invalid int
+
 	// Err is the underlying error when Push failed. Nil on
 	// success or skip.
 	Err error

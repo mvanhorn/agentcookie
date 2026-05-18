@@ -70,10 +70,24 @@ func runOne(a Adapter, cookies []chrome.Cookie) Result {
 		return r
 	}
 
-	if err := a.Push(filtered); err != nil {
+	valid := make([]chrome.Cookie, 0, len(filtered))
+	for _, c := range filtered {
+		if err := Validate(c); err != nil {
+			r.Invalid++
+			continue
+		}
+		valid = append(valid, c)
+	}
+	if len(valid) == 0 {
+		r.Skipped = true
+		r.SkippedReason = "all cookies failed validation"
+		return r
+	}
+
+	if err := a.Push(valid); err != nil {
 		r.Err = err
 		return r
 	}
-	r.Pushed = len(filtered)
+	r.Pushed = len(valid)
 	return r
 }

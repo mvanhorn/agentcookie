@@ -52,6 +52,7 @@ type SinkState struct {
 type AdapterResult struct {
 	Name          string    `json:"name"`
 	Pushed        int       `json:"pushed,omitempty"`
+	Invalid       int       `json:"invalid,omitempty"`
 	Skipped       bool      `json:"skipped,omitempty"`
 	SkippedReason string    `json:"skipped_reason,omitempty"`
 	Err           string    `json:"error,omitempty"`
