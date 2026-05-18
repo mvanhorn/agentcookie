@@ -19,6 +19,14 @@ builds:
       - amd64
     ldflags:
       - -s -w -X github.com/mvanhorn/agentcookie/internal/cli.Version={{ .Version }}
+    # Sign each darwin binary in place before it is archived. Uses
+    # scripts/sign.sh so the local + release pipelines share one
+    # codesign invocation. AGENTCOOKIE_SIGN_IDENTITY is set by the
+    # release workflow (and defaults inside scripts/sign.sh if unset).
+    hooks:
+      post:
+        - cmd: scripts/sign.sh {{ .Path }}
+          output: true
 
 archives:
   - id: agentcookie
