@@ -26,7 +26,7 @@ sink:
 chrome:
   db_path: ~/Library/Application Support/Google/Chrome/Default/Cookies
 security:
-  shared_secret: not-empty
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 `)
 	cfg, err := LoadSource(dir)
 	if err != nil {
@@ -44,7 +44,7 @@ func TestLoadSourceMissingSinkURL(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "source.yaml", `
 security:
-  shared_secret: not-empty
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 `)
 	if _, err := LoadSource(dir); err == nil {
 		t.Fatal("expected error for missing sink.url, got nil")
@@ -70,7 +70,7 @@ func TestLoadSinkEmptyListenIsError(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "sink.yaml", `
 security:
-  shared_secret: not-empty
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 `)
 	if _, err := LoadSink(dir); err == nil {
 		t.Fatal("expected error for missing listen.addr, got nil")
@@ -87,7 +87,7 @@ func TestLoadSinkHonorsExplicitListenAddr(t *testing.T) {
 listen:
   addr: 100.80.229.80:9999
 security:
-  shared_secret: not-empty
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 `)
 	cfg, err := LoadSink(dir)
 	if err != nil {
@@ -95,6 +95,44 @@ security:
 	}
 	if cfg.Listen.Addr != "100.80.229.80:9999" {
 		t.Errorf("listen addr: got %q", cfg.Listen.Addr)
+	}
+}
+
+// TestLoadSourceRejectsShortSharedSecret covers U10: a legacy
+// security.shared_secret below 32 bytes is now refused at config
+// load. The error names the byte count and points at pairing.
+func TestLoadSourceRejectsShortSharedSecret(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "source.yaml", `
+sink:
+  url: http://example.test:9999/sync
+security:
+  shared_secret: tooshort
+`)
+	_, err := LoadSource(dir)
+	if err == nil {
+		t.Fatal("expected error for short shared_secret, got nil")
+	}
+	if !strings.Contains(err.Error(), "at least 32 bytes") {
+		t.Errorf("error should name the 32-byte floor, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "agentcookie pair") {
+		t.Errorf("error should suggest pairing, got %v", err)
+	}
+}
+
+// TestLoadSourceAcceptsExactly32ByteSecret proves the entropy floor
+// is inclusive at exactly 32 bytes (matches the AES-256 key length).
+func TestLoadSourceAcceptsExactly32ByteSecret(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "source.yaml", `
+sink:
+  url: http://example.test:9999/sync
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+	if _, err := LoadSource(dir); err != nil {
+		t.Errorf("32-byte shared_secret should be accepted, got %v", err)
 	}
 }
 
