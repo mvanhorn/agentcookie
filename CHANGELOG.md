@@ -2,6 +2,56 @@
 
 ## [Unreleased]
 
+### v0.11: sinkpush adapter pushes cookies into each PP CLI's session cache
+
+The product UX gap after v0.10: each new PP CLI on the Mac mini
+triggered a fresh Keychain Always-Allow prompt the first time it
+read Chrome Safe Storage. macOS's modern SecItem API (used by both
+Python keyring and keybase/go-keychain) does not durably honor the
+legacy `-A` ACL or `-T` trust-list entries for ad-hoc-signed Go
+binaries. Multi-click NUX was unacceptable.
+
+v0.11 closes the gap by side-stepping Keychain on the CLI side
+entirely. The sink already has stable Keychain access in its
+LaunchAgent context. After each successful WriteCookies commit, the
+new `internal/sinkpush` package iterates a registered set of PP CLI
+adapters; each adapter takes the cookies it cares about (host-pattern
+filter) and writes them directly into that CLI's local session
+cache. PP CLIs read their own session files on subsequent
+invocations -- they never touch Chrome cookies or Keychain.
+
+Five built-in adapters ship with v0.11:
+
+- `instacart-pp-cli` -- shells out to `instacart auth paste` with a
+  Cookie header on stdin (canonicalizes the existing
+  `hack/dump-instacart` flow).
+- `airbnb-pp-cli`, `ebay-pp-cli`, `pagliacci-pp-cli` -- shared
+  `PycookiecheatStyleAdapter` writes `~/.config/<cli>/config.toml`
+  (access_token field) and `cookies.json` (cookies field). Patches
+  existing config.toml in place to preserve user-set base_url and
+  other fields; creates from a canonical template on fresh installs.
+- `table-reservation-goat-pp-cli` -- writes structured cookie objects
+  into `~/.config/.../session.json` split across opentable_cookies
+  and tock_cookies arrays.
+
+Per-adapter failures are loud (logged to sink stderr, recorded in
+`~/.agentcookie/sink-state.json`) but non-fatal. The cookie write
+and sidecar paths run first and are the source of truth.
+
+New surfaces:
+
+- `agentcookie wizard verify-adapters` prints a table of the most
+  recent adapter run; --json envelope for SSH agents.
+- `agentcookie status` gains a one-line adapter rollup under the
+  sink-daemon section.
+- `state.SinkState.LastAdapterResults` records per-adapter outcome
+  for the most recent sync.
+
+End-to-end runbook: `docs/runbook-v0.11-adapter-cookie-push.md`.
+Architectural rationale (why this beats Keychain ACL manipulation
+on macOS 15+) lives in that runbook and in plan
+`docs/plans/2026-05-17-007-feat-sink-cli-adapter-cookie-push-plan.md`.
+
 ### v0.10: one-time keychain access for headless kooky CLIs
 
 The remaining gap after v0.9: kooky-using CLIs (instacart-pp-cli, bird,

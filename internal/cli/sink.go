@@ -17,6 +17,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
+	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 	"github.com/mvanhorn/agentcookie/internal/state"
 	"github.com/mvanhorn/agentcookie/internal/transport"
 )
@@ -174,6 +175,19 @@ func runSink(cmd *cobra.Command, args []string) error {
 		sinkState.LastWriteMode = "sqlite+leveldb"
 		sinkState.TotalWrites++
 		sinkState.TotalDropped += dropped
+
+		// v0.11: after the cookie write commits, push the decrypted set
+		// into each registered PP CLI's local session cache. This is the
+		// step that lets kooky-using AND pycookiecheat-using PP CLIs run
+		// headlessly on this sink with zero per-binary Keychain prompts.
+		// Adapter failures are reported but do not block the sync. See
+		// plan 2026-05-17-007.
+		if len(cookies) > 0 {
+			adapterResults := sinkpush.RunAll(cookies)
+			sinkState.LastAdapterResults = toStateAdapterResults(adapterResults)
+			logAdapterResults(adapterResults)
+		}
+
 		_ = stateWriter.Save(sinkState)
 		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies (%d sidecar), %d localStorage origins, %d indexedDB origins; dropped %d non-allowlisted cookies\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, dropped)
 	})
@@ -185,6 +199,45 @@ func runSink(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "agentcookie sink: listening on http://%s (db=%s)\n", cfg.Listen.Addr, cfg.Chrome.DBPath)
 	}
 	return srv.ListenAndServe()
+}
+
+// toStateAdapterResults converts sinkpush.Result slices to the state
+// package's AdapterResult shape (state cannot import sinkpush without
+// a dependency loop, so the conversion happens here at the seam).
+func toStateAdapterResults(rs []sinkpush.Result) []state.AdapterResult {
+	now := time.Now().UTC()
+	out := make([]state.AdapterResult, len(rs))
+	for i, r := range rs {
+		sr := state.AdapterResult{
+			Name:          r.Name,
+			Pushed:        r.Pushed,
+			Skipped:       r.Skipped,
+			SkippedReason: r.SkippedReason,
+			RanAt:         now,
+		}
+		if r.Err != nil {
+			sr.Err = r.Err.Error()
+		}
+		out[i] = sr
+	}
+	return out
+}
+
+// logAdapterResults emits one stderr line per adapter outcome. Mirrors
+// the existing probe-ok one-liner shape for visual consistency in
+// sink.err.log: any future regression (failed adapter, missing CLI)
+// is visible at a glance.
+func logAdapterResults(rs []sinkpush.Result) {
+	for _, r := range rs {
+		switch {
+		case r.Err != nil:
+			fmt.Fprintf(os.Stderr, "agentcookie sink: adapter %s FAIL: %v\n", r.Name, r.Err)
+		case r.Skipped:
+			fmt.Fprintf(os.Stderr, "agentcookie sink: adapter %s skipped (%s)\n", r.Name, r.SkippedReason)
+		default:
+			fmt.Fprintf(os.Stderr, "agentcookie sink: adapter %s pushed %d cookies\n", r.Name, r.Pushed)
+		}
+	}
 }
 
 // writeResult counts what landed on the sink during one /sync.

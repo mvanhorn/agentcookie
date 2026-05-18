@@ -37,6 +37,25 @@ type SinkState struct {
 	LastErrorAt    time.Time `json:"last_error_at,omitempty"`
 	ListenAddr     string    `json:"listen_addr"`
 	CDPManaged     bool      `json:"cdp_managed"`
+
+	// LastAdapterResults records the v0.11 sinkpush adapter run that
+	// followed LastWrite. One entry per registered adapter. Empty when
+	// no sync has yet triggered a sinkpush run. `agentcookie status`
+	// surfaces this; `agentcookie wizard verify-adapters` reads it.
+	LastAdapterResults []AdapterResult `json:"last_adapter_results,omitempty"`
+}
+
+// AdapterResult is the per-adapter outcome of the most recent sinkpush
+// run. Mirrors sinkpush.Result but lives in the state package to avoid
+// state depending on sinkpush; sink.go converts between the two before
+// writing.
+type AdapterResult struct {
+	Name          string    `json:"name"`
+	Pushed        int       `json:"pushed,omitempty"`
+	Skipped       bool      `json:"skipped,omitempty"`
+	SkippedReason string    `json:"skipped_reason,omitempty"`
+	Err           string    `json:"error,omitempty"`
+	RanAt         time.Time `json:"ran_at"`
 }
 
 // Paths under ~/.agentcookie/.
