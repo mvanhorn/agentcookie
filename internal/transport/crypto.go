@@ -44,9 +44,27 @@ func OpenWithSecret(ciphertext []byte, secret string) ([]byte, error) {
 	return pt, nil
 }
 
+// newGCM returns an AES-256-GCM cipher derived from secret.
+//
+// Two paths:
+//
+//   - When secret is exactly 32 bytes long, it is treated as an
+//     already-uniform key (the pairing-derived HKDF-SHA256 output is
+//     32 bytes of uniformly random data) and used directly. No
+//     redundant SHA-256 step.
+//
+//   - Otherwise, secret goes through SHA-256 to produce a 32-byte
+//     AES key. This covers the legacy security.shared_secret YAML
+//     path. The config layer rejects secrets below a 32-byte entropy
+//     floor so attackers cannot drive this path with a weak secret.
 func newGCM(secret string) (cipher.AEAD, error) {
-	keyHash := sha256.Sum256([]byte(secret))
-	block, err := aes.NewCipher(keyHash[:])
+	var key [32]byte
+	if len(secret) == 32 {
+		copy(key[:], secret)
+	} else {
+		key = sha256.Sum256([]byte(secret))
+	}
+	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return nil, err
 	}
