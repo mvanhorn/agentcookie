@@ -11,6 +11,11 @@ permissions:
 jobs:
   goreleaser:
     runs-on: macos-latest
+    # Skip the entire job when the signing secrets aren't configured.
+    # Releases are cut locally by the maintainer until CERTIFICATE_OSX_APPLICATION
+    # and AC_NOTARY_PASSWORD are populated; without this guard `make release`
+    # would fail on every tag and pollute the CI history.
+    if: ${{ vars.RELEASE_CI_ENABLED == 'true' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,14 +30,18 @@ jobs:
       # are repo secrets. The action creates an ephemeral keychain, unlocks
       # it, and adds it to the search list for the rest of the job.
       #
-      # TODO: maintainer must add the following GitHub Actions secrets
-      # before the first signed release ships:
+      # To enable CI-driven releases, the maintainer must add the following
+      # GitHub Actions secrets and set the `RELEASE_CI_ENABLED` repo variable
+      # to `true` (the job-level `if:` above gates on the variable):
       #   - CERTIFICATE_OSX_APPLICATION : base64-encoded .p12 of the
       #     Developer ID Application cert + private key
       #   - CERTIFICATE_OSX_APPLICATION_PASSWORD : password for the .p12
+      #   - AC_NOTARY_PASSWORD : app-specific password for Apple notarytool
       # The matching cert is Common Name
       #   "Developer ID Application: Matthew Charles Van Horn (NM8VT393AR)"
       # See docs/runbook-v0.12-codesign.md for the export / renewal flow.
+      # Until the variable is flipped, releases are cut locally with
+      # `make release` + scripts/release-tarball.sh + `gh release create`.
       - name: import Developer ID cert
         if: ${{ secrets.CERTIFICATE_OSX_APPLICATION != '' }}
         uses: apple-actions/import-codesign-certs@v3
