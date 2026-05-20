@@ -49,14 +49,20 @@ Same flow, opposite role:
 
 1. SSH or screen-share into your sink Mac.
 2. Extract the same release tarball.
-3. Run: `./install-beta.sh --as sink`. It will:
-   - Verify notarization
-   - Place the binary
-   - Prompt for your MacBook's Tailscale hostname and the pairing code
-   - Prompt for adapter binaries you want to grant Chrome cookie access to (e.g. `instacart-pp-cli`, `table-reservation-goat-pp-cli`)
-   - Run `agentcookie wizard install --as sink --peer <macbook> --code <pairing-code> --extra-binary ...` interactively
+3. Run: `./install-beta.sh --as sink --peer <macbook> --code <pairing-code> --pair-url <pair-url>` (the source's wizard install printed the code + URL for you to copy here).
+4. The script verifies the code signature, places the binary, runs `agentcookie wizard install --as sink ...`, and ends with `doctor`.
 
 You'll see one Keychain prompt asking permission for `agentcookie` to access Chrome Safe Storage. Click **Always Allow**.
+
+### Headless sink (SSH-only, no monitor on the second Mac)
+
+If the second Mac is headless and you're installing over SSH with no one at the screen to click prompts, `install-beta.sh` auto-detects "no TTY" and adds `--skip-keychain-prompt` to the wizard. The install completes, but the sink daemon won't be able to read Chrome Safe Storage until you grant Always Allow once. To do that, either physically log into the sink Mac or open a Screen Sharing session, then run:
+
+```
+~/bin/agentcookie sink
+```
+
+That triggers the Keychain prompt in the GUI session. Click **Always Allow**, then Ctrl-C and restart the LaunchAgent: `launchctl bootout "gui/$(id -u)/dev.agentcookie.sink"; launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/dev.agentcookie.sink.plist`. Sync resumes within seconds.
 
 ## Verify both sides
 

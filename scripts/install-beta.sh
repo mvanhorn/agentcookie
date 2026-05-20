@@ -15,6 +15,12 @@
 # Optional flags:
 #   --peer <hostname>          Tailscale hostname of the OTHER machine.
 #                              If omitted, the script prompts interactively.
+#   --code <code>              [sink] Pairing code printed by the source's
+#                              wizard install. Forwarded to wizard install.
+#   --pair-url <url>           [sink] Source's pairing URL (e.g.
+#                              http://<source>:9998/pair). Forwarded to wizard install.
+#   --skip-keychain-prompt     [sink] Forwarded to wizard install. Auto-set
+#                              when no TTY is attached (e.g. SSH non-pty).
 #   --extra-binary <path>      Repeatable. PP CLI binaries to grant
 #                              Chrome Safe Storage access. Sink-side only.
 #   --bin-dir <dir>            Where to place the agentcookie binary.
@@ -37,6 +43,9 @@ set -euo pipefail
 
 ROLE=""
 PEER=""
+CODE=""
+PAIR_URL=""
+SKIP_KEYCHAIN_PROMPT=""
 EXTRA_BINS=()
 BIN_DIR=""
 TARBALL=""
@@ -70,6 +79,12 @@ while [[ $# -gt 0 ]]; do
       ROLE="$2"; shift 2 ;;
     --peer)
       PEER="$2"; shift 2 ;;
+    --code)
+      CODE="$2"; shift 2 ;;
+    --pair-url)
+      PAIR_URL="$2"; shift 2 ;;
+    --skip-keychain-prompt)
+      SKIP_KEYCHAIN_PROMPT="1"; shift ;;
     --extra-binary)
       EXTRA_BINS+=("$2"); shift 2 ;;
     --bin-dir)
@@ -77,7 +92,7 @@ while [[ $# -gt 0 ]]; do
     --tarball)
       TARBALL="$2"; shift 2 ;;
     -h|--help)
-      sed -n '1,30p' "$0" >&2
+      sed -n '1,35p' "$0" >&2
       exit 0 ;;
     *)
       die "unknown argument: $1" ;;
@@ -138,18 +153,28 @@ fi
 
 WORK="$(mktemp -d -t agentcookie-install.XXXXXX)"
 tar -xzf "$TARBALL" -C "$WORK"
-NEW_BIN="$WORK/agentcookie"
-if [[ ! -x "$NEW_BIN" ]]; then
+# The release tarball wraps everything in a versioned directory
+# (agentcookie-${VERSION}-darwin-arm64/), so the binary is one level
+# deep. find tolerates both shapes (wrapped + flat).
+NEW_BIN="$(find "$WORK" -name agentcookie -type f -perm -u+x 2>/dev/null | head -n1)"
+if [[ -z "$NEW_BIN" || ! -x "$NEW_BIN" ]]; then
   die "agentcookie binary not found inside tarball ($TARBALL)"
 fi
 
-step "verifying notarization"
-SPCTL_OUT="$(spctl -a -vv "$NEW_BIN" 2>&1 || true)"
-if echo "$SPCTL_OUT" | grep -q 'accepted'; then
-  ok "binary is notarized and accepted by Gatekeeper"
+step "verifying code signature"
+# spctl -a is the wrong tool for CLI binaries (it assesses for app
+# bundles and reports "rejected: not an app" even when the binary is
+# correctly signed + notarized). Use codesign + Developer ID OU check
+# instead.
+if codesign --verify --strict --verbose=2 "$NEW_BIN" >/dev/null 2>&1; then
+  if codesign -d -r- "$NEW_BIN" 2>&1 | grep -q "subject.OU. = NM8VT393AR"; then
+    ok "binary is signed with the agentcookie Developer ID (NM8VT393AR)"
+  else
+    warn "binary signature is valid but Developer ID OU does not match NM8VT393AR"
+    warn "continuing; this binary may be from a fork or an unofficial build"
+  fi
 else
-  warn "spctl reports: $SPCTL_OUT"
-  warn "binary may not be notarized; LaunchAgent launches may fail. Continuing anyway."
+  warn "codesign verification failed; LaunchAgent launches may be blocked by Gatekeeper. Continuing anyway."
 fi
 
 xattr -c "$NEW_BIN" 2>/dev/null || true
@@ -172,8 +197,11 @@ chmod +x "$TARGET"
 ok "installed"
 
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-  warn "$BIN_DIR is not on your \$PATH. Add this to your shell profile:"
+  warn "$BIN_DIR is not on your \$PATH. The LaunchAgent uses absolute paths"
+  warn "and will work fine, but \`agentcookie\` from a shell will not. To fix,"
+  warn "add this line to your shell profile (~/.zshrc on macOS default):"
   warn "    export PATH=\"$BIN_DIR:\$PATH\""
+  warn "Then run \`exec \$SHELL -l\` to reload."
 fi
 
 # ---- run wizard ----
@@ -186,11 +214,49 @@ if [[ -z "$PEER" ]]; then
   prompt PEER "peer hostname"
 fi
 
+# Sink-only: collect the pair code and pair URL from the source's
+# wizard install output. Both are required (the wizard refuses to
+# start without them) so prompt if not passed.
+if [[ "$ROLE" == "sink" ]]; then
+  if [[ -z "$CODE" ]]; then
+    echo "    Paste the pairing code printed by the source's wizard install"
+    echo "    (looks like 'XXXX-YYYY-ZZZZ'):"
+    prompt CODE "pair code"
+  fi
+  if [[ -z "$PAIR_URL" ]]; then
+    echo "    Paste the pair URL printed by the source's wizard install"
+    echo "    (looks like 'http://<source-host>:9998/pair'):"
+    prompt PAIR_URL "pair URL"
+  fi
+fi
+
 WIZARD_ARGS=(wizard install --as "$ROLE" --peer "$PEER")
+if [[ "$ROLE" == "sink" ]]; then
+  WIZARD_ARGS+=(--code "$CODE" --pair-url "$PAIR_URL")
+fi
 for b in "${EXTRA_BINS[@]:-}"; do
   [[ -z "$b" ]] && continue
   WIZARD_ARGS+=(--extra-binary "$b")
 done
+
+# When there's no controlling TTY (headless SSH install on a Mac mini),
+# any Keychain GUI prompt the wizard would normally trigger will sit
+# forever on the GUI session's screen with no one to click it. Default
+# --skip-keychain-prompt in that case so the install completes; the
+# sink daemon will surface the prompt on first sync instead. Operators
+# who do have a GUI session can pass --skip-keychain-prompt explicitly
+# or just let the wizard trigger the prompt normally.
+if [[ -z "$SKIP_KEYCHAIN_PROMPT" ]] && [[ "$ROLE" == "sink" ]] && ! [[ -t 0 ]]; then
+  warn "no TTY detected; defaulting --skip-keychain-prompt for the wizard."
+  warn "You will need to grant Chrome Safe Storage access manually:"
+  warn "  1) physically log into the Mac mini (or Screen Share into it)"
+  warn "  2) open Terminal and run: $TARGET sink"
+  warn "  3) click 'Always Allow' on the Keychain prompt that appears"
+  SKIP_KEYCHAIN_PROMPT="1"
+fi
+if [[ -n "$SKIP_KEYCHAIN_PROMPT" ]]; then
+  WIZARD_ARGS+=(--skip-keychain-prompt)
+fi
 
 "$TARGET" "${WIZARD_ARGS[@]}"
 
