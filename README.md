@@ -1,5 +1,7 @@
 # agentcookie
 
+> **Closed beta v0.12.0-beta.1.** Invitation only. If you received an invite, jump to [`docs/quickstart-beta.md`](docs/quickstart-beta.md) for the ten-minute install. If you didn't, the rest of this README explains what agentcookie is and what it does.
+
 Peer-to-peer Chrome session replication for AI agents.
 
 Your laptop is logged in to everything. Your AI agents run on a different machine (Mac mini, cloud VM, whatever) and aren't. That gap is `agentcookie`.
@@ -154,7 +156,8 @@ Not yet:
 | [v0.10 keychain runbook](docs/runbook-v0.10-keychain-access.md) | how the sink's one-time Keychain ACL setup works |
 | [v0.11 adapter runbook](docs/runbook-v0.11-adapter-cookie-push.md) | adapter mechanism, validation, and how to add your own |
 | [v0.12 security runbook](docs/runbook-v0.12-security-hardening.md) | sealed master key, tailnet-only listeners, rate-limited pairing, verify + recover |
-| [v0.12 codesign runbook](docs/runbook-v0.12-codesign.md) | Developer ID signing pipeline, CI secrets, renewal |
+| [v0.12 codesign runbook](docs/runbook-v0.12-codesign.md) | Developer ID signing pipeline, notarization, CI secrets, renewal |
+| [Closed-beta quickstart](docs/quickstart-beta.md) | ten-minute install for invited beta testers |
 | [Install skill](skill/SKILL.md) | Claude Code / gstack-style skill so an agent can drive the install |
 
 ## License

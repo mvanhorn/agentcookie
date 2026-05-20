@@ -1,0 +1,587 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/mvanhorn/agentcookie/internal/config"
+	"github.com/mvanhorn/agentcookie/internal/keystore"
+	"github.com/mvanhorn/agentcookie/internal/state"
+	"github.com/mvanhorn/agentcookie/internal/tsclient"
+)
+
+// Severity tags a single doctor check. The OK/WARN/FAIL trio drive
+// human output coloring and the overall exit code; INFO is reserved
+// for purely informational lines; SKIPPED marks checks that do not
+// apply on this role (e.g. sink-only checks on a source-only box).
+type Severity string
+
+const (
+	SeverityOK      Severity = "ok"
+	SeverityWarn    Severity = "warn"
+	SeverityFail    Severity = "fail"
+	SeverityInfo    Severity = "info"
+	SeveritySkipped Severity = "skipped"
+)
+
+// Check is one row of a DoctorReport. Detail is the human-readable
+// one-liner; Remediation names the concrete next step the user can
+// run when Severity is FAIL or WARN.
+type Check struct {
+	Name        string   `json:"name"`
+	Severity    Severity `json:"severity"`
+	Detail      string   `json:"detail"`
+	Remediation string   `json:"remediation,omitempty"`
+}
+
+// DoctorReport is the JSON envelope emitted by `agentcookie doctor --json`.
+// The shape is part of the agent-facing contract; field names should
+// not change without bumping the schema.
+type DoctorReport struct {
+	Version  string  `json:"version"`
+	ExitCode int     `json:"exit_code"`
+	Checks   []Check `json:"checks"`
+}
+
+// doctorDeps holds the system-surface dependencies the doctor checks
+// need, injected for testability. Production callers fill in real
+// implementations; tests substitute fakes.
+type doctorDeps struct {
+	ConfigDir       string
+	BinarySignature func() (string, error)
+	TailscaleIP     func() (string, error)
+	LoadSourceState func() (*state.SourceState, error)
+	LoadSinkState   func() (*state.SinkState, error)
+	MasterKeyExists func() bool
+}
+
+var doctorCmd = &cobra.Command{
+	Use:   "doctor",
+	Short: "Run a self-check of the local agentcookie install and report OK / WARN / FAIL per check",
+	Long: `doctor walks 8 health checks (binary signature, Tailscale, config,
+keystore, sink listener, sink state, source state, sealing state) and
+prints one line per check. Exit code is 0 only when no check FAILs.
+
+Use --json to emit a stable machine-readable envelope. doctor opens
+no network connections beyond local Tailscale daemon introspection;
+it never phones home.
+
+Typical run:
+  agentcookie doctor
+
+Run after install to confirm the box is healthy; run anytime later if
+syncs look stuck.`,
+	RunE: runDoctor,
+}
+
+func runDoctor(cmd *cobra.Command, args []string) error {
+	home, _ := os.UserHomeDir()
+	deps := doctorDeps{
+		ConfigDir:       common.ConfigDir,
+		BinarySignature: probeBinarySignature,
+		TailscaleIP: func() (string, error) {
+			return tsclient.RequireTailnetIP(context.Background())
+		},
+		LoadSourceState: func() (*state.SourceState, error) {
+			return state.LoadSource(state.SourcePath(home))
+		},
+		LoadSinkState: func() (*state.SinkState, error) {
+			return state.LoadSink(state.SinkPath(home))
+		},
+		MasterKeyExists: keystore.MasterKeyExists,
+	}
+
+	report := buildReport(deps)
+
+	if common.JSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(report); err != nil {
+			return err
+		}
+		if report.ExitCode != 0 {
+			os.Exit(report.ExitCode)
+		}
+		return nil
+	}
+
+	printHuman(os.Stdout, report)
+	if report.ExitCode != 0 {
+		os.Exit(report.ExitCode)
+	}
+	return nil
+}
+
+// buildReport runs all eight checks in order and computes the exit code.
+// Pure function over doctorDeps so tests don't need a real Tailscale
+// daemon, codesign binary, or filesystem layout outside the temp dir.
+func buildReport(d doctorDeps) DoctorReport {
+	checks := []Check{}
+
+	// 1. Binary identity.
+	checks = append(checks, checkBinarySignatureWith(d.BinarySignature))
+
+	// 2. Tailscale.
+	checks = append(checks, checkTailscaleWith(d.TailscaleIP))
+
+	// 3. Config.
+	configCheck, srcCfg, sinkCfg := checkConfigLoaded(d.ConfigDir)
+	checks = append(checks, configCheck)
+
+	// 4. Keystore: union of source/sink peer hostnames.
+	peers := []string{}
+	if srcCfg != nil && srcCfg.Peer.Hostname != "" {
+		peers = append(peers, srcCfg.Peer.Hostname)
+	}
+	if sinkCfg != nil && sinkCfg.Peer.Hostname != "" {
+		peers = append(peers, sinkCfg.Peer.Hostname)
+	}
+	checks = append(checks, checkKeystore(d.ConfigDir, peers))
+
+	// 5. Sink listener -- sink role only.
+	if sinkCfg != nil {
+		checks = append(checks, checkSinkListener(sinkCfg.Listen.Addr))
+	} else {
+		checks = append(checks, Check{
+			Name:     "Sink listener",
+			Severity: SeveritySkipped,
+			Detail:   "source-only install",
+		})
+	}
+
+	// 6. Sink state -- sink role only.
+	if sinkCfg != nil {
+		st, err := d.LoadSinkState()
+		checks = append(checks, checkSinkStateFrom(st, err))
+	} else {
+		checks = append(checks, Check{
+			Name:     "Sink state",
+			Severity: SeveritySkipped,
+			Detail:   "source-only install",
+		})
+	}
+
+	// 7. Source state -- source role only.
+	if srcCfg != nil {
+		st, err := d.LoadSourceState()
+		checks = append(checks, checkSourceStateFrom(st, err))
+	} else {
+		checks = append(checks, Check{
+			Name:     "Source state",
+			Severity: SeveritySkipped,
+			Detail:   "sink-only install",
+		})
+	}
+
+	// 8. Sealing -- sink role only.
+	if sinkCfg != nil {
+		checks = append(checks, checkSealingWith(d.MasterKeyExists))
+	} else {
+		checks = append(checks, Check{
+			Name:     "Sealing",
+			Severity: SeveritySkipped,
+			Detail:   "source-only install",
+		})
+	}
+
+	exit := 0
+	for _, c := range checks {
+		if c.Severity == SeverityFail {
+			exit = 1
+			break
+		}
+	}
+
+	return DoctorReport{
+		Version:  Version,
+		ExitCode: exit,
+		Checks:   checks,
+	}
+}
+
+// --- individual checks ---
+
+// checkBinarySignatureWith parses the output of `codesign -d -r-`. The
+// production caller passes probeBinarySignature; tests inject a string.
+// Severity is OK when the designated requirement names Team ID
+// NM8VT393AR; WARN otherwise (ad-hoc local build or no codesign). The
+// check never FAILs because a friend running a freshly-built dev binary
+// should not be blocked.
+func checkBinarySignatureWith(probe func() (string, error)) Check {
+	out, err := probe()
+	if err != nil {
+		return Check{
+			Name:        "Binary signature",
+			Severity:    SeverityWarn,
+			Detail:      "codesign unavailable (" + err.Error() + ")",
+			Remediation: "install Xcode command-line tools if you want signature verification",
+		}
+	}
+	if strings.Contains(out, "NM8VT393AR") {
+		return Check{
+			Name:     "Binary signature",
+			Severity: SeverityOK,
+			Detail:   "Developer ID Application (NM8VT393AR)",
+		}
+	}
+	return Check{
+		Name:        "Binary signature",
+		Severity:    SeverityWarn,
+		Detail:     "ad-hoc signed (local build); not a release binary",
+		Remediation: "fine for development; install the notarized release binary for production",
+	}
+}
+
+// probeBinarySignature shells out to `codesign -d -r- <self>` and
+// returns the combined output. macOS prints the designated requirement
+// (and Team ID for signed binaries) on stderr; we capture both so the
+// caller can string-match the Team ID.
+func probeBinarySignature() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.Command("/usr/bin/codesign", "-d", "-r-", exe)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// checkTailscaleWith calls the injected RequireTailnetIP-equivalent
+// and turns the structured error into a remediation pointing at
+// `tailscale up`. The tsclient package already produces a detailed
+// inner error message; doctor surfaces the first line and pins the
+// remediation to the most common fix.
+func checkTailscaleWith(probe func() (string, error)) Check {
+	ip, err := probe()
+	if err != nil {
+		return Check{
+			Name:        "Tailscale",
+			Severity:    SeverityFail,
+			Detail:      err.Error(),
+			Remediation: "run `tailscale up` and re-run; see docs/quickstart.md",
+		}
+	}
+	return Check{
+		Name:     "Tailscale",
+		Severity: SeverityOK,
+		Detail:   ip + " reachable on local tailnet interface",
+	}
+}
+
+// checkConfig is the test-facing wrapper that drops the parsed configs
+// (the integration test only cares about Severity).
+func checkConfig(configDir string) Check {
+	c, _, _ := checkConfigLoaded(configDir)
+	return c
+}
+
+// checkConfigLoaded is the real check. Returns the Check plus the
+// parsed configs so downstream checks (keystore, listener, state) can
+// branch on role without re-loading.
+//
+// Exactly one of source.yaml or sink.yaml is required; both may be
+// present on a single-machine local-dev install. Neither = FAIL.
+// Parse errors are surfaced as FAIL with the file path embedded so
+// the user knows which file to look at.
+func checkConfigLoaded(configDir string) (Check, *config.SourceConfig, *config.SinkConfig) {
+	srcPath := filepath.Join(configDir, "source.yaml")
+	sinkPath := filepath.Join(configDir, "sink.yaml")
+
+	srcExists := fileExists(srcPath)
+	sinkExists := fileExists(sinkPath)
+
+	if !srcExists && !sinkExists {
+		return Check{
+			Name:        "Config",
+			Severity:    SeverityFail,
+			Detail:      "neither source.yaml nor sink.yaml present in " + configDir,
+			Remediation: "run `agentcookie wizard install --as source` (laptop) or `--as sink` (Mac mini)",
+		}, nil, nil
+	}
+
+	var (
+		srcCfg  *config.SourceConfig
+		sinkCfg *config.SinkConfig
+		parts   []string
+		errs    []string
+	)
+	if srcExists {
+		s, err := config.LoadSource(configDir)
+		if err != nil {
+			errs = append(errs, "source.yaml: "+err.Error())
+		} else {
+			srcCfg = s
+			parts = append(parts, "source.yaml")
+		}
+	}
+	if sinkExists {
+		s, err := config.LoadSink(configDir)
+		if err != nil {
+			errs = append(errs, "sink.yaml: "+err.Error())
+		} else {
+			sinkCfg = s
+			parts = append(parts, "sink.yaml")
+		}
+	}
+
+	if len(errs) > 0 {
+		return Check{
+			Name:        "Config",
+			Severity:    SeverityFail,
+			Detail:      strings.Join(errs, "; "),
+			Remediation: "fix the YAML or re-run `agentcookie wizard install`",
+		}, srcCfg, sinkCfg
+	}
+
+	return Check{
+		Name:     "Config",
+		Severity: SeverityOK,
+		Detail:   strings.Join(parts, " + ") + " present, parses OK",
+	}, srcCfg, sinkCfg
+}
+
+// checkKeystore validates that every configured peer hostname has a
+// key file at ~/.config/agentcookie/keys/<peer>.json with mode 0600.
+// Missing or wrong-mode = FAIL; no peers configured = SKIPPED (config
+// check already FAILed in that case, so doctor doesn't double-bill).
+func checkKeystore(configDir string, peers []string) Check {
+	if len(peers) == 0 {
+		return Check{
+			Name:     "Keystore",
+			Severity: SeveritySkipped,
+			Detail:   "no peer hostname configured",
+		}
+	}
+	var problems []string
+	for _, peer := range peers {
+		path, err := keystore.Path(configDir, peer)
+		if err != nil {
+			problems = append(problems, peer+": "+err.Error())
+			continue
+		}
+		fi, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				problems = append(problems, "missing key for peer "+peer)
+			} else {
+				problems = append(problems, peer+": "+err.Error())
+			}
+			continue
+		}
+		// On macOS the underlying mode bits include the type; mask to
+		// permission bits before comparing. 0600 is the only acceptable
+		// mode -- the keystore.Save path writes it explicitly.
+		if mode := fi.Mode().Perm(); mode != 0o600 {
+			problems = append(problems, fmt.Sprintf("%s has mode %#o (want 0600)", peer, mode))
+		}
+	}
+	if len(problems) > 0 {
+		return Check{
+			Name:        "Keystore",
+			Severity:    SeverityFail,
+			Detail:      strings.Join(problems, "; "),
+			Remediation: "run `agentcookie pair` to (re-)derive the peer key",
+		}
+	}
+	return Check{
+		Name:     "Keystore",
+		Severity: SeverityOK,
+		Detail:   fmt.Sprintf("peer key for %s present (mode 0600)", strings.Join(peers, ", ")),
+	}
+}
+
+// checkSinkListener tries to bind the configured address ourselves.
+// If the bind succeeds, the configured sink port is NOT in use --
+// which means the LaunchAgent is not running, regardless of what
+// any state file says. The competing-bind probe is the operational
+// truth.
+//
+// Note: this only proves *something* is listening on that port; it
+// does not prove it's the agentcookie sink. The combination of (port
+// bound) + (recent sink-state.json) is what tells us the sink is the
+// listener; check #6 covers the second half.
+func checkSinkListener(addr string) Check {
+	if addr == "" {
+		return Check{
+			Name:        "Sink listener",
+			Severity:    SeverityFail,
+			Detail:      "no listen address configured",
+			Remediation: "re-run `agentcookie wizard install --as sink`",
+		}
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err == nil {
+		// We were able to bind -- nothing else is listening.
+		_ = ln.Close()
+		return Check{
+			Name:        "Sink listener",
+			Severity:    SeverityFail,
+			Detail:      "nothing bound on " + addr,
+			Remediation: "launchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.agentcookie.sink.plist",
+		}
+	}
+	return Check{
+		Name:     "Sink listener",
+		Severity: SeverityOK,
+		Detail:   "bound on " + addr,
+	}
+}
+
+// checkSinkStateFrom branches on the age of LastWrite. Missing state
+// file (nil + nil err) is FAIL because a configured sink with no state
+// has never run. Read error is also FAIL. Age >24h is WARN so an idle
+// weekend doesn't break exit-zero on a sink that's otherwise healthy.
+func checkSinkStateFrom(st *state.SinkState, err error) Check {
+	if err != nil {
+		return Check{
+			Name:        "Sink state",
+			Severity:    SeverityFail,
+			Detail:      "read sink-state.json: " + err.Error(),
+			Remediation: "check ~/.agentcookie/ permissions",
+		}
+	}
+	if st == nil {
+		return Check{
+			Name:        "Sink state",
+			Severity:    SeverityFail,
+			Detail:      "sink-state.json missing; sink has never accepted a write",
+			Remediation: "run `agentcookie source --once` on the MacBook to push the first batch",
+		}
+	}
+	age := time.Since(st.LastWrite).Round(time.Second)
+	if st.LastWrite.IsZero() || age > 24*time.Hour {
+		return Check{
+			Name:        "Sink state",
+			Severity:    SeverityWarn,
+			Detail:      fmt.Sprintf("last write %s ago (>24h)", age),
+			Remediation: "run `agentcookie source --once` on the source side",
+		}
+	}
+	return Check{
+		Name:     "Sink state",
+		Severity: SeverityOK,
+		Detail:   fmt.Sprintf("last write %s ago, %d rejected", age, st.TotalRejects),
+	}
+}
+
+// checkSourceStateFrom mirrors checkSinkStateFrom for the source role.
+// >24h since last push OR total_failures > 0 = WARN; missing file = FAIL.
+func checkSourceStateFrom(st *state.SourceState, err error) Check {
+	if err != nil {
+		return Check{
+			Name:        "Source state",
+			Severity:    SeverityFail,
+			Detail:      "read source-state.json: " + err.Error(),
+			Remediation: "check ~/.agentcookie/ permissions",
+		}
+	}
+	if st == nil {
+		return Check{
+			Name:        "Source state",
+			Severity:    SeverityFail,
+			Detail:      "source-state.json missing; the source daemon has never pushed",
+			Remediation: "run `agentcookie source --once` to do the first push",
+		}
+	}
+	age := time.Since(st.LastPush).Round(time.Second)
+	if st.LastPush.IsZero() || age > 24*time.Hour {
+		return Check{
+			Name:        "Source state",
+			Severity:    SeverityWarn,
+			Detail:      fmt.Sprintf("last push %s ago (>24h)", age),
+			Remediation: "run `agentcookie source --once` to manually trigger a push",
+		}
+	}
+	if st.TotalFailures > 0 {
+		return Check{
+			Name:        "Source state",
+			Severity:    SeverityWarn,
+			Detail:      fmt.Sprintf("last push %s ago, %d total failures", age, st.TotalFailures),
+			Remediation: "inspect `agentcookie status` for the most recent error",
+		}
+	}
+	return Check{
+		Name:     "Source state",
+		Severity: SeverityOK,
+		Detail:   fmt.Sprintf("last push %s ago, 0 failures", age),
+	}
+}
+
+// checkSealingWith is informational: in v0.12 closed beta the master
+// key Keychain item is off by default. Doctor reports the state so
+// agents downstream can branch on it, but never WARN/FAIL on either
+// branch -- the user-facing default is "disabled" for this release.
+func checkSealingWith(masterKeyExists func() bool) Check {
+	if masterKeyExists() {
+		return Check{
+			Name:     "Sealing",
+			Severity: SeverityOK,
+			Detail:   "enabled (agentcookie-master Keychain item present)",
+		}
+	}
+	return Check{
+		Name:     "Sealing",
+		Severity: SeverityOK,
+		Detail:   "disabled (default in v0.12 closed beta)",
+	}
+}
+
+// --- output ---
+
+// printHuman renders the report to w in the human-readable shape
+// documented in U5's plan. Severity labels are uppercase to read at a
+// glance; remediation hangs below each non-OK line.
+func printHuman(w *os.File, r DoctorReport) {
+	fmt.Fprintf(w, "agentcookie doctor %s\n", r.Version)
+	var fails, warns int
+	for _, c := range r.Checks {
+		fmt.Fprintf(w, "  %s %s: %s\n", severityTag(c.Severity), c.Name, c.Detail)
+		if c.Remediation != "" && (c.Severity == SeverityFail || c.Severity == SeverityWarn) {
+			fmt.Fprintf(w, "         Remediation: %s\n", c.Remediation)
+		}
+		switch c.Severity {
+		case SeverityFail:
+			fails++
+		case SeverityWarn:
+			warns++
+		}
+	}
+	switch {
+	case fails > 0:
+		fmt.Fprintf(w, "%d FAIL, %d WARN -- see remediations above\n", fails, warns)
+	case warns > 0:
+		fmt.Fprintf(w, "%d WARN (informational); install otherwise green\n", warns)
+	default:
+		fmt.Fprintln(w, "all green")
+	}
+}
+
+// severityTag returns the bracketed label used in human output.
+// Centralized so the tag set is one edit away from changing.
+func severityTag(s Severity) string {
+	switch s {
+	case SeverityOK:
+		return "[OK]  "
+	case SeverityWarn:
+		return "[WARN]"
+	case SeverityFail:
+		return "[FAIL]"
+	case SeverityInfo:
+		return "[INFO]"
+	case SeveritySkipped:
+		return "[--]  "
+	default:
+		return "[??]  "
+	}
+}
+
+// (fileExists lives in wizard.go and is reused here.)
