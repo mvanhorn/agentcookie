@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -54,5 +56,48 @@ func TestValidateListenAddr_AcceptsExplicitOperatorInput(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("validateListenAddr(%q): error %v, want substring %q", addr, err, want)
 		}
+	}
+}
+
+// TestGuardConfigPeerMismatch is the regression guard for friction #14
+// (2026-05-19 dry-run). Re-running wizard install with a --peer that
+// differs from the existing sink.yaml peer.hostname used to silently
+// keep the stale config and produce broken sync after the next pair
+// handshake. The guard now errors out unless --force is passed.
+func TestGuardConfigPeerMismatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sink.yaml")
+	yaml := []byte("listen:\n  addr: 100.80.229.80:9999\npeer:\n  hostname: old-name\n")
+	if err := os.WriteFile(path, yaml, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Matching peer: no error.
+	if err := guardConfigPeerMismatch("sink", path, "old-name"); err != nil {
+		t.Errorf("matching peer should not error, got: %v", err)
+	}
+
+	// Mismatching peer without --force: error pointing at remediation.
+	prev := wizardForce
+	wizardForce = false
+	defer func() { wizardForce = prev }()
+	err := guardConfigPeerMismatch("sink", path, "new-name")
+	if err == nil {
+		t.Fatal("mismatching peer without --force should error")
+	}
+	if !strings.Contains(err.Error(), "old-name") || !strings.Contains(err.Error(), "new-name") || !strings.Contains(err.Error(), "--force") {
+		t.Errorf("error should mention old, new, and --force; got: %v", err)
+	}
+
+	// Mismatching peer with --force: no error (caller writes the new YAML).
+	wizardForce = true
+	if err := guardConfigPeerMismatch("sink", path, "new-name"); err != nil {
+		t.Errorf("mismatching peer with --force should not error, got: %v", err)
+	}
+
+	// Missing file: no error (writeYAMLIfMissing will write fresh).
+	missing := filepath.Join(dir, "missing.yaml")
+	if err := guardConfigPeerMismatch("sink", missing, "any-name"); err != nil {
+		t.Errorf("missing file should not error, got: %v", err)
 	}
 }

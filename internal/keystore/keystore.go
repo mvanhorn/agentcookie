@@ -17,12 +17,22 @@ import (
 )
 
 // PeerKey is one paired peer's long-term symmetric key plus metadata.
+//
+// Peer is the on-disk filename (sanitized) AND the lookup key the
+// running daemon uses to find this key via the running config's
+// peer.hostname. AnnouncedAs records what the remote announced itself
+// as during the handshake (often differs from Peer when Peer is the
+// operator-supplied --peer Tailscale name and AnnouncedAs is the
+// remote's os.Hostname() Bonjour FQDN). AnnouncedAs is diagnostic
+// only and is omitted from JSON when empty for backward compat with
+// pre-beta.2 key files.
 type PeerKey struct {
-	Peer         string    `json:"peer"`
-	Key          []byte    `json:"key"`
-	PairedAt     time.Time `json:"paired_at"`
-	Fingerprint  string    `json:"fingerprint"`
-	ProtocolVer  int       `json:"protocol_version"`
+	Peer        string    `json:"peer"`
+	AnnouncedAs string    `json:"announced_as,omitempty"`
+	Key         []byte    `json:"key"`
+	PairedAt    time.Time `json:"paired_at"`
+	Fingerprint string    `json:"fingerprint"`
+	ProtocolVer int       `json:"protocol_version"`
 }
 
 // Dir returns the keys subdirectory under the given config dir.

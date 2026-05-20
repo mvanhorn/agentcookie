@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
+	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/launchd"
 	"github.com/mvanhorn/agentcookie/internal/pairing"
@@ -137,6 +138,15 @@ func wizardInstallSource(ctx context.Context, binPath, logDir string) error {
 	}
 
 	// Step 1: drop source.yaml + allowlist.yaml if missing or force.
+	// v0.12.0-beta.2: if source.yaml already exists with a peer.hostname
+	// that differs from --peer, fail loud rather than silently keeping the
+	// stale value (per friction log #14, 2026-05-19 dry-run). A future
+	// pair handshake would then save the new key under wizardPeer while
+	// the running daemon would keep looking up the stale name -> silent
+	// sync failure.
+	if err := guardConfigPeerMismatch("source", filepath.Join(common.ConfigDir, "source.yaml"), wizardPeer); err != nil {
+		return err
+	}
 	if err := writeYAMLIfMissing(
 		filepath.Join(common.ConfigDir, "source.yaml"),
 		renderSourceYAML(wizardPeer, wizardSinkURL),
@@ -220,6 +230,12 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 	// it unless --force is set, so this detection only fires for
 	// fresh installs and explicit --force overwrites.
 	sinkYAMLPath := filepath.Join(common.ConfigDir, "sink.yaml")
+	// v0.12.0-beta.2: if sink.yaml already exists with a peer.hostname
+	// that differs from --peer, fail loud rather than silently keeping
+	// the stale value (per friction log #14, 2026-05-19 dry-run).
+	if err := guardConfigPeerMismatch("sink", sinkYAMLPath, wizardPeer); err != nil {
+		return err
+	}
 	if wizardForce || !fileExists(sinkYAMLPath) {
 		ip, err := tsclient.RequireTailnetIP(ctx)
 		if err != nil {
@@ -481,12 +497,26 @@ func beginSourcePairing(ctx context.Context, listen, localName, binPath, logDir 
 		return "", code, err
 	}
 
+	// v0.12.0-beta.2: file the key under the operator-supplied peer
+	// name (--peer / wizardPeer), not the sink's announced os.Hostname()
+	// returned in res.RemotePeer. source.yaml stores the operator-supplied
+	// name; if the key file is saved under the announced name (often a
+	// Bonjour FQDN like "moltbot-mini.hsd1.wa.comcast.net") then the
+	// running source LaunchAgent looks up the wrong filename at sync time
+	// and reports connection-refused with no hint that the failure is
+	// actually a missing key. The announced name is still recorded in
+	// the saved PeerKey for diagnostics. See friction log #17 (dry-run
+	// 2026-05-19).
 	pk := &keystore.PeerKey{
-		Peer:        res.RemotePeer,
+		Peer:        wizardPeer,
+		AnnouncedAs: res.RemotePeer,
 		Key:         res.Key,
 		PairedAt:    res.PairedAt,
 		Fingerprint: res.Fingerprint,
 		ProtocolVer: pairing.ProtocolVersion,
+	}
+	if wizardPeer != res.RemotePeer {
+		fmt.Fprintf(os.Stderr, "agentcookie wizard: sink announced itself as %q; storing key under operator-supplied --peer %q\n", res.RemotePeer, wizardPeer)
 	}
 	if err := keystore.Save(common.ConfigDir, pk); err != nil {
 		return "", code, fmt.Errorf("save key: %w", err)
@@ -495,6 +525,42 @@ func beginSourcePairing(ctx context.Context, listen, localName, binPath, logDir 
 	_ = os.Remove(infoPath)
 
 	return fmt.Sprintf("agentcookie wizard: paired (code %s, fingerprint %s)", code, res.Fingerprint), code, nil
+}
+
+// guardConfigPeerMismatch refuses to leave a stale peer.hostname in
+// place when the operator has explicitly passed a different --peer.
+// If the existing config has a matching peer or no peer set, returns
+// nil. If they differ and --force isn't passed, returns an error
+// pointing at remediation.
+func guardConfigPeerMismatch(role, path, wantPeer string) error {
+	if !fileExists(path) {
+		return nil
+	}
+	var existing string
+	switch role {
+	case "source":
+		cfg, err := config.LoadSource(filepath.Dir(path))
+		if err != nil {
+			return nil // let writeYAMLIfMissing decide what to do
+		}
+		existing = cfg.Peer.Hostname
+	case "sink":
+		cfg, err := config.LoadSink(filepath.Dir(path))
+		if err != nil {
+			return nil
+		}
+		existing = cfg.Peer.Hostname
+	default:
+		return nil
+	}
+	if existing == "" || existing == wantPeer {
+		return nil
+	}
+	if wizardForce {
+		fmt.Fprintf(os.Stderr, "agentcookie wizard: rewriting %s.yaml peer.hostname %q -> %q (--force)\n", role, existing, wantPeer)
+		return nil
+	}
+	return fmt.Errorf("existing %s.yaml has peer.hostname %q but --peer is %q; pass --force to overwrite (otherwise pair handshake will save a key the running daemon cannot find)", role, existing, wantPeer)
 }
 
 // pairingInfoWriter intercepts the source-side pairing announcement and writes
