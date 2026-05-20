@@ -19,12 +19,18 @@ See `quickstart-beta.md` inside the tarball for the ten-minute walkthrough.
 ## Verifying the binary
 
 ```
-spctl -a -vv agentcookie
-# expected: accepted (notarized Developer ID)
+codesign --verify --strict --verbose=2 agentcookie
+# expected: valid on disk / satisfies its Designated Requirement
 
 codesign -d -r- agentcookie
 # expected: identifier "agentcookie" ... certificate leaf[subject.OU] = NM8VT393AR
 ```
+
+`spctl -a` is the wrong assessment tool for this CLI binary - it
+expects an app bundle and reports "rejected: not an app" even when
+the binary is correctly signed and notarized. Use the `codesign`
+commands above instead. The notarization ticket is verified by
+Apple's notary service on first launch.
 
 ## What's in this release
 
