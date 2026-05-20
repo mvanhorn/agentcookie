@@ -3,12 +3,15 @@
 package chrome
 
 import (
+	"context"
 	"crypto/pbkdf2"
 	"crypto/sha1"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 const (
@@ -17,6 +20,18 @@ const (
 	pbkdf2Salt      = "saltysalt"
 	pbkdf2Iter      = 1003
 	aesKeyLen       = 16
+
+	// safeStorageReadTimeout caps how long the `security` CLI fallback
+	// can block. On macOS, if the calling binary lacks ACL access AND a
+	// GUI session is associated, `security find-generic-password` shows
+	// a Keychain prompt and blocks until the user clicks. A headless
+	// sink (LaunchAgent in the user's GUI session but no monitor or
+	// active operator) leaves that prompt sitting forever, and the
+	// sink daemon hangs before binding its listener -- the symptom
+	// observed in the 2026-05-19 first-friend dry-run (#18). Fail loud
+	// after this many seconds so the operator sees a clear error
+	// instead of a silent hang.
+	safeStorageReadTimeout = 10 * time.Second
 )
 
 // SafeStoragePassword returns the Chrome Safe Storage password from the macOS
@@ -35,14 +50,20 @@ func SafeStoragePassword() (string, error) {
 	if pw, err := safeStoragePasswordViaKeybase(); err == nil {
 		return pw, nil
 	}
-	// Fall back to `security` CLI shell-out.
-	cmd := exec.Command("security",
+	// Fall back to `security` CLI shell-out, bounded by a timeout so a
+	// hung GUI Keychain prompt fails loud instead of blocking forever.
+	ctx, cancel := context.WithTimeout(context.Background(), safeStorageReadTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "security",
 		"find-generic-password",
 		"-a", keychainAccount,
 		"-s", keychainService,
 		"-w",
 	)
 	out, err := cmd.Output()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return "", fmt.Errorf("read Chrome Safe Storage from Keychain timed out after %s; macOS is probably showing a hung GUI 'Always Allow' prompt on the sink's screen. Log into the sink Mac and click Always Allow on the prompt, or re-run wizard install from a GUI session", safeStorageReadTimeout)
+	}
 	if err != nil {
 		return "", fmt.Errorf("read Chrome Safe Storage from Keychain (did you grant access?): %w", err)
 	}
