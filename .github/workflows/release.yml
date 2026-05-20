@@ -48,9 +48,34 @@ jobs:
       - name: list codesigning identities
         run: security find-identity -v -p codesigning
 
-      # GoReleaser invokes scripts/sign.sh as a build post-hook, so every
-      # darwin binary is signed before archives are zipped. See
-      # .goreleaser.yaml `builds[].hooks.post`.
+      # Store the notarytool credentials in the runner's login keychain.
+      # The maintainer generates an app-specific password at
+      # appleid.apple.com and saves it as the AC_NOTARY_PASSWORD secret.
+      # See docs/runbook-v0.12-codesign.md "Notarization" for the
+      # one-time setup steps. Without this step, scripts/notarize.sh
+      # below would fail with a "credentials not found" error.
+      - name: setup notarytool credentials
+        if: ${{ secrets.AC_NOTARY_PASSWORD != '' }}
+        run: |
+          xcrun notarytool store-credentials agentcookie-notary \
+            --apple-id mvanhorn@gmail.com \
+            --team-id NM8VT393AR \
+            --password "${{ secrets.AC_NOTARY_PASSWORD }}"
+
+      # Build, sign, notarize the agentcookie binary. After this step
+      # bin/agentcookie is fully launchable on any Mac without
+      # Gatekeeper interactive approval.
+      - name: make release
+        run: make release
+
+      # Bundle the notarized binary + install-beta.sh + quickstart into
+      # a single tarball friends can extract and run.
+      - name: build release tarball
+        run: scripts/release-tarball.sh "${{ github.ref_name }}"
+
+      # GoReleaser also runs to publish the standard cross-platform
+      # archives and the GitHub release entry with notes. It uses the
+      # signed bin/agentcookie produced above.
       - name: goreleaser
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -60,3 +85,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AGENTCOOKIE_SIGN_IDENTITY: "Developer ID Application: Matthew Charles Van Horn (NM8VT393AR)"
+
+      # Attach the closed-beta bundle tarball to the GitHub release
+      # that goreleaser just created. The bundle is the install-script-
+      # consumable shape; goreleaser's own archives are the
+      # cross-platform binary archives.
+      - name: attach beta bundle to release
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            dist/agentcookie-*-darwin-arm64.tar.gz \
+            --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

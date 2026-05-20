@@ -2,12 +2,16 @@
 #
 # sign.sh - Sign a macOS binary with the agentcookie Developer ID identity.
 #
-# Reads AGENTCOOKIE_SIGN_IDENTITY from the environment, falling back to the
-# maintainer's Developer ID Application identity. Hardened Runtime
-# (--options runtime) and secure timestamping (--timestamp) are required so
-# the result qualifies for notarization later. --force is required so a
-# previously-signed binary can be re-signed in place (steady-state behavior
-# after every `go install`).
+# Reads AGENTCOOKIE_SIGN_IDENTITY from the environment, falling back to
+# the maintainer's Developer ID Application identity. Hardened Runtime
+# (--options runtime) and secure timestamping (--timestamp) are required
+# so the binary qualifies for notarization (scripts/notarize.sh). After
+# notarization, macOS Gatekeeper accepts the binary on any Mac without
+# user-interactive approval -- the property that makes agentcookie
+# trivial to deploy across a laptop + sink pair without manual System
+# Settings clicks per binary. --force is required so a previously-signed
+# binary can be re-signed in place (steady-state behavior after every
+# `go install`).
 #
 # Usage:
 #   scripts/sign.sh <binary> [<binary> ...]

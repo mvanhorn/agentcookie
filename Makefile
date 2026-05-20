@@ -1,10 +1,15 @@
 # agentcookie Makefile
 #
 # Targets:
-#   make            - build and sign bin/agentcookie (default)
+#   make            - build and sign bin/agentcookie (default; not notarized)
 #   make build      - go build ./cmd/agentcookie -> bin/agentcookie
 #   make install    - go install ./cmd/agentcookie, then sign $(GOBIN)/agentcookie
 #   make sign       - sign bin/agentcookie with the Developer ID identity
+#   make notarize   - submit bin/agentcookie to Apple's notary service
+#                     (5-30 min; required before deploying to a Mac other
+#                     than the one this build ran on)
+#   make release    - build + sign + notarize in one shot (a fully-portable
+#                     binary that launches on any Mac without prompts)
 #   make verify     - print the designated requirement of bin/agentcookie
 #   make test       - go test -race ./...
 #   make vet        - go vet ./...
@@ -28,9 +33,11 @@ ifeq ($(GOBIN),)
 GOBIN := $(shell go env GOPATH)/bin
 endif
 
-.PHONY: all build install sign verify test vet clean
+.PHONY: all build install sign notarize release verify test vet clean
 
 all: build sign
+
+release: build sign notarize
 
 build:
 	@mkdir -p $(BIN_DIR)
@@ -49,6 +56,13 @@ sign:
 	  exit 1; \
 	fi
 	scripts/sign.sh $(BINARY)
+
+notarize:
+	@if [[ ! -f $(BINARY) ]]; then \
+	  echo "make notarize: $(BINARY) does not exist; run \`make build && make sign\` first" >&2; \
+	  exit 1; \
+	fi
+	scripts/notarize.sh $(BINARY)
 
 verify:
 	@if [[ ! -f $(BINARY) ]]; then \

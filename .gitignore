@@ -34,3 +34,5 @@ go.work.sum
 # Built binaries (each cmd compiles to bin/<name>)
 /bin/
 hack/
+/dist/
+.claude/

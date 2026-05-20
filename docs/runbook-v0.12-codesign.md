@@ -164,6 +164,66 @@ codesign -d -r- /tmp/agentcookie-smoke
 
 Last line should print the version without a Gatekeeper rejection.
 
+## Notarization (one-time setup, then automatic)
+
+Code signing alone is not enough to launch agentcookie on a Mac other
+than the one that built it. macOS Gatekeeper kills signed-but-not-
+notarized binaries via AppleSystemPolicy on launchd-managed paths and
+sometimes via shell exec. The fix is Apple notarization: a free
+machine-attested scan that stamps the binary as "Apple has seen this
+and it is not malware." Notarized binaries launch without prompts on
+every Mac, every launch path, forever.
+
+One-time setup (5 minutes):
+
+1. Sign in to https://account.apple.com.
+2. Sign-In and Security -> App-Specific Passwords.
+3. Generate a new password. Label it `agentcookie notarytool`. Apple
+   shows it once as `xxxx-xxxx-xxxx-xxxx`. Copy.
+4. Store the credentials in the login keychain via notarytool:
+
+   ```
+   xcrun notarytool store-credentials agentcookie-notary \
+     --apple-id mvanhorn@gmail.com \
+     --team-id NM8VT393AR \
+     --password xxxx-xxxx-xxxx-xxxx
+   ```
+
+   Replace the password with the one Apple just generated. notarytool
+   writes the credentials into the login keychain under the profile
+   name `agentcookie-notary`. The cleartext password is not stored
+   anywhere else.
+
+5. Verify the profile is set up:
+
+   ```
+   xcrun notarytool history --keychain-profile agentcookie-notary
+   ```
+
+Daily flow (zero extra steps for the developer):
+
+```
+make release   # build + sign + notarize in one shot
+```
+
+`make release` zips the signed binary, submits it to Apple, waits for
+the verdict (typically 1-5 minutes), and exits zero only when Apple
+returns `Accepted`. The signed binary at `bin/agentcookie` is now
+launchable on any Mac, on any path.
+
+Rejection path: `xcrun notarytool log <submission-id>
+--keychain-profile agentcookie-notary` returns a JSON report. Common
+failures: Hardened Runtime missing (re-run `make sign`), timestamp
+missing (re-run `make sign`), binary contains an unsigned framework
+(N/A for our single-file binary).
+
+CI release flow:
+
+The release workflow has to do the same store-credentials dance on
+GitHub Actions. Add the app-specific password as the
+`AC_NOTARY_PASSWORD` GitHub secret. The workflow runs
+`xcrun notarytool store-credentials` before invoking `make release`.
+
 ## Troubleshooting
 
 - `errSecInternalComponent` from codesign: the keychain is locked or
