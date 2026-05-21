@@ -79,6 +79,61 @@ security:
 	}
 }
 
+// TestLoadSinkSkipChromeSQLite covers the v0.12.0-beta.3 headless mode.
+// Round-trips skip_chrome_sqlite + cdp.enabled through YAML and checks
+// that absence defaults to legacy behavior (R6 regression guard).
+func TestLoadSinkSkipChromeSQLite(t *testing.T) {
+	t.Run("skip_chrome_sqlite true and cdp enabled", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "sink.yaml", `
+listen:
+  addr: 100.80.229.80:9999
+skip_chrome_sqlite: true
+cdp:
+  enabled: true
+  profile_dir: ~/.agentcookie/chrome-profile
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+		cfg, err := LoadSink(dir)
+		if err != nil {
+			t.Fatalf("LoadSink: %v", err)
+		}
+		if !cfg.SkipChromeSQLite {
+			t.Errorf("SkipChromeSQLite: got false, want true")
+		}
+		if !cfg.CDP.Enabled {
+			t.Errorf("CDP.Enabled: got false, want true")
+		}
+		if cfg.CDP.ProfileDir != "~/.agentcookie/chrome-profile" {
+			t.Errorf("CDP.ProfileDir: got %q", cfg.CDP.ProfileDir)
+		}
+	})
+
+	t.Run("absent fields default to legacy behavior", func(t *testing.T) {
+		// R6 regression guard: a v0.12.0-beta.2 sink.yaml that does NOT
+		// mention skip_chrome_sqlite or cdp must keep the old defaults
+		// (false for both), so installed friends see no behavior change.
+		dir := t.TempDir()
+		writeFile(t, dir, "sink.yaml", `
+listen:
+  addr: 100.80.229.80:9999
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+		cfg, err := LoadSink(dir)
+		if err != nil {
+			t.Fatalf("LoadSink: %v", err)
+		}
+		if cfg.SkipChromeSQLite {
+			t.Errorf("SkipChromeSQLite: got true, want false (legacy default)")
+		}
+		if cfg.CDP.Enabled {
+			t.Errorf("CDP.Enabled: got true, want false (legacy default)")
+		}
+	})
+}
+
 func TestLoadSinkHonorsExplicitListenAddr(t *testing.T) {
 	// Regression for v0.11 -> v0.12: an existing sink.yaml that already
 	// has a 100.x address keeps working without re-detection prompting.

@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/mvanhorn/agentcookie/internal/cdp"
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/chromectl"
 	"github.com/mvanhorn/agentcookie/internal/chromedirsync"
@@ -66,18 +67,26 @@ func runSink(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("sink listen %q: %w", cfg.Listen.Addr, err)
 	}
 
+	// v0.12.0-beta.3 headless mode: when skip_chrome_sqlite is true, the
+	// sink never touches Chrome Safe Storage. Sidecar + adapter push are
+	// still the cookie-delivery paths. Friends running on a fully headless
+	// Mac mini (no GUI session to answer Keychain prompts) opt in via
+	// wizard auto-detect.
 	var key []byte
-	if !sinkDryRun {
+	switch {
+	case sinkDryRun:
+		fmt.Fprintln(os.Stderr, "agentcookie sink: --dry-run set; skipping Chrome Safe Storage and all write paths")
+	case cfg.SkipChromeSQLite:
+		fmt.Fprintln(os.Stderr, "agentcookie sink: skip_chrome_sqlite set; sidecar + adapter push only (no Chrome Safe Storage read, no Chrome SQLite write)")
+	default:
 		password, err := chrome.SafeStoragePassword()
 		if err != nil {
-			return fmt.Errorf("read Chrome Safe Storage from Keychain: %w (run 'agentcookie wizard install --as sink' to trigger the one-time Keychain Always-Allow prompt)", err)
+			return fmt.Errorf("read Chrome Safe Storage from Keychain: %w (run 'agentcookie wizard install --as sink' to trigger the one-time Keychain Always-Allow prompt, or set skip_chrome_sqlite: true in sink.yaml for headless installs)", err)
 		}
 		key, err = chrome.DeriveAESKey(password)
 		if err != nil {
 			return err
 		}
-	} else {
-		fmt.Fprintln(os.Stderr, "agentcookie sink: --dry-run set; skipping Chrome Safe Storage and all write paths")
 	}
 	transportSecret, err := resolveTransportSecret(common.ConfigDir, cfg.Peer.Hostname, cfg.Security.SharedSecret)
 	if err != nil {
@@ -179,22 +188,64 @@ func runSink(cmd *cobra.Command, args []string) error {
 			return
 		}
 
-		result, err := applyEnvelopeToSink(r.Context(), cfg, &envelope, cookies, key)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "agentcookie sink: write failed (cookies=%d ls=%d idb=%d): %v\n", result.Cookies, result.LocalStorage, result.IndexedDB, err)
-			sinkState.LastError = err.Error()
+		var (
+			result    writeResult
+			writeMode string
+			writeErr  error
+		)
+		if cfg.SkipChromeSQLite {
+			// v0.12.0-beta.3: headless-sink path. Sidecar only; no Chrome
+			// SQLite/leveldb/indexeddb writes. Friend's Chrome app on
+			// the sink does not see synced cookies through this path
+			// (PP CLIs read them via sidecar / adapter session files).
+			result, writeErr = applySidecarOnlyToSink(cookies)
+			writeMode = "sidecar+adapter"
+		} else {
+			result, writeErr = applyEnvelopeToSink(r.Context(), cfg, &envelope, cookies, key)
+			writeMode = "sqlite+leveldb"
+		}
+		if writeErr != nil {
+			fmt.Fprintf(os.Stderr, "agentcookie sink: write failed (cookies=%d ls=%d idb=%d mode=%s): %v\n", result.Cookies, result.LocalStorage, result.IndexedDB, writeMode, writeErr)
+			sinkState.LastError = writeErr.Error()
 			sinkState.LastErrorAt = time.Now().UTC()
 			sinkState.TotalRejects++
 			_ = stateWriter.Save(sinkState)
-			http.Error(w, fmt.Sprintf("apply envelope: %v", err), http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("apply envelope: %v", writeErr), http.StatusInternalServerError)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies (+ %d sidecar) + %d localStorage origins + %d indexedDB origins (dropped %d non-allowlisted cookies)\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, dropped)
+		fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies (+ %d sidecar) + %d localStorage origins + %d indexedDB origins (mode=%s, dropped %d non-allowlisted cookies)\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, writeMode, dropped)
 		sinkState.LastWrite = time.Now().UTC()
-		sinkState.LastWriteCount = result.Cookies
-		sinkState.LastWriteMode = "sqlite+leveldb"
+		// In skip_chrome_sqlite mode, result.Cookies is zero (we did not
+		// write Chrome SQLite); report the sidecar count so sink-state
+		// reflects what actually shipped to PP CLI consumers.
+		if cfg.SkipChromeSQLite {
+			sinkState.LastWriteCount = result.SidecarCookies
+		} else {
+			sinkState.LastWriteCount = result.Cookies
+		}
+		sinkState.LastWriteMode = writeMode
 		sinkState.TotalWrites++
 		sinkState.TotalDropped += dropped
+
+		// v0.12.0-beta.3: when CDP injection is enabled, spawn a
+		// one-shot headless Chrome and push the cookies via
+		// Storage.setCookies. Chrome encrypts its own SQLite with its
+		// own Safe Storage key; agentcookie never reads Chrome's
+		// Keychain item on this path. Failures are logged but do not
+		// fail the /sync response -- the sidecar write already
+		// succeeded above, so PP CLIs are still served.
+		if cfg.CDP.Enabled && len(cookies) > 0 {
+			profileDir := cfg.CDP.ProfileDir
+			if profileDir == "" {
+				profileDir = "~/.agentcookie/chrome-profile"
+			}
+			if cdpErr := cdpInject(r.Context(), profileDir, cookies); cdpErr != nil {
+				fmt.Fprintf(os.Stderr, "agentcookie sink: CDP injection failed (sidecar write succeeded, PP CLIs unaffected): %v\n", cdpErr)
+			} else {
+				fmt.Fprintf(os.Stderr, "agentcookie sink: CDP injection pushed %d cookies into %s\n", len(cookies), profileDir)
+				sinkState.LastWriteMode = writeMode + "+cdp"
+			}
+		}
 
 		// v0.11: after the cookie write commits, push the decrypted set
 		// into each registered PP CLI's local session cache. This is the
@@ -273,6 +324,56 @@ type writeResult struct {
 	IndexedDB      int // origin subdirs in the live IndexedDB dir after the write
 }
 
+// cdpInject is the indirection seam that lets tests stub the
+// real cdp.InjectCookies call. Production wires it to the live
+// chromedp-backed implementation; tests overwrite it via
+// SetCDPInjectorForTesting.
+var cdpInject = func(ctx context.Context, profileDir string, cookies []chrome.Cookie) error {
+	return cdp.InjectCookies(ctx, profileDir, cookies)
+}
+
+// SetCDPInjectorForTesting replaces cdpInject with the given function
+// and returns a restore func. Test-only seam.
+func SetCDPInjectorForTesting(f func(ctx context.Context, profileDir string, cookies []chrome.Cookie) error) func() {
+	prev := cdpInject
+	cdpInject = f
+	return func() { cdpInject = prev }
+}
+
+// writeCookiesSidecar writes the plaintext cookies sidecar at
+// ~/.agentcookie/cookies-plain.db, sealed under the v0.12 master key
+// when present. Shared between the legacy path (applyEnvelopeToSink)
+// and the v0.12.0-beta.3 skip_chrome_sqlite path (applySidecarOnlyToSink).
+func writeCookiesSidecar(cookies []chrome.Cookie) (int, error) {
+	var sidecarMaster []byte
+	if keystore.MasterKeyExists() {
+		if mk, err := keystore.ReadMasterKey(); err == nil {
+			sidecarMaster = mk
+		}
+	}
+	return chrome.WriteCookiesSidecar(chromepaths.SidecarCookiesDB(), cookies, sidecarMaster)
+}
+
+// applySidecarOnlyToSink is the v0.12.0-beta.3 headless-sink write path.
+// Writes only the plaintext-cookies sidecar; never touches Chrome
+// SQLite, LocalStorage, or IndexedDB. Used when cfg.SkipChromeSQLite is
+// set. The friend's Chrome app on the sink will not see synced cookies
+// through this path; PP CLIs read them via the sidecar / adapter
+// session files. CDP injection (Phase 2 / U5) runs as a parallel path
+// from the /sync handler and is not invoked here.
+func applySidecarOnlyToSink(cookies []chrome.Cookie) (writeResult, error) {
+	var result writeResult
+	if len(cookies) == 0 {
+		return result, nil
+	}
+	n, err := writeCookiesSidecar(cookies)
+	result.SidecarCookies = n
+	if err != nil {
+		return result, fmt.Errorf("sidecar: %w", err)
+	}
+	return result, nil
+}
+
 // applyEnvelopeToSink wraps the three on-disk Chrome writes in a single
 // quit-Chrome / write / relaunch-Chrome ceremony. Direct file writes are
 // the only path in v0.7: cookies via SQLite (encrypted with the
@@ -322,13 +423,7 @@ func applyEnvelopeToSink(
 			// unseal transparently; older PP CLIs that read `value`
 			// directly see opaque envelopes (a v0.12 transition cost
 			// resolved by U12).
-			var sidecarMaster []byte
-			if keystore.MasterKeyExists() {
-				if mk, err := keystore.ReadMasterKey(); err == nil {
-					sidecarMaster = mk
-				}
-			}
-			if sidecarN, sidecarErr := chrome.WriteCookiesSidecar(chromepaths.SidecarCookiesDB(), cookies, sidecarMaster); sidecarErr != nil {
+			if sidecarN, sidecarErr := writeCookiesSidecar(cookies); sidecarErr != nil {
 				fmt.Fprintf(os.Stderr, "agentcookie sink: sidecar write failed (%v); PP CLIs will fall back to Chrome's encrypted store\n", sidecarErr)
 			} else {
 				result.SidecarCookies = sidecarN

@@ -46,6 +46,7 @@ PEER=""
 CODE=""
 PAIR_URL=""
 SKIP_KEYCHAIN_PROMPT=""
+EXTRA_WIZARD_ARGS=()
 EXTRA_BINS=()
 BIN_DIR=""
 TARBALL=""
@@ -85,6 +86,12 @@ while [[ $# -gt 0 ]]; do
       PAIR_URL="$2"; shift 2 ;;
     --skip-keychain-prompt)
       SKIP_KEYCHAIN_PROMPT="1"; shift ;;
+    --skip-chrome-sqlite)
+      EXTRA_WIZARD_ARGS+=("--skip-chrome-sqlite"); shift ;;
+    --write-chrome-sqlite)
+      EXTRA_WIZARD_ARGS+=("--write-chrome-sqlite"); shift ;;
+    --no-cdp)
+      EXTRA_WIZARD_ARGS+=("--no-cdp"); shift ;;
     --extra-binary)
       EXTRA_BINS+=("$2"); shift 2 ;;
     --bin-dir)
@@ -238,20 +245,28 @@ for b in "${EXTRA_BINS[@]:-}"; do
   [[ -z "$b" ]] && continue
   WIZARD_ARGS+=(--extra-binary "$b")
 done
+# v0.12.0-beta.3: forward --skip-chrome-sqlite, --write-chrome-sqlite,
+# and --no-cdp explicitly if the operator passed them. The wizard
+# itself auto-detects headless context when none are passed.
+if [[ ${#EXTRA_WIZARD_ARGS[@]} -gt 0 ]]; then
+  WIZARD_ARGS+=("${EXTRA_WIZARD_ARGS[@]}")
+fi
 
-# When there's no controlling TTY (headless SSH install on a Mac mini),
-# any Keychain GUI prompt the wizard would normally trigger will sit
-# forever on the GUI session's screen with no one to click it. Default
-# --skip-keychain-prompt in that case so the install completes; the
-# sink daemon will surface the prompt on first sync instead. Operators
-# who do have a GUI session can pass --skip-keychain-prompt explicitly
-# or just let the wizard trigger the prompt normally.
+# v0.12.0-beta.3: when there's no controlling TTY on a sink install,
+# the wizard now auto-detects headless context and writes
+# skip_chrome_sqlite + cdp.enabled into sink.yaml. No GUI Keychain
+# prompt fires (the wizard skips the prompt step too, mirroring the
+# v0.12.0-beta.2 behavior). The "Screen Share to click Always Allow"
+# step is no longer required for the install to complete.
+#
+# Operators on a GUI session see the legacy default and can opt into
+# headless mode explicitly with --skip-chrome-sqlite.
 if [[ -z "$SKIP_KEYCHAIN_PROMPT" ]] && [[ "$ROLE" == "sink" ]] && ! [[ -t 0 ]]; then
-  warn "no TTY detected; defaulting --skip-keychain-prompt for the wizard."
-  warn "You will need to grant Chrome Safe Storage access manually:"
-  warn "  1) physically log into the Mac mini (or Screen Share into it)"
-  warn "  2) open Terminal and run: $TARGET sink"
-  warn "  3) click 'Always Allow' on the Keychain prompt that appears"
+  warn "no TTY detected; defaulting headless sink install."
+  warn "  - sink.yaml will set skip_chrome_sqlite: true and cdp.enabled: true"
+  warn "  - sink daemon will NOT read Chrome Safe Storage"
+  warn "  - CDP injection will push cookies into ~/.agentcookie/chrome-profile each sync"
+  warn "  - --skip-keychain-prompt is added to the wizard call so it does not block on GUI prompts"
   SKIP_KEYCHAIN_PROMPT="1"
 fi
 if [[ -n "$SKIP_KEYCHAIN_PROMPT" ]]; then

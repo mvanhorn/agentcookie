@@ -13,8 +13,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/mvanhorn/agentcookie/internal/chrome"
+	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
+	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 	"github.com/mvanhorn/agentcookie/internal/state"
 	"github.com/mvanhorn/agentcookie/internal/tsclient"
 )
@@ -188,6 +191,34 @@ func buildReport(d doctorDeps) DoctorReport {
 	} else {
 		checks = append(checks, Check{
 			Name:     "Sealing",
+			Severity: SeveritySkipped,
+			Detail:   "source-only install",
+		})
+	}
+
+	// 9. Adapter coverage (v0.12.0-beta.3) -- sink role only. Surfaces
+	// the risk that a configured sink syncs cookie domains that no
+	// adapter writes and no sidecar-reading PP CLI consumes. WARN, not
+	// FAIL, because the sidecar always covers sidecar-aware callers; the
+	// gap is for kooky-only readers that don't link pkg/sidecar.
+	if sinkCfg != nil {
+		checks = append(checks, checkAdapterCoverage(sinkCfg))
+	} else {
+		checks = append(checks, Check{
+			Name:     "Adapter coverage",
+			Severity: SeveritySkipped,
+			Detail:   "source-only install",
+		})
+	}
+
+	// 10. CDP injector (v0.12.0-beta.3) -- sink role only. Verifies the
+	// CDP profile dir exists when cdp.enabled, and Chrome.app is
+	// installed on this Mac. WARN when configured but unusable.
+	if sinkCfg != nil {
+		checks = append(checks, checkCDPInjector(sinkCfg))
+	} else {
+		checks = append(checks, Check{
+			Name:     "CDP injector",
 			Severity: SeveritySkipped,
 			Detail:   "source-only install",
 		})
@@ -466,10 +497,14 @@ func checkSinkStateFrom(st *state.SinkState, err error) Check {
 			Remediation: "run `agentcookie source --once` on the source side",
 		}
 	}
+	mode := st.LastWriteMode
+	if mode == "" {
+		mode = "unknown"
+	}
 	return Check{
 		Name:     "Sink state",
 		Severity: SeverityOK,
-		Detail:   fmt.Sprintf("last write %s ago, %d rejected", age, st.TotalRejects),
+		Detail:   fmt.Sprintf("last write %s ago, mode=%s, %d rejected", age, mode, st.TotalRejects),
 	}
 }
 
@@ -532,6 +567,124 @@ func checkSealingWith(masterKeyExists func() bool) Check {
 		Name:     "Sealing",
 		Severity: SeverityOK,
 		Detail:   "disabled (default in v0.12 closed beta)",
+	}
+}
+
+// checkAdapterCoverage (v0.12.0-beta.3) reports which cookie host_keys
+// in the sidecar have NO matching adapter. The sidecar itself always
+// covers sidecar-aware PP CLIs (anything linking pkg/sidecar), so a
+// gap here is only meaningful for kooky-only readers. WARN, not FAIL.
+//
+// Implementation: read the sidecar's unique host_keys, match each
+// against the host patterns of every registered adapter. Hosts with
+// zero adapter matches are reported, capped at top 3 by frequency so
+// the output stays short.
+func checkAdapterCoverage(_ *config.SinkConfig) Check {
+	sidecarPath := chromepaths.SidecarCookiesDB()
+	uniqueHosts, err := chrome.SidecarUniqueHostKeys(sidecarPath)
+	if err != nil {
+		// No sidecar yet means no syncs have hit this sink. Skip; the
+		// sink-state check already reports "no writes yet" as FAIL.
+		return Check{
+			Name:     "Adapter coverage",
+			Severity: SeveritySkipped,
+			Detail:   "no sidecar yet (no syncs received); rerun after first sync",
+		}
+	}
+	if len(uniqueHosts) == 0 {
+		return Check{
+			Name:     "Adapter coverage",
+			Severity: SeverityOK,
+			Detail:   "sidecar empty; nothing to cover",
+		}
+	}
+	adapters := sinkpush.All()
+	var uncovered []string
+	for _, h := range uniqueHosts {
+		if !hostMatchesAnyAdapter(h, adapters) {
+			uncovered = append(uncovered, h)
+		}
+	}
+	if len(uncovered) == 0 {
+		return Check{
+			Name:     "Adapter coverage",
+			Severity: SeverityOK,
+			Detail:   fmt.Sprintf("all %d host_keys in sidecar covered by an adapter", len(uniqueHosts)),
+		}
+	}
+	preview := uncovered
+	if len(preview) > 3 {
+		preview = preview[:3]
+	}
+	return Check{
+		Name:        "Adapter coverage",
+		Severity:    SeverityWarn,
+		Detail:      fmt.Sprintf("%d of %d host_keys in sidecar have no adapter: %s", len(uncovered), len(uniqueHosts), strings.Join(preview, ", ")),
+		Remediation: "kooky-only PP CLIs reading these hosts will fall back to Chrome's encrypted store; sidecar-aware PP CLIs (linking pkg/sidecar) are unaffected. See docs/quickstart-beta.md for the sidecar env-var integration path.",
+	}
+}
+
+// hostMatchesAnyAdapter returns true if hostKey matches at least one
+// of any adapter's CookieHostPatterns. Patterns are SQLite LIKE syntax
+// with `%` wildcards; the doctor approximates them as case-sensitive
+// substring matches with `%` stripped (good enough for warn-level
+// visibility; exact match semantics live in the writer path).
+func hostMatchesAnyAdapter(hostKey string, adapters []sinkpush.Adapter) bool {
+	for _, a := range adapters {
+		for _, p := range a.CookieHostPatterns() {
+			needle := strings.TrimSuffix(strings.TrimPrefix(p, "%"), "%")
+			if needle != "" && strings.Contains(hostKey, needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// checkCDPInjector (v0.12.0-beta.3) verifies the CDP-injection mode is
+// usable: cdp.profile_dir exists and is writable, AND Chrome.app is
+// installed on this Mac. WARN when configured but unusable; SKIPPED
+// when cdp.enabled is false.
+func checkCDPInjector(sinkCfg *config.SinkConfig) Check {
+	if !sinkCfg.CDP.Enabled {
+		return Check{
+			Name:     "CDP injector",
+			Severity: SeveritySkipped,
+			Detail:   "cdp.enabled is false (legacy mode or --no-cdp)",
+		}
+	}
+	profileDir := sinkCfg.CDP.ProfileDir
+	if profileDir == "" {
+		profileDir = "~/.agentcookie/chrome-profile"
+	}
+	expanded := profileDir
+	if len(expanded) > 0 && expanded[0] == '~' {
+		if home, herr := os.UserHomeDir(); herr == nil {
+			expanded = filepath.Join(home, expanded[1:])
+		}
+	}
+	if _, err := os.Stat(expanded); err != nil {
+		return Check{
+			Name:        "CDP injector",
+			Severity:    SeverityWarn,
+			Detail:      "profile_dir does not exist: " + profileDir,
+			Remediation: "re-run `agentcookie wizard install --as sink` to create the directory, or `mkdir -p " + profileDir + "`",
+		}
+	}
+	for _, p := range []string{"/Applications/Google Chrome.app", filepath.Join(os.Getenv("HOME"), "Applications", "Google Chrome.app")} {
+		if _, err := os.Stat(p); err == nil {
+			return Check{
+				Name:     "CDP injector",
+				Severity: SeverityOK,
+				Detail:   "profile_dir=" + profileDir + ", Chrome=" + p,
+			}
+		}
+	}
+	return Check{
+		Name:        "CDP injector",
+		Severity:    SeverityWarn,
+		Detail:      "Chrome.app not found in /Applications or ~/Applications; CDP injection will fail at sync time",
+		Remediation: "install Google Chrome from https://www.google.com/chrome/, or pass --no-cdp at wizard install to disable CDP injection",
 	}
 }
 
