@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+### v0.12.0-beta.4: CDP injection coverage fix + PP CLI install hint
+
+The 2026-05-21 dry-run shipped v0.12.0-beta.3 with a headline that
+mostly worked but missed the actual sites a friend cares about. Two
+findings, both fixed here:
+
+**CDP injection drop rate.** The `cdp.InjectCookies` call was passing
+Domain+Path-only `CookieParam` records to `Network.setCookies`. Chrome
+applies stricter validation when no URL is provided -- rejecting
+SameSite=None without Secure, missing-SameSite defaults to Lax which
+rejects originally cross-site cookies, and host-only/subdomain
+semantics flake. The dry-run measured a 64% global drop rate and
+90%+ on instacart.com.
+
+Fix: synthesize a URL per cookie from `host_key` + `path` + scheme
+(strip leading dot for the hostname), pass it alongside Domain+Path,
+and translate Chrome's numeric SameSite encoding to the CDP enum
+explicitly. Tests cover all four SameSite values and the URL
+synthesis edge cases. Pre-beta.4 the build also dropped Priority and
+SourceScheme; those stay omitted (cdproto defaults are acceptable),
+but the CookieParam now reflects the full intent.
+
+**PP CLI install hint.** `agentcookie` syncs cookies but the headline
+value comes from the PP CLIs that consume them. install-beta.sh used
+to land + return without telling the friend they still need to
+`go install` at least one PP CLI on the sink. Result: friend SSHs in,
+runs `instacart-pp-cli carts`, gets `command not found`, thinks
+agentcookie is broken.
+
+Fix: install-beta.sh now prints a clear post-install block listing
+the five built-in adapters' `go install` commands and an SSH-test
+verification line. quickstart-beta.md gains a new "Install at least
+one PP CLI on the sink" section between the sink install and the
+verify steps.
+
 ### v0.12.0-beta.3: click-free headless sink (skip Chrome SQLite write + CDP injection)
 
 The dominant blocker in the 2026-05-19 first-friend dry-run was the

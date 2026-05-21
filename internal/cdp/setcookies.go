@@ -64,21 +64,90 @@ func InjectCookies(ctx context.Context, profileDir string, cookies []chrome.Cook
 	params := make([]*network.CookieParam, 0, len(cookies))
 	for _, c := range cookies {
 		stripped := string(StripAppBoundPrefix([]byte(c.Value)))
-		params = append(params, &network.CookieParam{
-			Name:     c.Name,
-			Value:    stripped,
-			Domain:   c.HostKey,
-			Path:     c.Path,
-			Secure:   c.IsSecure == 1,
-			HTTPOnly: c.IsHTTPOnly == 1,
-			Expires:  cookieExpiresEpoch(c.ExpiresUTC),
-		})
+		params = append(params, buildCookieParam(c, stripped))
 	}
 
 	if err := chromedp.Run(chromeCtx, network.SetCookies(params)); err != nil {
 		return fmt.Errorf("cdp.InjectCookies: Network.SetCookies (%d cookies, profile=%s): %w", len(params), profileDir, err)
 	}
 	return nil
+}
+
+// buildCookieParam translates a chrome.Cookie row into a CDP
+// CookieParam. The key correctness move is providing a synthesized URL
+// for every cookie: Chrome's `Network.setCookies` applies stricter
+// validation when only Domain+Path is given (rejecting SameSite=None
+// without Secure, HttpOnly with insufficient origin, and mismatched
+// host-only semantics). Synthesizing a URL from host_key + path +
+// scheme makes Chrome treat the cookie as if it were set by a real
+// navigation to that origin, which has near-zero rejection rate.
+//
+// We pass BOTH URL (for origin validation) and Domain (preserves the
+// original leading-dot semantics for subdomain scope). When both are
+// provided, CDP uses URL for origin checks and Domain for the
+// cookie's Domain attribute.
+func buildCookieParam(c chrome.Cookie, value string) *network.CookieParam {
+	return &network.CookieParam{
+		Name:     c.Name,
+		Value:    value,
+		URL:      synthesizeCookieURL(c),
+		Domain:   c.HostKey,
+		Path:     c.Path,
+		Secure:   c.IsSecure == 1,
+		HTTPOnly: c.IsHTTPOnly == 1,
+		SameSite: chromeSameSiteToCDP(c.SameSite),
+		Expires:  cookieExpiresEpoch(c.ExpiresUTC),
+	}
+}
+
+// synthesizeCookieURL builds a request-URI for a cookie from its
+// host_key and path. Chrome cookies record host_key as either
+// ".example.com" (suffix match, valid for subdomains) or "example.com"
+// (exact match, host-only). For URL purposes we always need a real
+// hostname, so we strip the leading dot if present.
+func synthesizeCookieURL(c chrome.Cookie) string {
+	host := c.HostKey
+	if len(host) > 0 && host[0] == '.' {
+		host = host[1:]
+	}
+	if host == "" {
+		return ""
+	}
+	scheme := "https"
+	if c.IsSecure == 0 {
+		scheme = "http"
+	}
+	path := c.Path
+	if path == "" {
+		path = "/"
+	}
+	return scheme + "://" + host + path
+}
+
+// chromeSameSiteToCDP translates Chrome's numeric SameSite encoding
+// (stored in cookies.samesite) to the CDP CookieSameSite enum. Without
+// this, missing SameSite causes Chrome to default to Lax on the CDP
+// path, which rejects cookies that were originally cross-site.
+//
+// Chrome encoding:
+//
+//	-1 = unspecified
+//	 0 = None
+//	 1 = Lax
+//	 2 = Strict
+func chromeSameSiteToCDP(s int) network.CookieSameSite {
+	switch s {
+	case 0:
+		return network.CookieSameSiteNone
+	case 1:
+		return network.CookieSameSiteLax
+	case 2:
+		return network.CookieSameSiteStrict
+	default:
+		// -1 / unspecified: emit empty so chromedp omits the field and
+		// Chrome uses its own default behavior for unspecified.
+		return ""
+	}
 }
 
 // cookieExpiresEpoch converts Chrome's microseconds-since-1601 cookie
