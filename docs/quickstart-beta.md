@@ -69,6 +69,30 @@ What this means in practice:
 - **Opt out of CDP injection** if you don't want Chrome touched at all on the sink: pass `--no-cdp` to `install-beta.sh`. Sidecar + adapter push remain the cookie-delivery paths.
 - **Opt out of headless mode** if you do have a GUI session and want the legacy Chrome SQLite write: pass `--write-chrome-sqlite` to `install-beta.sh`.
 
+## Install at least one PP CLI on the sink
+
+`agentcookie` syncs cookies between machines. The PP CLIs are what use those cookies to actually do something for you (browse Instacart carts, search Airbnb, watch eBay items, etc.). You install them separately, on the sink.
+
+Pick the ones you care about and `go install` them on the sink:
+
+```
+GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/instacart-pp-cli@latest
+GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/airbnb-pp-cli@latest
+GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/ebay-pp-cli@latest
+GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/pagliacci-pp-cli@latest
+GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/table-reservation-goat-pp-cli@latest
+```
+
+These five have built-in `agentcookie` adapters that the sink automatically populates after each sync — no env vars to set, no per-CLI Keychain prompts. Any other PP CLI that reads cookies works too if you `export AGENTCOOKIE_PLAIN_COOKIES=~/.agentcookie/cookies-plain.db` in its shell environment (the v0.8 sidecar path).
+
+Verify by running one over SSH from your laptop:
+
+```
+ssh second-mac 'instacart-pp-cli carts'
+```
+
+You should see your actual carts. If you get `command not found`, the install probably went to a `$GOPATH/bin` that isn't on the sink's `$PATH` — `ssh second-mac 'ls ~/go/bin/instacart-pp-cli'` to find it, then add `~/go/bin` to the shell profile.
+
 ## Verify both sides
 
 On both Macs:

@@ -279,9 +279,46 @@ fi
 
 step "running agentcookie doctor to confirm install state"
 
-if "$TARGET" doctor; then
+DOCTOR_EXIT=0
+"$TARGET" doctor || DOCTOR_EXIT=$?
+
+# ---- next steps hint (sink role only) ----
+#
+# A common friend pitfall after install: they SSH into the sink, type
+# `instacart-pp-cli carts` (the example from quickstart-beta.md), and
+# get `command not found`. agentcookie itself ships independent of the
+# PP CLIs that consume its cookies; the friend has to install at least
+# one PP CLI on the sink for the headline value to materialize. Make
+# that step impossible to miss.
+if [[ "$ROLE" == "sink" ]]; then
+  echo
+  echo "==============================================================="
+  echo "  Next step: install at least one PP CLI on this sink."
+  echo "==============================================================="
+  echo
+  echo "  agentcookie syncs cookies; the PP CLIs are what consume them."
+  echo "  The five built-in adapters and their go install commands:"
+  echo
+  echo "    GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/instacart-pp-cli@latest"
+  echo "    GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/airbnb-pp-cli@latest"
+  echo "    GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/ebay-pp-cli@latest"
+  echo "    GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/pagliacci-pp-cli@latest"
+  echo "    GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/table-reservation-goat-pp-cli@latest"
+  echo
+  echo "  Pick the ones you care about. After install, verify over SSH:"
+  echo
+  echo "    ssh $(hostname -s) 'instacart-pp-cli carts'"
+  echo
+  echo "  PP CLIs reading cookies via:"
+  echo "    - adapter session files (v0.11) -- auto-populated by sink"
+  echo "    - sidecar (v0.8) -- set AGENTCOOKIE_PLAIN_COOKIES=~/.agentcookie/cookies-plain.db"
+  echo "==============================================================="
+  echo
+fi
+
+if [[ $DOCTOR_EXIT -eq 0 ]]; then
   ok "install complete; doctor reports all-green"
-  ok "next: see docs/quickstart-beta.md for first-sync and SSH usage steps"
+  ok "next: install one or more PP CLIs (above) and verify over SSH"
 else
   warn "doctor reports issues; see output above and follow the [Remediation] lines"
   exit 1
