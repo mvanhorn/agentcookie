@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### v0.12.0-beta.6: skip keychain strategy loop on headless installs + Browserbase audit doc
+
+Two unrelated items grouped because they're both small.
+
+**Friction #19 fix (2026-05-21 dry-run).** On a headless wizard install
+(no TTY, `skip_chrome_sqlite: true` resolved), the v0.10
+set-keychain-access strategy loop still fired. It exists to broaden
+Chrome Safe Storage access for kooky-using PP CLIs that read Chrome's
+encrypted SQLite directly. In headless mode no PP CLI reads Chrome's
+SQLite -- the sidecar + adapter delivery paths take over -- so the
+loop's 60-second timeout and alarming WARNING block were friction
+with no benefit. The loop now skips when the wizard resolves to
+headless mode. Explicit `--skip-keychain-access` and explicit
+`--write-chrome-sqlite` paths preserve the pre-beta.6 behavior. The
+Chrome Safe Storage prompt step is gated on the same condition.
+
+Side effect: `resolveSinkHeadlessMode()` now fires once at the top of
+`wizardInstallSink` instead of only inside the "write fresh sink.yaml"
+branch, so upgrade-in-place installs get the same gating as fresh ones.
+
+**Browserbase audit doc.** Matt asked whether anything in
+Browserbase's `cookie-sync` skill was worth being inspired by. The
+audit at `docs/audits/2026-05-21-browserbase-cookie-sync.md`
+documents the three real candidates (domain allowlist, CDP-based
+source-side read, two-way sync), argues both sides for each, and
+recommends adopting none right now -- they solve problems agentcookie
+doesn't have. The doc lives as the canonical answer for "did we
+consider X?" so a future iteration starts from there instead of
+re-reading Browserbase from scratch.
+
 ### v0.12.0-beta.4: CDP injection coverage fix + PP CLI install hint
 
 The 2026-05-21 dry-run shipped v0.12.0-beta.3 with a headline that
