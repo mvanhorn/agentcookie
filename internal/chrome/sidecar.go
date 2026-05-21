@@ -225,3 +225,34 @@ func isUniqueConstraintError(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "UNIQUE constraint failed")
 }
+
+// SidecarUniqueHostKeys returns the distinct host_key values in the
+// given sidecar SQLite. Used by `agentcookie doctor` to compute
+// adapter coverage. Returns (nil, err) when the file is missing; the
+// caller decides whether to treat that as SKIP or FAIL.
+func SidecarUniqueHostKeys(sidecarPath string) ([]string, error) {
+	if _, err := os.Stat(sidecarPath); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite3", "file:"+sidecarPath+"?mode=ro")
+	if err != nil {
+		return nil, fmt.Errorf("open sidecar %s: %w", sidecarPath, err)
+	}
+	defer db.Close()
+
+	rows, err := db.Query(`SELECT DISTINCT host_key FROM cookies ORDER BY host_key`)
+	if err != nil {
+		return nil, fmt.Errorf("query sidecar host_keys: %w", err)
+	}
+	defer rows.Close()
+
+	var hosts []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, fmt.Errorf("scan host_key: %w", err)
+		}
+		hosts = append(hosts, h)
+	}
+	return hosts, rows.Err()
+}
