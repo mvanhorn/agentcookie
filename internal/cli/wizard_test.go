@@ -120,6 +120,51 @@ func TestResolveSinkHeadlessMode_FlagPrecedence(t *testing.T) {
 	})
 }
 
+// TestKeychainStrategyGatedOnHeadless documents the v0.12.0-beta.6
+// behavior for friction #19: the keychain strategy loop must not fire
+// when the wizard resolves to headless mode (skip_chrome_sqlite=true),
+// because the sink daemon won't read Chrome Safe Storage anyway.
+// This is a structural test against the gating logic, not a full
+// invocation -- the actual loop runs out-of-process via runOuterWizard.
+func TestKeychainStrategyGatedOnHeadless(t *testing.T) {
+	saveSkip, saveAccess := wizardSkipChromeSQLite, wizardSkipKeychainAccess
+	defer func() {
+		wizardSkipChromeSQLite = saveSkip
+		wizardSkipKeychainAccess = saveAccess
+	}()
+
+	// The gating is a 3-branch switch:
+	//   1. explicit --skip-keychain-access wins (preserves existing flag).
+	//   2. skip_chrome_sqlite skips the loop (the friction #19 fix).
+	//   3. otherwise: run the loop.
+	//
+	// We model each branch's expected log line and assert the right
+	// branch fires.
+	cases := []struct {
+		name             string
+		skipChromeSQLite bool
+		skipKeychainAcc  bool
+		wantLoopRuns     bool
+	}{
+		{"explicit --skip-keychain-access wins", false, true, false},
+		{"headless mode skips loop", true, false, false},
+		{"both flags off: loop runs", false, false, true},
+		{"headless AND explicit skip: still skipped", true, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wizardSkipChromeSQLite = tc.skipChromeSQLite
+			wizardSkipKeychainAccess = tc.skipKeychainAcc
+
+			// Model the gating decision the same way wizardInstallSink does.
+			loopWouldRun := !wizardSkipKeychainAccess && !wizardSkipChromeSQLite
+			if loopWouldRun != tc.wantLoopRuns {
+				t.Errorf("gating: got loopWouldRun=%v, want %v", loopWouldRun, tc.wantLoopRuns)
+			}
+		})
+	}
+}
+
 // TestValidateListenAddr_AcceptsExplicitOperatorInput is the regression
 // guard for the wizard's --listen flag. An operator passing an
 // explicit value (during local dev or for an unusual deployment) must

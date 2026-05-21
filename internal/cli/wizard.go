@@ -232,6 +232,17 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 		return err
 	}
 
+	// v0.12.0-beta.6: resolve headless mode ONCE at the top of wizard
+	// install so the result gates both the sink.yaml render AND the
+	// downstream keychain prompt + strategy loop. Pre-beta.6 the
+	// resolve fired only inside the "write fresh sink.yaml" branch,
+	// which meant upgrade-in-place installs always ran the strategy
+	// loop even on headless sinks where the daemon never touches
+	// Chrome Safe Storage. That produced the 60-second timeout +
+	// alarming WARNING block documented as friction #19 in the
+	// 2026-05-19 dry-run.
+	skipChromeSQLite, cdpEnabled, cdpProfileDir := resolveSinkHeadlessMode()
+
 	// v0.12 S1: resolve the tailnet 100.x address BEFORE writing
 	// sink.yaml. If Tailscale is not up the helper returns a
 	// structured error and we refuse to write a permissive default.
@@ -252,12 +263,8 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 			return fmt.Errorf("detect Tailscale 100.x address for sink listener: %w", err)
 		}
 		listenAddr := fmt.Sprintf("%s:9999", ip)
-		// v0.12.0-beta.3: resolve headless mode + CDP injection. Explicit
-		// flags win; otherwise no-TTY (SSH-only install) implies headless
-		// AND CDP injection (so the friend's Chrome on the sink still
-		// sees synced cookies even though agentcookie never touches
-		// Chrome Safe Storage). --no-cdp disables CDP independently.
-		skipChromeSQLite, cdpEnabled, cdpProfileDir := resolveSinkHeadlessMode()
+		// Headless mode + CDP injection resolved above; use the values
+		// for the YAML render here.
 		if cdpEnabled {
 			if err := os.MkdirAll(expandHome(cdpProfileDir), 0o700); err != nil {
 				return fmt.Errorf("create CDP profile dir %s: %w", cdpProfileDir, err)
@@ -304,7 +311,12 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 	// Safe Storage. The sink LaunchAgent reads this key on every startup
 	// to encrypt cookies for SQLite writes; without Always-Allow, the
 	// daemon would block on a Keychain prompt nobody can see.
-	if !wizardSkipKeychainPrompt {
+	//
+	// v0.12.0-beta.6: skip entirely in headless mode. When
+	// skip_chrome_sqlite resolves to true the sink daemon never reads
+	// Chrome Safe Storage, so the prompt is needless friction and
+	// (when run from a non-GUI context) hangs or errors loudly.
+	if !wizardSkipKeychainPrompt && !skipChromeSQLite {
 		fmt.Fprintln(os.Stderr, "agentcookie wizard: triggering Chrome Safe Storage Keychain prompt (click 'Always Allow' when macOS asks)")
 		if _, err := chrome.SafeStoragePassword(); err != nil {
 			return fmt.Errorf("Keychain access: %w (re-run after granting Always Allow, or pass --skip-keychain-prompt)", err)
@@ -320,7 +332,18 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 	// cover ad-hoc-signed Go binaries. The whole thing runs inside a
 	// one-shot LaunchAgent (auto-unlocked keychain) so no login password
 	// prompt fires. See plan 2026-05-17-004.
-	if !wizardSkipKeychainAccess {
+	//
+	// v0.12.0-beta.6: skip entirely in headless mode. The loop only
+	// matters for kooky-using PP CLIs that read Chrome's encrypted SQLite
+	// directly. In headless mode (sidecar+adapter delivery), no PP CLI
+	// touches Chrome's SQLite; the loop's 60s timeout + alarming
+	// WARNING was friction #19 in the 2026-05-21 dry-run.
+	switch {
+	case wizardSkipKeychainAccess:
+		// explicit opt-out preserved
+	case skipChromeSQLite:
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: skipping set-keychain-access strategy loop (headless mode: sidecar+adapter delivery does not need Chrome Safe Storage access)")
+	default:
 		fmt.Fprintln(os.Stderr, "agentcookie wizard: running set-keychain-access strategy loop (broadens Chrome Safe Storage access for kooky-using CLIs)")
 		setKeychainExtraBinary = defaultKeychainTrustBinaries()
 		if err := runOuterWizard(setKeychainAccessCmd); err != nil {
