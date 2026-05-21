@@ -25,11 +25,31 @@ type SourceConfig struct {
 }
 
 // SinkConfig captures the sink machine's settings.
+//
+// SkipChromeSQLite is the v0.12.0-beta.3 headless-sink flag. When true,
+// the sink never reads Chrome Safe Storage and never writes Chrome's
+// SQLite/leveldb/indexeddb files. The sidecar (~/.agentcookie/cookies-plain.db,
+// pair-derived shared key) and adapter push (per-PP-CLI session files)
+// remain the cookie-delivery paths and are unaffected. This unblocks
+// SSH-only installs on headless Mac minis where no GUI session can
+// answer the Chrome Safe Storage Keychain prompt.
 type SinkConfig struct {
-	Listen   ListenRef   `yaml:"listen" json:"listen"`
-	Chrome   ChromeRef   `yaml:"chrome" json:"chrome"`
-	Peer     PeerRef     `yaml:"peer,omitempty" json:"peer,omitempty"`
-	Security SecurityRef `yaml:"security,omitempty" json:"security,omitempty"`
+	Listen           ListenRef   `yaml:"listen" json:"listen"`
+	Chrome           ChromeRef   `yaml:"chrome" json:"chrome"`
+	Peer             PeerRef     `yaml:"peer,omitempty" json:"peer,omitempty"`
+	Security         SecurityRef `yaml:"security,omitempty" json:"security,omitempty"`
+	SkipChromeSQLite bool        `yaml:"skip_chrome_sqlite,omitempty" json:"skip_chrome_sqlite,omitempty"`
+	CDP              CDPRef      `yaml:"cdp,omitempty" json:"cdp,omitempty"`
+}
+
+// CDPRef configures the v0.12.0-beta.3 CDP-injection mode. When Enabled,
+// the sink launches a headless Chrome via chromedp after each /sync and
+// pushes the synced cookies through Storage.setCookies. Chrome encrypts
+// its own SQLite with its own Safe Storage key; agentcookie never reads
+// Chrome's Keychain item on this path.
+type CDPRef struct {
+	Enabled    bool   `yaml:"enabled" json:"enabled"`
+	ProfileDir string `yaml:"profile_dir,omitempty" json:"profile_dir,omitempty"`
 }
 
 // PeerRef names the other side of a paired sync relationship. Hostname is

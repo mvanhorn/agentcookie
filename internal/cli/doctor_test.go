@@ -10,7 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mvanhorn/agentcookie/internal/chrome"
+	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
+	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 	"github.com/mvanhorn/agentcookie/internal/state"
 )
 
@@ -194,11 +197,30 @@ func TestCheckSinkListener(t *testing.T) {
 // TestCheckSinkState covers the three age branches: fresh (OK),
 // stale (WARN), missing (FAIL).
 func TestCheckSinkState(t *testing.T) {
-	t.Run("fresh", func(t *testing.T) {
+	t.Run("fresh reports mode", func(t *testing.T) {
+		// v0.12.0-beta.3: the detail line surfaces LastWriteMode so a
+		// friend reading `doctor` sees whether they're in legacy or
+		// headless mode at a glance.
+		st := &state.SinkState{
+			LastWrite:     time.Now().Add(-5 * time.Minute),
+			LastWriteMode: "sidecar+adapter",
+		}
+		c := checkSinkStateFrom(st, nil)
+		if c.Severity != SeverityOK {
+			t.Fatalf("got %q (%q)", c.Severity, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "mode=sidecar+adapter") {
+			t.Errorf("detail should report mode=sidecar+adapter, got %q", c.Detail)
+		}
+	})
+	t.Run("fresh missing mode falls back to unknown", func(t *testing.T) {
 		st := &state.SinkState{LastWrite: time.Now().Add(-5 * time.Minute)}
 		c := checkSinkStateFrom(st, nil)
 		if c.Severity != SeverityOK {
 			t.Fatalf("got %q (%q)", c.Severity, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "mode=unknown") {
+			t.Errorf("missing LastWriteMode should fall back to mode=unknown, got %q", c.Detail)
 		}
 	})
 	t.Run("stale (>24h)", func(t *testing.T) {
@@ -270,6 +292,72 @@ func TestCheckSealing(t *testing.T) {
 	})
 }
 
+// TestCheckCDPInjector covers the v0.12.0-beta.3 CDP-injection check.
+// cdp.enabled=false reports SKIPPED. cdp.enabled=true with a valid
+// profile dir reports OK when Chrome is found. cdp.enabled=true with
+// no profile dir reports WARN.
+func TestCheckCDPInjector(t *testing.T) {
+	t.Run("disabled is skipped", func(t *testing.T) {
+		cfg := &config.SinkConfig{CDP: config.CDPRef{Enabled: false}}
+		c := checkCDPInjector(cfg)
+		if c.Severity != SeveritySkipped {
+			t.Fatalf("got %q, want SKIPPED", c.Severity)
+		}
+	})
+	t.Run("missing profile_dir warns", func(t *testing.T) {
+		tmp := t.TempDir()
+		missing := filepath.Join(tmp, "no-such-dir")
+		cfg := &config.SinkConfig{CDP: config.CDPRef{Enabled: true, ProfileDir: missing}}
+		c := checkCDPInjector(cfg)
+		if c.Severity != SeverityWarn {
+			t.Fatalf("got %q (%q), want WARN", c.Severity, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "profile_dir does not exist") {
+			t.Errorf("detail: %q", c.Detail)
+		}
+	})
+	t.Run("present profile_dir reports OK or chrome WARN", func(t *testing.T) {
+		// We exercise the path-exists code branch. Whether Chrome is
+		// found on the test runner is environment-dependent (CI without
+		// Chrome installed will get WARN with a chrome-not-found
+		// remediation). Both severities are valid for this test; what
+		// we're asserting is that we don't FAIL out.
+		tmp := t.TempDir()
+		cfg := &config.SinkConfig{CDP: config.CDPRef{Enabled: true, ProfileDir: tmp}}
+		c := checkCDPInjector(cfg)
+		if c.Severity != SeverityOK && c.Severity != SeverityWarn {
+			t.Fatalf("got %q, want OK or WARN", c.Severity)
+		}
+	})
+}
+
+// TestHostMatchesAnyAdapter covers the substring fallback used by the
+// adapter coverage check.
+func TestHostMatchesAnyAdapter(t *testing.T) {
+	adapters := []sinkpush.Adapter{&stubAdapter{patterns: []string{"%instacart.com", "%airbnb.com"}}}
+	if !hostMatchesAnyAdapter(".instacart.com", adapters) {
+		t.Errorf("expected match for .instacart.com")
+	}
+	if hostMatchesAnyAdapter(".example.com", adapters) {
+		t.Errorf("did not expect match for .example.com")
+	}
+	// Empty pattern shouldn't crash; treated as non-matching.
+	emptyAdapter := []sinkpush.Adapter{&stubAdapter{patterns: []string{"%"}}}
+	if hostMatchesAnyAdapter("anything", emptyAdapter) {
+		t.Errorf("bare %% pattern should not match (the stripped form is empty)")
+	}
+}
+
+type stubAdapter struct {
+	patterns []string
+}
+
+func (s *stubAdapter) Name() string                 { return "stub" }
+func (s *stubAdapter) CLIBinary() string            { return "/usr/local/bin/stub-pp-cli" }
+func (s *stubAdapter) IsInstalled() bool            { return true }
+func (s *stubAdapter) CookieHostPatterns() []string { return s.patterns }
+func (s *stubAdapter) Push(_ []chrome.Cookie) error { return nil }
+
 // TestRunDoctorJSONEnvelope confirms --json emits a stable envelope
 // with all eight checks present (skipped for the wrong role).
 func TestRunDoctorJSONEnvelope(t *testing.T) {
@@ -292,8 +380,9 @@ peer:
 		MasterKeyExists:  func() bool { return false },
 	})
 
-	if got := len(report.Checks); got != 8 {
-		t.Fatalf("got %d checks, want 8", got)
+	// v0.12.0-beta.3 added two checks: Adapter coverage + CDP injector.
+	if got := len(report.Checks); got != 10 {
+		t.Fatalf("got %d checks, want 10", got)
 	}
 
 	// Serialize the envelope and confirm it round-trips.

@@ -39,6 +39,13 @@ var (
 	wizardSkipPartitionList  bool
 	wizardSkipKeychainAccess bool
 	wizardSkipBridgeHint     bool
+
+	// v0.12.0-beta.3: headless-sink mode flags. Default to "" so we can
+	// distinguish "user did not set" from "user set explicitly". When
+	// neither is set, the wizard auto-detects via `isHeadlessInstall()`.
+	wizardSkipChromeSQLite  bool
+	wizardWriteChromeSQLite bool
+	wizardNoCDP             bool
 )
 
 var wizardCmd = &cobra.Command{
@@ -97,6 +104,9 @@ func init() {
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipPartitionList, "skip-partition-list", false, "[sink] do not expand the Chrome Safe Storage Keychain partition list; PP CLIs using Apple-tool callers may then prompt on first read")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipKeychainAccess, "skip-keychain-access", false, "[sink] do not run v0.10 set-keychain-access strategies (the kooky-CGO probe + partition/trust-list loop); kooky CLIs may then prompt on first read per binary")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipBridgeHint, "skip-bridge-hint", false, "[sink] do not print the cookie-bridge env-var integration hint at install end")
+	wizardInstallCmd.Flags().BoolVar(&wizardSkipChromeSQLite, "skip-chrome-sqlite", false, "[sink] sink daemon never reads Chrome Safe Storage or writes Chrome SQLite/leveldb; sidecar + adapter push remain the cookie-delivery paths. Auto-set when no TTY is attached (headless SSH install). Overrides --write-chrome-sqlite when both passed.")
+	wizardInstallCmd.Flags().BoolVar(&wizardWriteChromeSQLite, "write-chrome-sqlite", false, "[sink] force-write to Chrome SQLite even on a headless install (overrides the no-TTY auto-detect default of skip-chrome-sqlite)")
+	wizardInstallCmd.Flags().BoolVar(&wizardNoCDP, "no-cdp", false, "[sink] do not enable CDP injection alongside skip_chrome_sqlite. By default, headless installs enable CDP injection so Chrome on the sink still sees synced cookies. Pass --no-cdp for sidecar+adapter-only mode.")
 
 	wizardUninstallCmd.Flags().StringVar(&wizardRole, "as", "", "source | sink (required)")
 	wizardUninstallCmd.Flags().BoolVar(&wizardForce, "purge", false, "also delete configs and paired keys")
@@ -242,9 +252,20 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 			return fmt.Errorf("detect Tailscale 100.x address for sink listener: %w", err)
 		}
 		listenAddr := fmt.Sprintf("%s:9999", ip)
+		// v0.12.0-beta.3: resolve headless mode + CDP injection. Explicit
+		// flags win; otherwise no-TTY (SSH-only install) implies headless
+		// AND CDP injection (so the friend's Chrome on the sink still
+		// sees synced cookies even though agentcookie never touches
+		// Chrome Safe Storage). --no-cdp disables CDP independently.
+		skipChromeSQLite, cdpEnabled, cdpProfileDir := resolveSinkHeadlessMode()
+		if cdpEnabled {
+			if err := os.MkdirAll(expandHome(cdpProfileDir), 0o700); err != nil {
+				return fmt.Errorf("create CDP profile dir %s: %w", cdpProfileDir, err)
+			}
+		}
 		if err := writeYAMLIfMissing(
 			sinkYAMLPath,
-			renderSinkYAML(wizardPeer, listenAddr),
+			renderSinkYAML(wizardPeer, listenAddr, skipChromeSQLite, cdpEnabled, cdpProfileDir),
 			wizardForce,
 		); err != nil {
 			return err
@@ -645,15 +666,83 @@ peer:
 // and it resolves listenAddr via tsclient.RequireTailnetIP first so a
 // detection failure refuses to write sink.yaml rather than silently
 // falling through to a permissive default. See v0.12 S1.
-func renderSinkYAML(peer, listenAddr string) string {
-	// v0.7: cdp.enabled is gone. Direct SQLite + leveldb file writes are
-	// the only path. The Chrome quit/relaunch ceremony around each sync
-	// is handled by the chromectl package.
-	return fmt.Sprintf(`listen:
+//
+// v0.12.0-beta.3 added skipChromeSQLite + CDP injection. When
+// skipChromeSQLite is false (the legacy default), the rendered YAML
+// matches the pre-beta.3 shape byte-for-byte — that's the regression
+// guard for installed v0.12.0-beta.2 friends (R6 in plan
+// 2026-05-21-001).
+func renderSinkYAML(peer, listenAddr string, skipChromeSQLite, cdpEnabled bool, cdpProfileDir string) string {
+	out := fmt.Sprintf(`listen:
   addr: %s
 peer:
   hostname: %s
 `, listenAddr, peer)
+	if skipChromeSQLite {
+		out += "skip_chrome_sqlite: true\n"
+	}
+	if cdpEnabled {
+		out += "cdp:\n  enabled: true\n"
+		if cdpProfileDir != "" {
+			out += fmt.Sprintf("  profile_dir: %s\n", cdpProfileDir)
+		}
+	}
+	return out
+}
+
+// isHeadlessInstall returns true when stdin is not a terminal, which
+// signals an SSH-only install with no GUI session to answer Keychain
+// prompts. The wizard uses this to pick the v0.12.0-beta.3 headless
+// defaults (skip_chrome_sqlite + cdp). When in doubt (e.g. tests),
+// returns false to preserve legacy behavior.
+func isHeadlessInstall() bool {
+	stat, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (stat.Mode() & os.ModeCharDevice) == 0
+}
+
+// resolveSinkHeadlessMode applies the v0.12.0-beta.3 default-resolution
+// rules. Returns (skipChromeSQLite, cdpEnabled, cdpProfileDir).
+//
+// Precedence:
+//  1. --skip-chrome-sqlite explicit -> skip=true.
+//  2. --write-chrome-sqlite explicit -> skip=false (overrides headless detect).
+//  3. No-TTY install -> skip=true (auto-detect).
+//  4. GUI install -> skip=false (legacy default, R6 regression guard).
+//
+// CDP defaults: enabled when skip=true and --no-cdp is not set.
+func resolveSinkHeadlessMode() (skipChromeSQLite, cdpEnabled bool, cdpProfileDir string) {
+	switch {
+	case wizardSkipChromeSQLite:
+		skipChromeSQLite = true
+	case wizardWriteChromeSQLite:
+		skipChromeSQLite = false
+	case isHeadlessInstall():
+		skipChromeSQLite = true
+	default:
+		skipChromeSQLite = false
+	}
+	if skipChromeSQLite && !wizardNoCDP {
+		cdpEnabled = true
+		cdpProfileDir = "~/.agentcookie/chrome-profile"
+	}
+	return
+}
+
+// expandHome resolves a leading ~/ in a path against the current user's
+// home directory. Cleaner than relying on the shell to expand at YAML
+// load time, which it does not.
+func expandHome(p string) string {
+	if p == "" || p[0] != '~' {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p
+	}
+	return filepath.Join(home, p[1:])
 }
 
 // validateListenAddr enforces the v0.12 binding policy on a configured

@@ -52,17 +52,22 @@ Same flow, opposite role:
 3. Run: `./install-beta.sh --as sink --peer <macbook> --code <pairing-code> --pair-url <pair-url>` (the source's wizard install printed the code + URL for you to copy here).
 4. The script verifies the code signature, places the binary, runs `agentcookie wizard install --as sink ...`, and ends with `doctor`.
 
-You'll see one Keychain prompt asking permission for `agentcookie` to access Chrome Safe Storage. Click **Always Allow**.
+On a GUI install (you're at the sink's keyboard, or you opened Terminal locally), you'll see one Keychain prompt asking permission for `agentcookie` to access Chrome Safe Storage. Click **Always Allow**.
 
 ### Headless sink (SSH-only, no monitor on the second Mac)
 
-If the second Mac is headless and you're installing over SSH with no one at the screen to click prompts, `install-beta.sh` auto-detects "no TTY" and adds `--skip-keychain-prompt` to the wizard. The install completes, but the sink daemon won't be able to read Chrome Safe Storage until you grant Always Allow once. To do that, either physically log into the sink Mac or open a Screen Sharing session, then run:
+If the second Mac is headless and you're installing over SSH with no one at the screen to click prompts, `install-beta.sh` auto-detects "no TTY" and switches to headless mode:
 
-```
-~/bin/agentcookie sink
-```
+- `sink.yaml` is written with `skip_chrome_sqlite: true` and `cdp.enabled: true`.
+- The sink daemon NEVER reads Chrome Safe Storage. No Keychain prompt fires. The install completes click-free.
+- Synced cookies land in the plaintext sidecar at `~/.agentcookie/cookies-plain.db`, in each PP CLI's session file via the v0.11 adapter push, and (via CDP injection) in Chrome's own SQLite at `~/.agentcookie/chrome-profile/` — a profile dedicated to agentcookie. Chrome encrypts its own SQLite with its own Safe Storage key on first launch; agentcookie never touches that key.
 
-That triggers the Keychain prompt in the GUI session. Click **Always Allow**, then Ctrl-C and restart the LaunchAgent: `launchctl bootout "gui/$(id -u)/dev.agentcookie.sink"; launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/dev.agentcookie.sink.plist`. Sync resumes within seconds.
+What this means in practice:
+
+- **PP CLIs over SSH work immediately.** No Keychain prompts to dismiss.
+- **Launching Chrome on the sink** against the agentcookie-owned profile (`open -a "Google Chrome" --args --user-data-dir=$HOME/.agentcookie/chrome-profile`) shows the synced sites already logged in. The default Chrome profile (`~/Library/Application Support/Google/Chrome/Default`) is untouched and won't see synced cookies — agentcookie keeps your browsing profile separate.
+- **Opt out of CDP injection** if you don't want Chrome touched at all on the sink: pass `--no-cdp` to `install-beta.sh`. Sidecar + adapter push remain the cookie-delivery paths.
+- **Opt out of headless mode** if you do have a GUI session and want the legacy Chrome SQLite write: pass `--write-chrome-sqlite` to `install-beta.sh`.
 
 ## Verify both sides
 

@@ -2,6 +2,66 @@
 
 ## [Unreleased]
 
+### v0.12.0-beta.3: click-free headless sink (skip Chrome SQLite write + CDP injection)
+
+The dominant blocker in the 2026-05-19 first-friend dry-run was the
+Chrome Safe Storage Keychain prompt. The sink daemon needed Chrome's
+per-machine AES key to encrypt cookies before writing Chrome's SQLite,
+and macOS only grants that access via a GUI "Always Allow" click. An
+SSH-only install on a headless Mac mini had no one to click it.
+
+v0.12.0-beta.3 closes that gap with two phases working together:
+
+**Phase 1 — Skip Chrome SQLite write on headless sinks.**
+
+- New `skip_chrome_sqlite: true` in `sink.yaml` makes the sink daemon
+  never read Chrome Safe Storage and never write Chrome SQLite,
+  LocalStorage, or IndexedDB. The plaintext-cookies sidecar
+  (`~/.agentcookie/cookies-plain.db`, pair-derived shared key) and the
+  v0.11 adapter push (per-PP-CLI session files) remain the
+  cookie-delivery paths. PP CLIs are unaffected.
+- `agentcookie wizard install --as sink` auto-detects no-TTY contexts
+  (the SSH-only install path) and writes `skip_chrome_sqlite: true`
+  by default. GUI installs (you're at the sink's keyboard) keep the
+  legacy behavior. Explicit `--skip-chrome-sqlite` and
+  `--write-chrome-sqlite` flags override the auto-detect.
+- `install-beta.sh` forwards the new flags and surfaces the new
+  default in its post-install hint.
+- `agentcookie doctor` now reports the active write mode in the Sink
+  state check (`mode=sidecar+adapter` vs `mode=sqlite+leveldb`) and
+  warns when sidecar cookie domains have no matching adapter (a new
+  "Adapter coverage" check, WARN severity).
+
+**Phase 2 — CDP injection keeps Chrome on the sink warm.**
+
+- New `cdp.enabled: true` in `sink.yaml` makes the sink launch a
+  one-shot headless Chrome via chromedp after each /sync and push
+  the synced cookies through `Storage.setCookies`. Chrome handles
+  its own Safe Storage encryption; agentcookie never reads Chrome's
+  Keychain item.
+- Chrome 127+ App-Bound Encryption: the CDP path now strips the
+  32-byte host-bound prefix from decrypted cookie values before
+  calling `Storage.setCookies`. Closes #10. The SQLite write path is
+  unchanged (Chrome strips the prefix itself on read).
+- The CDP-targeted profile lives at `~/.agentcookie/chrome-profile/`
+  — agentcookie-owned, separate from the friend's default Chrome
+  profile. Launching Chrome.app on the sink against this profile
+  shows synced sites already logged in.
+- Wizard auto-enables CDP when it auto-enables headless mode.
+  `--no-cdp` opts out for friends who want sidecar+adapter only.
+- `agentcookie doctor` adds a "CDP injector" check that verifies the
+  profile dir exists and Chrome.app is installed.
+
+**chromedp added as a dependency.** ~50K LOC vendored. Pinned to
+v0.15.1.
+
+**Backward compatibility (R6).** A v0.12.0-beta.2 sink.yaml that does
+not mention `skip_chrome_sqlite` or `cdp` keeps the legacy
+chrome-sqlite write path verbatim. Installed friends upgrading the
+binary in place see no behavior change.
+
+Shipped under plan `docs/plans/2026-05-21-001-feat-headless-sink-click-free-plan.md`.
+
 ### v0.12: security hardening (sealed master key, tailnet-only listeners, rate-limited pairing, sealed sidecar + adapter files)
 
 A friend with a security background looked at agentcookie after v0.11
