@@ -95,8 +95,8 @@ func TestBuildCookieParam_HappyPath(t *testing.T) {
 	if got.URL != "https://instacart.com/api/v2" {
 		t.Errorf("URL: got %q", got.URL)
 	}
-	if got.Domain != ".instacart.com" {
-		t.Errorf("Domain: got %q", got.Domain)
+	if got.Domain != "instacart.com" {
+		t.Errorf("Domain (leading dot must be stripped): got %q", got.Domain)
 	}
 	if got.Path != "/api/v2" {
 		t.Errorf("Path: got %q", got.Path)
@@ -115,6 +115,25 @@ func TestBuildCookieParam_HappyPath(t *testing.T) {
 	}
 	if got.Expires == nil {
 		t.Errorf("Expires: got nil, want non-nil for persistent cookie")
+	}
+}
+
+// TestNormalizeDomain covers the leading-dot strip that Chrome's CDP
+// API requires. Chrome's SQLite stores ".example.com" for parent-domain
+// scope, but Network.setCookies silently rejects that shape.
+func TestNormalizeDomain(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{".instacart.com", "instacart.com"},
+		{"instacart.com", "instacart.com"},
+		{".sub.example.com", "sub.example.com"},
+		{"", ""},
+		{".", ""},
+	}
+	for _, tc := range cases {
+		got := normalizeDomain(tc.in)
+		if got != tc.want {
+			t.Errorf("normalizeDomain(%q): got %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 

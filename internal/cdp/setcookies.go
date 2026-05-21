@@ -61,10 +61,17 @@ func InjectCookies(ctx context.Context, profileDir string, cookies []chrome.Cook
 	chromeCtx, chromeCancel := chromedp.NewContext(startCtx)
 	defer chromeCancel()
 
+	// Cookie values arrive here ALREADY stripped of Chrome 127+'s
+	// App-Bound 32-byte SHA256(host_key) prefix -- internal/chrome/read.go
+	// runs the defensive stripAppBoundPrefix on the source side before
+	// shipping. A second strip on this path (as we did in v0.12.0-beta.3)
+	// silently lopped 32 bytes off real cookie values for any cookie
+	// longer than the prefix, and Chrome rejected the mangled cookies on
+	// Network.setCookies -- producing the 64% drop rate measured in the
+	// 2026-05-21 dry-run. We pass through c.Value verbatim.
 	params := make([]*network.CookieParam, 0, len(cookies))
 	for _, c := range cookies {
-		stripped := string(StripAppBoundPrefix([]byte(c.Value)))
-		params = append(params, buildCookieParam(c, stripped))
+		params = append(params, buildCookieParam(c, c.Value))
 	}
 
 	if err := chromedp.Run(chromeCtx, network.SetCookies(params)); err != nil {
@@ -74,30 +81,44 @@ func InjectCookies(ctx context.Context, profileDir string, cookies []chrome.Cook
 }
 
 // buildCookieParam translates a chrome.Cookie row into a CDP
-// CookieParam. The key correctness move is providing a synthesized URL
-// for every cookie: Chrome's `Network.setCookies` applies stricter
-// validation when only Domain+Path is given (rejecting SameSite=None
-// without Secure, HttpOnly with insufficient origin, and mismatched
-// host-only semantics). Synthesizing a URL from host_key + path +
-// scheme makes Chrome treat the cookie as if it were set by a real
-// navigation to that origin, which has near-zero rejection rate.
+// CookieParam. Two correctness moves matter here:
 //
-// We pass BOTH URL (for origin validation) and Domain (preserves the
-// original leading-dot semantics for subdomain scope). When both are
-// provided, CDP uses URL for origin checks and Domain for the
-// cookie's Domain attribute.
+//  1. Synthesize a URL for every cookie. Chrome's Network.setCookies
+//     applies stricter validation when only Domain+Path is given
+//     (SameSite defaults to Lax which rejects originally cross-site
+//     cookies, host-only vs subdomain semantics flake). With URL set,
+//     Chrome treats the cookie as if a real navigation set it.
+//
+//  2. Strip the leading "." from Domain. Chrome's encrypted cookies
+//     SQLite stores host_key as ".instacart.com" to mark parent-domain
+//     scope (valid for all subdomains). The modern CDP API does NOT
+//     accept Domain values starting with "." -- it rejects them
+//     silently. The post-dot domain ("instacart.com") with explicit
+//     Domain attribute set produces the same subdomain-wildcard scope
+//     Chrome would derive from the same Set-Cookie header sent by the
+//     server, so the semantics round-trip correctly.
 func buildCookieParam(c chrome.Cookie, value string) *network.CookieParam {
 	return &network.CookieParam{
 		Name:     c.Name,
 		Value:    value,
 		URL:      synthesizeCookieURL(c),
-		Domain:   c.HostKey,
+		Domain:   normalizeDomain(c.HostKey),
 		Path:     c.Path,
 		Secure:   c.IsSecure == 1,
 		HTTPOnly: c.IsHTTPOnly == 1,
 		SameSite: chromeSameSiteToCDP(c.SameSite),
 		Expires:  cookieExpiresEpoch(c.ExpiresUTC),
 	}
+}
+
+// normalizeDomain converts Chrome's host_key form to the CDP-acceptable
+// Domain shape. Chrome's SQLite stores ".example.com" for parent-domain
+// scope; CDP requires the leading dot dropped.
+func normalizeDomain(hostKey string) string {
+	if len(hostKey) > 0 && hostKey[0] == '.' {
+		return hostKey[1:]
+	}
+	return hostKey
 }
 
 // synthesizeCookieURL builds a request-URI for a cookie from its

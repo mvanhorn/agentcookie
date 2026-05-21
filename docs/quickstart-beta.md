@@ -71,27 +71,26 @@ What this means in practice:
 
 ## Install at least one PP CLI on the sink
 
-`agentcookie` syncs cookies between machines. The PP CLIs are what use those cookies to actually do something for you (browse Instacart carts, search Airbnb, watch eBay items, etc.). You install them separately, on the sink.
+`agentcookie` syncs cookies between machines. The PP CLIs are what use those cookies to actually do something for you (browse Instacart carts, search Airbnb, etc.). You install them separately, on the sink.
 
-Pick the ones you care about and `go install` them on the sink:
+Two of the five built-in-adapter PP CLIs are direct `go install`-able today:
 
 ```
-GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/instacart-pp-cli@latest
-GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/airbnb-pp-cli@latest
-GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/ebay-pp-cli@latest
-GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/pagliacci-pp-cli@latest
-GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/table-reservation-goat-pp-cli@latest
+GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/instacart-pp-cli@latest
+GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/airbnb-vrbo-pp-cli@latest
 ```
 
-These five have built-in `agentcookie` adapters that the sink automatically populates after each sync — no env vars to set, no per-CLI Keychain prompts. Any other PP CLI that reads cookies works too if you `export AGENTCOOKIE_PLAIN_COOKIES=~/.agentcookie/cookies-plain.db` in its shell environment (the v0.8 sidecar path).
+The remaining three (eBay, Pagliacci, table-reservation-goat) ship through the [printing-press meta tool](https://github.com/mvanhorn/printing-press-library) — follow that repo's README to install them, or skip them for now if Instacart and Airbnb cover your use case.
 
-Verify by running one over SSH from your laptop:
+Once at least one PP CLI is installed, verify over SSH from your laptop:
 
 ```
 ssh second-mac 'instacart-pp-cli carts'
 ```
 
-You should see your actual carts. If you get `command not found`, the install probably went to a `$GOPATH/bin` that isn't on the sink's `$PATH` — `ssh second-mac 'ls ~/go/bin/instacart-pp-cli'` to find it, then add `~/go/bin` to the shell profile.
+You should see your actual carts. If you get `command not found`, the install went to a `$GOPATH/bin` that isn't on the sink's `$PATH` — `ssh second-mac 'ls ~/go/bin/instacart-pp-cli'` to confirm it's there, then either invoke with the full path or add `~/go/bin` to the sink's shell profile.
+
+These PP CLIs read cookies via the v0.11 adapter session files the sink writes after each sync — no env var setup needed. For other PP CLIs without built-in adapters, set `AGENTCOOKIE_PLAIN_COOKIES=~/.agentcookie/cookies-plain.db` in their environment to use the v0.8 sidecar path.
 
 ## Verify both sides
 
