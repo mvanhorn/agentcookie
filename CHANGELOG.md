@@ -32,10 +32,20 @@ runs `instacart-pp-cli carts`, gets `command not found`, thinks
 agentcookie is broken.
 
 Fix: install-beta.sh now prints a clear post-install block listing
-the five built-in adapters' `go install` commands and an SSH-test
-verification line. quickstart-beta.md gains a new "Install at least
-one PP CLI on the sink" section between the sink install and the
-verify steps.
+the canonical PP CLI install paths (one repo per CLI:
+`github.com/mvanhorn/instacart-pp-cli`,
+`github.com/mvanhorn/airbnb-vrbo-pp-cli`) plus a link to the
+printing-press meta tool for the remaining three (eBay, Pagliacci,
+table-reservation-goat). quickstart-beta.md gains a new "Install at
+least one PP CLI on the sink" section between the sink install and
+the verify steps.
+
+**Known limit:** CDP injection drop rate is 55% globally and remains
+high on some sites (notably instacart, where 2 of 33 cookies land).
+The PP CLI path (over SSH, using the v0.11 adapter session file or
+the v0.8 sidecar) is unaffected and is the recommended primary use
+case. The CDP-into-Chrome-on-sink affordance is best-effort in this
+release; deeper investigation lands in v0.12.0-beta.5+.
 
 ### v0.12.0-beta.3: click-free headless sink (skip Chrome SQLite write + CDP injection)
 

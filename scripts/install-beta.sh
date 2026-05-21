@@ -297,21 +297,23 @@ if [[ "$ROLE" == "sink" ]]; then
   echo "==============================================================="
   echo
   echo "  agentcookie syncs cookies; the PP CLIs are what consume them."
-  echo "  The five built-in adapters and their go install commands:"
+  echo "  Two of the five built-in-adapter PP CLIs are go-installable today:"
   echo
-  echo "    GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/instacart-pp-cli@latest"
-  echo "    GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/airbnb-pp-cli@latest"
-  echo "    GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/ebay-pp-cli@latest"
-  echo "    GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/pagliacci-pp-cli@latest"
-  echo "    GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/printing-press-library/table-reservation-goat-pp-cli@latest"
+  echo "    GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/instacart-pp-cli@latest"
+  echo "    GOPRIVATE='github.com/mvanhorn/*' go install github.com/mvanhorn/airbnb-vrbo-pp-cli@latest"
   echo
-  echo "  Pick the ones you care about. After install, verify over SSH:"
+  echo "  The remaining three (ebay, pagliacci-pizza, table-reservation-goat)"
+  echo "  ship via the printing-press meta tool; see"
+  echo "    https://github.com/mvanhorn/printing-press-library"
+  echo
+  echo "  After installing instacart-pp-cli, verify over SSH from your laptop:"
   echo
   echo "    ssh $(hostname -s) 'instacart-pp-cli carts'"
   echo
-  echo "  PP CLIs reading cookies via:"
-  echo "    - adapter session files (v0.11) -- auto-populated by sink"
-  echo "    - sidecar (v0.8) -- set AGENTCOOKIE_PLAIN_COOKIES=~/.agentcookie/cookies-plain.db"
+  echo "  Cookie delivery paths to PP CLIs (no env vars needed for the five"
+  echo "  with built-in adapters; sidecar env var is the fallback):"
+  echo "    - adapter session files (v0.11) -- auto-populated by the sink"
+  echo "    - sidecar -- export AGENTCOOKIE_PLAIN_COOKIES=~/.agentcookie/cookies-plain.db"
   echo "==============================================================="
   echo
 fi
