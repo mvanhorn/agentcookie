@@ -2,9 +2,7 @@
 
 ## [Unreleased]
 
-### v0.12.0-beta.6: skip keychain strategy loop on headless installs + the competitor audit doc
-
-Two unrelated items grouped because they're both small.
+### v0.12.0-beta.6: skip keychain strategy loop on headless installs
 
 **Friction #19 fix (2026-05-21 dry-run).** On a headless wizard install
 (no TTY, `skip_chrome_sqlite: true` resolved), the v0.10
@@ -21,16 +19,6 @@ Chrome Safe Storage prompt step is gated on the same condition.
 Side effect: `resolveSinkHeadlessMode()` now fires once at the top of
 `wizardInstallSink` instead of only inside the "write fresh sink.yaml"
 branch, so upgrade-in-place installs get the same gating as fresh ones.
-
-**the competitor audit doc.** Matt asked whether anything in
-the competitor's `that skill` skill was worth being inspired by. The
-audit at `docs/audits/2026-05-21-the competitor-that skill.md`
-documents the three real candidates (domain allowlist, CDP-based
-source-side read, two-way sync), argues both sides for each, and
-recommends adopting none right now -- they solve problems agentcookie
-doesn't have. The doc lives as the canonical answer for "did we
-consider X?" so a future iteration starts from there instead of
-re-reading the competitor from scratch.
 
 ### v0.12.0-beta.4: CDP injection coverage fix + PP CLI install hint
 
