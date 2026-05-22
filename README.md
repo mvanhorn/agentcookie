@@ -1,111 +1,101 @@
 # agentcookie
 
-> **Closed beta v0.12.0-beta.1.** Invitation only. If you received an invite, jump to [`docs/quickstart-beta.md`](docs/quickstart-beta.md) for the ten-minute install. If you didn't, the rest of this README explains what agentcookie is and what it does.
+Your agent runs on a Mac that isn't your daily driver. It needs to act as you on every site you're already logged into. agentcookie keeps your second Mac's sessions in sync with your first Mac's, continuously, encrypted over your Tailscale tailnet, with zero per-site auth ceremony.
 
-Peer-to-peer Chrome session replication for AI agents.
+Whatever your agent uses to touch the web, OpenClaw, Hermes, Playwright, Puppeteer, chromedp, a CLI tool, raw HTTP, it wakes up authenticated.
 
-Your laptop is logged in to everything. Your AI agents run on a different machine (Mac mini, cloud VM, whatever) and aren't. That gap is `agentcookie`.
+## What it looks like
 
-## What it actually does
-
-You browse normally on your laptop. agentcookie continuously syncs your Chrome session to a sink machine where your agents live. Agents on that sink then run any CLI that needs to be logged in to a website, with zero auth ceremony.
+You browse normally on your first Mac. agentcookie watches Chrome's Cookies file and ships the diff to your second Mac the moment anything changes. On the second Mac, an agent does its work:
 
 ```
-# One-time install
-$ agentcookie wizard install --as source ...     # on your laptop
-$ agentcookie wizard install --as sink ...       # on the sink (Mac mini)
-
-# Then from your laptop, anytime:
-$ agentcookie source --once
-agentcookie source: posted 8283 cookies, sink replied: ok
-
-# And from anywhere (SSH, Hermes, scheduled agent, ...):
-$ ssh mac-mini 'instacart-pp-cli carts'
+$ ssh second-mac 'instacart-pp-cli carts'
   Costco                 slug=costco   cart=757109404 items=5
   Safeway                slug=safeway  cart=3190      items=1
 
-$ ssh mac-mini 'ebay-pp-cli auctions "watch" --has-bids --ending-within 1h'
+$ ssh second-mac 'ebay-pp-cli auctions "watch" --has-bids --ending-within 1h'
 12 active auctions:
   $352   23 bids   1m   Apple Watch Ultra 2 49mm Titanium ...
   $115   26 bids   1m   Gucci 5500M Steel Quartz ...
   ...
 
-$ ssh mac-mini 'table-reservation-goat-pp-cli goat "omakase" --location seattle'
+$ ssh second-mac 'table-reservation-goat-pp-cli goat "omakase" --location seattle'
 { "results": [ { "name": "Omakase Dinner Series", "network": "tock", ... } ] }
 ```
 
-No `auth login`. No Keychain prompt. No paste-the-cookie-string ritual. The CLIs read pre-populated session caches that agentcookie wrote during the last sync.
+No `auth login`. No Keychain prompt. No paste-the-cookie ritual. The agent's sessions were already there when the request hit.
 
-## Why this is hard
+The same is true for browser-driving agents. Point a headless Chrome or a Playwright runtime at the agentcookie-managed profile on the second Mac and your agent sees the same logged-in state you have on your laptop. Or skip Chrome entirely: read the plaintext cookies sidecar at `~/.agentcookie/cookies-plain.db` from any agent that knows cookies.
 
-Existing that skill tools (1Password, Bitwarden, browser extensions) are built for humans switching accounts between two laptops they both touch. They assume someone will click "Merge" or open Chrome periodically.
+## What this fixes
 
-agentcookie is built for the opposite workflow: continuous, one-way, unattended replication from the machine you live in to the machine your AI agents act from. No browser required on the sink. No third-party data plane. Pairing-derived keys, allowlists on both sides, encrypted over the Tailscale tailnet's WireGuard channel.
+Logging in twice. Once on your laptop, once again on the Mac your agent lives on. Per site. Forever.
 
-The hard part isn't moving bytes. It's making the cookies usable on the sink without a human at the keyboard. macOS's Keychain protections, Chrome's App-Bound Encryption (Chrome 127+), and per-CLI auth conventions each fight you. agentcookie handles all three.
+Tools that ship cookies between machines today assume a human is going to click "merge" or unlock a vault or open the destination browser. They were built for switching accounts between two laptops the same person uses. They weren't built for "the agent on the headless Mac mini needs my session in 30 seconds and there's nobody home."
+
+agentcookie is the second pattern. One-way, continuous, unattended replication from the machine you live in to the machine your agents act from. Pairing-derived per-peer keys, allowlist + blocklist on both sides, AES-256-GCM over the Tailscale tailnet's WireGuard channel. The hard parts (macOS Keychain protections, Chrome's App-Bound Encryption, per-CLI auth conventions) are handled.
 
 ## How it works
 
 ```
-laptop                                              sink (Mac mini)
-======                                              ===============
+laptop                                              second Mac
+======                                              ==========
 
 Chrome cookies change
   |
   v
 agentcookie source --watch  (fsnotify on Chrome's Cookies SQLite)
   |
-  | filter to allowlisted domains, decrypt with Keychain key
+  | decrypt with Keychain key, filter against blocklist
   v
-+----- HTTPS over Tailscale (AES-256-GCM + replay-defended) -----+
-                                                                 |
-                                                                 v
++----- HTTPS over Tailscale (AES-256-GCM, replay-defended) -----+
+                                                                |
+                                                                v
                                               agentcookie sink (LaunchAgent)
                                                 |
-                                                | re-encrypt for sink Keychain
+                                                | one of three delivery surfaces:
                                                 v
-                                              writes Chrome's Cookies SQLite
-                                              + plaintext sidecar
-                                              + adapter fan-out:
-                                                  instacart  -> session.json
-                                                  airbnb     -> config.toml + cookies.json
-                                                  ebay       -> config.toml + cookies.json
-                                                  pagliacci  -> config.toml + cookies.json
-                                                  table-reservation-goat -> session.json
-                                                |
-                                                v
-                                              PP CLIs read their own session caches
-                                              forever, no Keychain access, no prompts
+                                              1. Chrome's Cookies SQLite (re-encrypted for sink Keychain)
+                                              2. Plaintext sidecar at ~/.agentcookie/cookies-plain.db
+                                                 (env var: AGENTCOOKIE_PLAIN_COOKIES)
+                                              3. Per-CLI adapter fan-out:
+                                                   instacart  -> session.json
+                                                   airbnb     -> config.toml + cookies.json
+                                                   ebay       -> config.toml + cookies.json
+                                                   pagliacci  -> config.toml + cookies.json
+                                                   table-reservation-goat -> session.json
 ```
 
-Five built-in adapters cover the [Printing Press](https://github.com/mvanhorn/printing-press-library) PP CLIs Matt uses most: instacart, airbnb, ebay, pagliacci, table-reservation-goat (OpenTable + Tock). New adapters are ~50 lines of Go and a `Register()` call; the runbook walks through it.
+Three surfaces because different agents read cookies differently. A browser-driving agent uses surface 1 (or its own profile pointed at the sidecar). A CLI with a built-in adapter uses surface 3. A raw cookies consumer uses surface 2. The sink runs all three after every sync, so the agent picks what fits.
 
-## Install (five minutes)
+New adapters are roughly 50 lines of Go and a `Register()` call; the runbook walks through it.
 
-Prereqs: Tailscale running on both machines, Chrome installed, Go 1.22+ on both (or pre-built binaries from a release).
+## Install
+
+Prereqs: Tailscale running on both Macs, Chrome installed, Go 1.22+ (or a pre-built release).
 
 ```
 # On both machines:
 go install github.com/mvanhorn/agentcookie/cmd/agentcookie@latest
 
-# On the laptop (source):
-agentcookie wizard install --as source --peer <sink-hostname>
+# On the first Mac (source):
+agentcookie wizard install --as source --peer <second-mac-hostname>
 
-# It prints a pairing code. On the sink (Mac mini), paste:
-agentcookie wizard install --as sink --peer <laptop-hostname> \
-  --code <pairing-code> --pair-url http://<laptop-hostname>:9998/pair
+# It prints a pairing code. On the second Mac (sink), paste:
+agentcookie wizard install --as sink --peer <first-mac-hostname> \
+  --code <pairing-code> --pair-url http://<first-mac-hostname>:9998/pair
 ```
 
-The sink wizard installs a LaunchAgent that runs the long-lived sink daemon, expands the Chrome Safe Storage Keychain ACL for headless reads (v0.10), and registers the five adapters that fire after every sync (v0.11). One-time setup includes a single Always-Allow click for the sink LaunchAgent and one macOS login password prompt to broaden the Keychain. After that, all sink-side cookie work is headless forever.
+The sink wizard installs a LaunchAgent, configures Chrome Safe Storage access (or skips it cleanly on a headless install where there's no GUI session to click prompts), and registers the five built-in adapters that fire after every sync. After install, all sync work runs unattended.
 
-See [docs/quickstart.md](docs/quickstart.md) for the long-form walkthrough.
+See [docs/quickstart.md](docs/quickstart.md) for the long-form walkthrough and [docs/quickstart-beta.md](docs/quickstart-beta.md) for the headless flow if you're installing the second Mac over SSH.
 
 ## Verify it's working
 
 ```
-agentcookie status                          # both daemons' last-sync state
-agentcookie wizard verify-adapters          # per-adapter results from the most recent sync
-agentcookie wizard verify-adapters --json   # same, structured for SSH agents
+agentcookie doctor                           # both sides' health
+agentcookie wizard verify-adapters           # per-adapter results from the last sync
+agentcookie wizard verify-adapters --json    # same, structured for SSH agents
 ```
 
 Healthy output:
@@ -124,41 +114,43 @@ last run: 4s ago
 
 ## Status
 
-Pre-release. macOS-only on both ends today: source-side cookie paths and decryption are Chrome-on-macOS specific, and the sink relies on macOS Keychain + LaunchAgent. Linux and Windows support is on the roadmap but not yet wired up.
+macOS only on both ends today. The source side reads Chrome on macOS via the Keychain-backed decrypt path; the sink relies on macOS LaunchAgent and Keychain conventions. Linux and Windows are on the roadmap.
 
-Working today:
+Working:
 
-- Continuous laptop -> sink sync (fsnotify on Chrome's Cookies file, debounced, allowlist-filtered, AES-256-GCM over Tailscale)
-- Sink writes Chrome's Cookies SQLite plus a sidecar at `~/.agentcookie/cookies-plain.db`. At-rest sealing of the sidecar and adapter session files is wired up but off by default; turns on via `wizard set-keychain-access --enable-sealing` once U12 PP CLI support ships in cli-printing-press
-- Five built-in PP CLI adapters push session caches after every sync (plaintext today; sealed when sealing is opted in)
-- Tailnet-only listeners on both ends (sink and pair endpoints refuse `0.0.0.0`); pair endpoint rate-limited with a 64-bit code
-- Sink-side blocklist + allowlist, persistent replay defense (nanosecond sequence survives restart)
-- Apple Developer ID signed binaries; per-binary `-T` Keychain ACL on Chrome Safe Storage replaces v0.10's any-app ACL
-- One-time install ceremony covered by `agentcookie wizard install`
-- 261 unit tests across 22 packages
+- Continuous laptop to second-Mac sync via fsnotify on Chrome's Cookies file, debounced, allowlist + blocklist filtered, AES-256-GCM over Tailscale.
+- Three delivery surfaces on the sink (Chrome SQLite, plaintext sidecar, per-CLI adapter session files).
+- Five built-in PP CLI adapters: instacart, airbnb, ebay, pagliacci, table-reservation-goat (OpenTable + Tock).
+- Tailnet-only listeners on both ends; pair endpoint rate-limited with a 64-bit code.
+- Persistent replay defense; per-peer pairing-derived keys.
+- Apple Developer ID signed binaries; per-binary `-T` Keychain ACL on Chrome Safe Storage.
+- Headless second-Mac install over SSH with no GUI clicks required.
+- `agentcookie doctor` reports binary signature, Tailscale, config, keystore, listener bind, sink/source state, sealing posture, adapter coverage, CDP injector health.
+- 330+ unit tests across 23 packages.
 
 Not yet:
 
-- PP CLI sidecar-reader migration in cli-printing-press so each adapter PP CLI links `pkg/sidecar` directly (U12). Unblocks flipping at-rest sealing on by default and closes threat-survey finding S5
-- `agentcookie pair --rotate` for live key rotation
-- One-to-many fan-out (one laptop, multiple sinks)
-- Linux + Windows source and sink support
+- More built-in adapters beyond the five above. Anything else uses the plaintext sidecar via `AGENTCOOKIE_PLAIN_COOKIES`.
+- `agentcookie pair --rotate` for live key rotation. Today: re-run `wizard install` on both sides.
+- One first-Mac, many second-Macs fan-out.
+- Linux and Windows on either side.
+- At-rest sealing of the sidecar + adapter session files is wired in but off by default; turns on via `wizard set-keychain-access --enable-sealing` once consumer-side support lands.
 
 ## Documentation
 
 | Doc | Use |
 |---|---|
-| [Quickstart](docs/quickstart.md) | five-minute install on a laptop + Mac mini pair |
-| [Architecture](docs/architecture.md) | module layout, sync lifecycle, pairing lifecycle, security boundaries |
+| [Quickstart](docs/quickstart.md) | install on a laptop + second-Mac pair |
+| [Architecture](docs/architecture.md) | module layout, sync lifecycle, security boundaries |
 | [Protocol v1](docs/protocol.md) | wire format spec for future client implementations |
 | [Threat model](docs/threat-model.md) | what agentcookie does and does not protect against |
 | [FAQ](docs/faq.md) | common questions |
-| [v0.10 keychain runbook](docs/runbook-v0.10-keychain-access.md) | how the sink's one-time Keychain ACL setup works |
-| [v0.11 adapter runbook](docs/runbook-v0.11-adapter-cookie-push.md) | adapter mechanism, validation, and how to add your own |
-| [v0.12 security runbook](docs/runbook-v0.12-security-hardening.md) | sealed master key, tailnet-only listeners, rate-limited pairing, verify + recover |
-| [v0.12 codesign runbook](docs/runbook-v0.12-codesign.md) | Developer ID signing pipeline, notarization, CI secrets, renewal |
-| [Closed-beta quickstart](docs/quickstart-beta.md) | ten-minute install for invited beta testers |
-| [Install skill](skill/SKILL.md) | Claude Code / gstack-style skill so an agent can drive the install |
+| [Headless quickstart](docs/quickstart-beta.md) | SSH-only install on a headless second Mac |
+| [v0.10 keychain runbook](docs/runbook-v0.10-keychain-access.md) | sink's Keychain ACL setup |
+| [v0.11 adapter runbook](docs/runbook-v0.11-adapter-cookie-push.md) | adapter mechanism + how to write your own |
+| [v0.12 security runbook](docs/runbook-v0.12-security-hardening.md) | sealed master key, tailnet-only listeners, rate-limited pairing |
+| [v0.12 codesign runbook](docs/runbook-v0.12-codesign.md) | Developer ID signing, notarization, CI secrets, renewal |
+| [Install skill](skill/SKILL.md) | Claude Code skill so an agent can drive the install |
 
 ## License
 

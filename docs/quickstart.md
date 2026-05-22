@@ -122,7 +122,7 @@ For now, `agentcookie source --once` is a single shot. Wire it to your preferred
 A reasonable cron:
 
 ```
-*/5 * * * * /path/to/agentcookie source --once >> ~/.agentthat skill.log 2>&1
+*/5 * * * * /path/to/agentcookie source --once >> ~/.agentcookie/source-cron.log 2>&1
 ```
 
 Five-minute resolution is fine for most sites; session tokens generally rotate on the order of hours.
