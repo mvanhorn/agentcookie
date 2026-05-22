@@ -72,8 +72,15 @@ var secretImportFromCmd = &cobra.Command{
 	RunE:  runSecretImportFrom,
 }
 
+var secretEnvCmd = &cobra.Command{
+	Use:   "env <cli-name>",
+	Short: "Print all keys for a CLI as shell-friendly export lines (for `eval $(...)`)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runSecretEnv,
+}
+
 func init() {
-	secretCmd.AddCommand(secretListCmd, secretGetCmd, secretSetCmd, secretRmCmd, secretImportFromCmd)
+	secretCmd.AddCommand(secretListCmd, secretGetCmd, secretSetCmd, secretRmCmd, secretImportFromCmd, secretEnvCmd)
 	secretImportFromCmd.Flags().StringVar(&secretImportAs, "as", "", "cli-name to file the imported secrets under (required)")
 }
 
@@ -552,6 +559,56 @@ func parseEnvBytesShim(data []byte) (map[string]string, error) {
 // command's TOML branch.
 func decodeTOML(data []byte, out *map[string]any) error {
 	return toml.Unmarshal(data, out)
+}
+
+// runSecretEnv prints all keys for a CLI in `KEY=VALUE` form, one per line,
+// suitable for `eval $(agentcookie secret env <cli>)`. Sealed twin wins over
+// plaintext when both exist.
+func runSecretEnv(cmd *cobra.Command, args []string) error {
+	cliName := args[0]
+	if !validBusName(cliName) {
+		return fmt.Errorf("invalid cli-name %q", cliName)
+	}
+	sealedPath := filepath.Join(secretsRoot(), cliName, "secrets.env.sealed")
+	plainPath := filepath.Join(secretsRoot(), cliName, "secrets.env")
+
+	var kv map[string]string
+	if _, err := os.Stat(sealedPath); err == nil {
+		mk, err := keystore.ReadMasterKey()
+		if err != nil {
+			return fmt.Errorf("read master key for sealed file: %w", err)
+		}
+		raw, err := os.ReadFile(sealedPath)
+		if err != nil {
+			return err
+		}
+		plain, err := keystore.Unseal(mk, raw)
+		if err != nil {
+			return fmt.Errorf("unseal: %w", err)
+		}
+		kv, err = parseEnvBytesShim(plain)
+		if err != nil {
+			return err
+		}
+	} else {
+		var err error
+		kv, err = readEnvAll(plainPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("read %s: %w", plainPath, err)
+		}
+	}
+	keys := make([]string, 0, len(kv))
+	for k := range kv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s=%s\n", k, kv[k])
+	}
+	return nil
 }
 
 // isTerminal reports whether stdin is a TTY. Crude check; used to decide
