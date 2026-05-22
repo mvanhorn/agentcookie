@@ -36,3 +36,5 @@ go.work.sum
 hack/
 /dist/
 .claude/
+
+.claude/worktrees/

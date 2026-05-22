@@ -381,8 +381,9 @@ peer:
 	})
 
 	// v0.12.0-beta.3 added two checks: Adapter coverage + CDP injector.
-	if got := len(report.Checks); got != 10 {
-		t.Fatalf("got %d checks, want 10", got)
+	// v0.13 added the Secrets bus check.
+	if got := len(report.Checks); got != 11 {
+		t.Fatalf("got %d checks, want 11", got)
 	}
 
 	// Serialize the envelope and confirm it round-trips.

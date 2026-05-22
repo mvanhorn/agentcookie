@@ -39,4 +39,11 @@ type SyncEnvelope struct {
 	LocalStorageTarball []byte          `json:"local_storage_tarball,omitempty"`
 	IndexedDBTarball    []byte          `json:"indexed_db_tarball,omitempty"`
 	IndexedDBSkipped    []string        `json:"indexed_db_skipped,omitempty"`
+
+	// Secrets carries the v0.13 secrets-bus payload alongside cookies.
+	// Optional: omitempty so v0.12 sinks deserialize unchanged. The
+	// payload value is one map per registered CLI under
+	// ~/.agentcookie/secrets/, post-filter against the manifest's
+	// sync policy. Format defined in docs/spec-agentcookie-secrets-bus-v1.md.
+	Secrets map[string]map[string]string `json:"secrets,omitempty"`
 }

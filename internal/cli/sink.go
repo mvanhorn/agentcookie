@@ -19,6 +19,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/cli/httpserver"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
+	"github.com/mvanhorn/agentcookie/internal/secretsbus"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 	"github.com/mvanhorn/agentcookie/internal/state"
@@ -257,6 +258,23 @@ func runSink(cmd *cobra.Command, args []string) error {
 			adapterResults := sinkpush.RunAll(cookies)
 			sinkState.LastAdapterResults = toStateAdapterResults(adapterResults)
 			logAdapterResults(adapterResults)
+		}
+
+		// v0.13: secrets-bus payload. When present, persist per-CLI
+		// secrets.env files at the standard path under
+		// ~/.agentcookie/secrets/. Sealing is enabled when the master
+		// key is present AND v0.12's sealing posture is on; the sealed
+		// twin appears alongside the plaintext. R12 regression guard:
+		// when envelope.Secrets is empty/nil this branch is a no-op.
+		if len(envelope.Secrets) > 0 {
+			home, _ := os.UserHomeDir()
+			sealingEnabled := keystore.MasterKeyExists()
+			secResult, secErrs := secretsbus.WritePayload(home, envelope.Secrets, sealingEnabled)
+			for _, e := range secErrs {
+				fmt.Fprintf(os.Stderr, "agentcookie sink: secrets-bus: %v\n", e)
+			}
+			fmt.Fprintf(os.Stderr, "agentcookie sink: secrets-bus wrote %d cli(s), %d key(s), %d sealed\n",
+				secResult.CLIsWritten, secResult.KeysWritten, secResult.SealedWritten)
 		}
 
 		_ = stateWriter.Save(sinkState)

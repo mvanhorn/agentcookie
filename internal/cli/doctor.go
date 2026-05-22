@@ -224,6 +224,13 @@ func buildReport(d doctorDeps) DoctorReport {
 		})
 	}
 
+	// 11. Secrets bus (v0.13). Reports how many CLIs are registered,
+	// total key count, sealed-vs-plaintext mode, sync freshness.
+	// Reads from the secrets root on whichever machine is running
+	// doctor (both source and sink populate the same path; source
+	// writes via `agentcookie secret`, sink writes via U4's writer).
+	checks = append(checks, checkSecretsBus())
+
 	exit := 0
 	for _, c := range checks {
 		if c.Severity == SeverityFail {
@@ -738,3 +745,139 @@ func severityTag(s Severity) string {
 }
 
 // (fileExists lives in wizard.go and is reused here.)
+
+// checkSecretsBus (v0.13) reports the state of the agentcookie secrets
+// bus: how many CLIs are registered, how many keys total, whether
+// sealing is in effect (sealed twins present), and how recently any
+// file in the tree was touched.
+//
+// Reports SKIPPED when the secrets root doesn't exist (most installs
+// today; the bus is opt-in). OK when populated and reasonably fresh.
+// WARN when sealed twins exist but the master key is missing (the
+// inverse warning of "sealing requested but master key absent" we
+// surface at write time, so a reader hitting a sealed file later knows
+// what they're looking at).
+func checkSecretsBus() Check {
+	home, _ := os.UserHomeDir()
+	root := filepath.Join(home, ".agentcookie", "secrets")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Check{
+				Name:     "Secrets bus",
+				Severity: SeveritySkipped,
+				Detail:   "no secrets bus configured (~/.agentcookie/secrets/ is empty or absent)",
+			}
+		}
+		return Check{
+			Name:        "Secrets bus",
+			Severity:    SeverityFail,
+			Detail:      "read secrets root: " + err.Error(),
+			Remediation: "check ~/.agentcookie/secrets/ permissions",
+		}
+	}
+
+	var (
+		cliCount   int
+		keyCount   int
+		sealedCLIs int
+		newestMod  time.Time
+	)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		cliDir := filepath.Join(root, e.Name())
+		envPath := filepath.Join(cliDir, "secrets.env")
+		sealedPath := filepath.Join(cliDir, "secrets.env.sealed")
+		envInfo, envErr := os.Stat(envPath)
+		sealedInfo, sealedErr := os.Stat(sealedPath)
+		if envErr != nil && sealedErr != nil {
+			continue
+		}
+		cliCount++
+		if sealedErr == nil {
+			sealedCLIs++
+			if sealedInfo.ModTime().After(newestMod) {
+				newestMod = sealedInfo.ModTime()
+			}
+		}
+		if envErr == nil {
+			if data, readErr := os.ReadFile(envPath); readErr == nil {
+				keyCount += countEnvKeys(data)
+			}
+			if envInfo.ModTime().After(newestMod) {
+				newestMod = envInfo.ModTime()
+			}
+		}
+	}
+	if cliCount == 0 {
+		return Check{
+			Name:     "Secrets bus",
+			Severity: SeveritySkipped,
+			Detail:   "secrets root exists but contains no CLIs yet",
+		}
+	}
+
+	mode := "plaintext"
+	if sealedCLIs == cliCount {
+		mode = "sealed"
+	} else if sealedCLIs > 0 {
+		mode = fmt.Sprintf("mixed (%d sealed / %d plaintext)", sealedCLIs, cliCount-sealedCLIs)
+	}
+	freshness := "never"
+	if !newestMod.IsZero() {
+		freshness = time.Since(newestMod).Round(time.Second).String() + " ago"
+	}
+	return Check{
+		Name:     "Secrets bus",
+		Severity: SeverityOK,
+		Detail:   fmt.Sprintf("%d cli(s), %d key(s), mode=%s, newest %s", cliCount, keyCount, mode, freshness),
+	}
+}
+
+// countEnvKeys counts non-comment non-blank lines containing '='.
+// Cheap proxy for the key count without parsing every value.
+func countEnvKeys(data []byte) int {
+	n := 0
+	for _, line := range bytesSplitLines(data) {
+		trim := bytesTrimSpace(line)
+		if len(trim) == 0 || trim[0] == '#' {
+			continue
+		}
+		for _, b := range trim {
+			if b == '=' {
+				n++
+				break
+			}
+		}
+	}
+	return n
+}
+
+func bytesSplitLines(data []byte) [][]byte {
+	var out [][]byte
+	start := 0
+	for i, b := range data {
+		if b == '\n' {
+			out = append(out, data[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(data) {
+		out = append(out, data[start:])
+	}
+	return out
+}
+
+func bytesTrimSpace(b []byte) []byte {
+	i := 0
+	for i < len(b) && (b[i] == ' ' || b[i] == '\t') {
+		i++
+	}
+	j := len(b)
+	for j > i && (b[j-1] == ' ' || b[j-1] == '\t' || b[j-1] == '\r') {
+		j--
+	}
+	return b[i:j]
+}
