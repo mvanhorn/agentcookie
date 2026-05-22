@@ -2,7 +2,7 @@
 
 Your agent runs on a Mac that isn't your daily driver. It needs to act as you on every site you're already logged into. agentcookie keeps your second Mac's sessions in sync with your first Mac's, continuously, encrypted over your Tailscale tailnet, with zero per-site auth ceremony.
 
-Whatever your agent uses to touch the web, OpenClaw, Hermes, Playwright, Puppeteer, chromedp, a CLI tool, raw HTTP, it wakes up authenticated.
+OpenClaw, Hermes, or any other agent runtime you point at the second Mac wakes up authenticated.
 
 ## What it looks like
 
@@ -25,7 +25,7 @@ $ ssh second-mac 'table-reservation-goat-pp-cli goat "omakase" --location seattl
 
 No `auth login`. No Keychain prompt. No paste-the-cookie ritual. The agent's sessions were already there when the request hit.
 
-The same is true for browser-driving agents. Point a headless Chrome or a Playwright runtime at the agentcookie-managed profile on the second Mac and your agent sees the same logged-in state you have on your laptop. Or skip Chrome entirely: read the plaintext cookies sidecar at `~/.agentcookie/cookies-plain.db` from any agent that knows cookies.
+The same is true for browser-driving agents. Point them at the agentcookie-managed Chrome profile on the second Mac and your agent sees the same logged-in state you have on your laptop. Or skip Chrome entirely: read the plaintext cookies sidecar at `~/.agentcookie/cookies-plain.db` from any agent that knows cookies.
 
 ## What this fixes
 
@@ -154,4 +154,4 @@ Not yet:
 
 ## License
 
-Apache 2.0.
+MIT.
