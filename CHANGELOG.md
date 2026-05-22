@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### v0.13.0-beta.1: secrets bus
+
+A standardized, runtime-agnostic format for CLIs to consume auth tokens
+that ride alongside cookies. New per-CLI directory at
+`~/.agentcookie/secrets/<cli>/secrets.env` carries `KEY=VALUE` lines,
+optional sealed twin at `secrets.env.sealed` under the v0.12 master key,
+and an optional `manifest.toml` for per-key sync overrides.
+
+Source watches the bus via fsnotify, includes the payload in the
+existing push envelope, and the sink writes per-CLI files at mode 0600
+after defensive name validation. Bus values win over env vars at the
+reader-library level so users who set both expect the bus to override.
+
+New `agentcookie secret` subcommand (list/get/set/rm/import-from/env)
+gives the friend a one-shot path to seed the bus from an existing
+config file. The doctor check (now 11 categories) reports cli count,
+key count, and sealed/plaintext/mixed mode.
+
+Companion artifacts:
+
+- `docs/spec-agentcookie-secrets-bus-v1.md` -- format specification
+- `docs/audits/2026-05-22-pp-cli-auth-inventory.md` -- audit of all 34 PP CLIs
+- `docs/runbook-secrets-bus-adoption.md` -- migration runbook for CLI authors
+- `docs/runbook-secrets-bus-gh-example.md` -- worked example for GitHub CLI
+- `examples/gh-shim/` -- 50-line bash shim proving non-PP CLI consumability
+- `pkg/agentcookiesecret/` -- Go reader library for in-process consumers
+
+Python reader (clients/python/agentcookie_secret) is queued for
+v0.13.1 alongside three documented v1.1 spec gaps: multi-account
+namespacing, per-file local-only markers, and "device-bound-but
+-shippable" third classification.
+
 ### v0.12.0-beta.6: skip keychain strategy loop on headless installs
 
 **Friction #19 fix (2026-05-21 dry-run).** On a headless wizard install
