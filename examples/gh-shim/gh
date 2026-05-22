@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# gh-shim: a worked example of consuming the agentcookie secrets bus from a
+# non-PP CLI. Place this on $PATH ahead of /opt/homebrew/bin/gh and it will
+# transparently feed the real gh binary the GH_TOKEN it needs.
+#
+# Why a shim and not a wrapper inside gh? gh is upstream-maintained. We do
+# not modify it. The shim intercepts invocation, sources the bus, and exec's
+# the real binary - so users keep typing `gh pr list` exactly as before.
+#
+# Resolution order (highest precedence first):
+#   1. GH_TOKEN already set in caller env (no-op for shim)
+#   2. agentcookie secrets bus under ~/.agentcookie/secrets/gh/secrets.env
+#   3. gh's own keyring/hosts.yml (the binary handles this itself)
+#
+# See docs/runbook-secrets-bus-gh-example.md for the narrative.
+
+set -euo pipefail
+
+# Find the real gh binary. We use `command -v` against a sentinel name so
+# this shim doesn't infinitely re-exec itself.
+real_gh=""
+for candidate in /opt/homebrew/bin/gh /usr/local/bin/gh /usr/bin/gh; do
+    if [[ -x "$candidate" ]]; then
+        real_gh="$candidate"
+        break
+    fi
+done
+
+if [[ -z "$real_gh" ]]; then
+    echo "gh-shim: could not find real gh binary on standard paths" >&2
+    exit 127
+fi
+
+# Only consult the bus if caller hasn't already set GH_TOKEN.
+if [[ -z "${GH_TOKEN:-}" ]]; then
+    # `agentcookie secret env gh` prints KEY=VALUE lines for the gh CLI.
+    # Silent on empty bus; we fall through to gh's own auth in that case.
+    if command -v agentcookie >/dev/null 2>&1; then
+        if bus_env="$(agentcookie secret env gh 2>/dev/null)"; then
+            while IFS= read -r line; do
+                # Skip comment + blank lines.
+                [[ -z "$line" || "$line" == \#* ]] && continue
+                # Only export keys the shim cares about. Adding more here is
+                # a one-line change; we deliberately keep the surface tight
+                # to avoid leaking unrelated bus values into gh's env.
+                case "$line" in
+                    GH_TOKEN=*|GITHUB_TOKEN=*|GH_HOST=*|GH_ENTERPRISE_TOKEN=*)
+                        export "${line?}"
+                        ;;
+                esac
+            done <<< "$bus_env"
+        fi
+    fi
+
+    # GITHUB_TOKEN is also accepted by gh. If the bus stored it under that
+    # name, promote it to GH_TOKEN so gh's own precedence stays predictable.
+    if [[ -z "${GH_TOKEN:-}" && -n "${GITHUB_TOKEN:-}" ]]; then
+        export GH_TOKEN="$GITHUB_TOKEN"
+    fi
+fi
+
+exec "$real_gh" "$@"
