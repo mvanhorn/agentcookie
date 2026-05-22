@@ -20,6 +20,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/pairing"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
+	"github.com/mvanhorn/agentcookie/internal/secretsbus"
 	"github.com/mvanhorn/agentcookie/internal/state"
 	"github.com/mvanhorn/agentcookie/internal/transport"
 	"github.com/mvanhorn/agentcookie/internal/watcher"
@@ -137,6 +138,22 @@ func runSource(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("init watcher: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "agentcookie source --watch: watching %s, sink=%s\n", cfg.Chrome.DBPath, cfg.Sink.URL)
+
+	// v0.13: also watch ~/.agentcookie/secrets/ so a write to a per-CLI
+	// secrets.env triggers the same push pipeline as a Chrome cookie
+	// change. The secrets watcher tolerates a missing root (waits for the
+	// friend to create it) and fires the same push callback as the
+	// cookies watcher so the payload includes whichever surface changed.
+	watchHome, _ := os.UserHomeDir()
+	secretsWatcher := secretsbus.NewWatcher(watchHome, 0, func(ctx context.Context) {
+		_, _ = push(ctx)
+	})
+	go func() {
+		if err := secretsWatcher.Run(cmd.Context()); err != nil {
+			fmt.Fprintf(os.Stderr, "agentcookie source --watch: secrets-bus watcher exited: %v\n", err)
+		}
+	}()
+
 	return w.Run(cmd.Context())
 }
 
@@ -172,17 +189,34 @@ func pushOnce(
 			totalRead, totalDropped, len(droppedHosts), len(all))
 	}
 
+	// v0.13 secrets bus: load per-CLI secrets from ~/.agentcookie/secrets/
+	// and apply each manifest's sync policy. Non-fatal errors are logged
+	// (e.g. an oversized secrets.env) but do not stop the push.
+	home, _ := os.UserHomeDir()
+	secretsPayload, secretsErrs := secretsbus.LoadPayload(home)
+	for _, e := range secretsErrs {
+		fmt.Fprintf(os.Stderr, "agentcookie source: secrets-bus: %v\n", e)
+	}
+	secretsCLICount := 0
+	if secretsPayload != nil {
+		secretsCLICount = len(secretsPayload.CLIs)
+	}
+	if verbose && secretsCLICount > 0 {
+		fmt.Fprintf(os.Stderr, "agentcookie source: secrets-bus: shipping %d cli(s)\n", secretsCLICount)
+	}
+
 	result := map[string]any{
 		"cookies_read":    totalRead,
 		"cookies_blocked": totalDropped,
 		"cookies_passing": len(all),
+		"secrets_clis":    secretsCLICount,
 		"dry_run":         dryRun,
 		"sink_url":        cfg.Sink.URL,
 		"posted":          false,
 	}
 
-	if dryRun || len(all) == 0 {
-		_ = emit(result, fmt.Sprintf("agentcookie source: %d cookies after blocklist (dry-run=%v)\n", len(all), dryRun))
+	if dryRun || (len(all) == 0 && secretsCLICount == 0) {
+		_ = emit(result, fmt.Sprintf("agentcookie source: %d cookies after blocklist, %d secrets clis (dry-run=%v)\n", len(all), secretsCLICount, dryRun))
 		return 0, nil
 	}
 
@@ -221,6 +255,9 @@ func pushOnce(
 		LocalStorageTarball: lsTarball,
 		IndexedDBTarball:    idbTarball,
 		IndexedDBSkipped:    idbSkipped,
+	}
+	if secretsPayload != nil && len(secretsPayload.CLIs) > 0 {
+		envelope.Secrets = secretsPayload.CLIs
 	}
 	payload, err := json.Marshal(envelope)
 	if err != nil {
