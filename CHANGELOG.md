@@ -2,6 +2,60 @@
 
 ## [Unreleased]
 
+### v0.14.0-beta.1: secrets bus adoption standard
+
+A standard projects can adopt to opt into agentcookie sync. Layered on
+the v0.13 wire format; no envelope changes.
+
+Project authors drop a small `agentcookie.toml` manifest in their repo
+(or installer). The agentcookie source machine walks well-known paths
+on startup, discovers every manifest, reads the project's existing
+.env file in place on every push, and ships the values to the sink
+inside the existing v0.13 envelope. Zero manual `agentcookie secret
+import-from` per project.
+
+PP CLIs get adoption for free via an in-memory auto-detect adapter
+that synthesizes a v2 manifest from each CLI's existing
+`.printing-press.json` (using `auth_env_var_specs` to pick which keys
+are secrets vs. config). The companion hand-off guide at
+`docs/handoff-guides/for-printing-press-team.md` walks the
+printing-press generator team through emitting explicit
+`agentcookie.toml` per CLI + a bus-aware Go auth-load shim, so the
+auto-detect becomes a fallback rather than the primary path.
+
+last30days specifically: `docs/handoff-guides/for-last30days-team.md`
+plus a drop-in manifest at `examples/adoption-last30days/`.
+
+Three integration tiers, documented end-to-end:
+
+- explicit-manifest: drop `agentcookie.toml`, auto-discovered
+- pp-cli-derived: auto-detect from `.printing-press.json`
+- legacy-v1: existing `~/.agentcookie/secrets/<cli>/` directories
+  continue to work; the v1 imperative `secret import-from` path is
+  unchanged
+
+New commands:
+
+- `agentcookie discover` - lists the registry, `--json` for scripting,
+  `--verbose` for skipped manifests and reasons
+- `agentcookie secret revoke <name>` - tier-aware removal
+
+New artifacts:
+
+- `docs/spec-agentcookie-secrets-bus-v2-adoption.md` - format spec
+- `docs/handoff-guides/for-printing-press-team.md` - PP integration plan
+- `docs/handoff-guides/for-last30days-team.md` - skill adoption plan
+- `docs/runbook-adoption-manifest-author.md` - generic author runbook
+- `examples/adoption-last30days/` + `examples/adoption-third-party-cli/`
+- `pkg/agentcookieadoption/` - author-side Go helper for emitting + validating manifests
+
+Out of scope for v0.14:
+- printing-press generator integration (handled by external team per the hand-off guide)
+- last30days repo changes (handled by external team per the hand-off guide)
+- Python reader at `clients/python/agentcookie_secret` (still queued for v0.13.1)
+- Signature verification (`signed_by` field reserved; v2.1)
+- `[secrets.command]` and `[secrets.keychain]` source kinds (reserved; v2.1)
+
 ### v0.13.0-beta.1: secrets bus
 
 A standardized, runtime-agnostic format for CLIs to consume auth tokens
