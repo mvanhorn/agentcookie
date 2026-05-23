@@ -1,0 +1,19 @@
+# agentcookie.toml: secrets-bus adoption manifest v2
+# See docs/spec-agentcookie-secrets-bus-v2-adoption.md
+schema_version = 2
+name = "last30days"
+display_name = "last30days"
+description = "Brand intelligence skill"
+project_kind = "skill"
+homepage = "https://github.com/mvanhorn/last30days-skill"
+
+[secrets.file]
+path = "~/.config/last30days/.env"
+
+[sync]
+default = true
+
+[sync.keys]
+SETUP_COMPLETE = false
+FROM_BROWSER = false
+INCLUDE_SOURCES = false

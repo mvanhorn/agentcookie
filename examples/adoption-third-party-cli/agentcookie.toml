@@ -1,0 +1,13 @@
+# agentcookie.toml: secrets-bus adoption manifest v2 (third-party CLI example)
+# See docs/spec-agentcookie-secrets-bus-v2-adoption.md
+schema_version = 2
+name = "my-tool"
+display_name = "My Tool"
+description = "Example third-party CLI that ships secrets via agentcookie"
+project_kind = "cli"
+
+[secrets.file]
+path = "~/.config/my-tool/auth.env"
+
+[sync]
+default = true
