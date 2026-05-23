@@ -133,7 +133,7 @@ Working:
 
 - Continuous laptop to second-Mac sync via fsnotify on Chrome's Cookies file, debounced, allowlist + blocklist filtered, AES-256-GCM over Tailscale.
 - Three cookie delivery surfaces on the sink (Chrome SQLite, plaintext sidecar, per-CLI adapter session files).
-- Five built-in PP CLI cookie adapters: instacart, airbnb, ebay, pagliacci, table-reservation-goat (OpenTable + Tock).
+- Zero-config drop-in cookie adapters for five PP CLIs (instacart, airbnb, ebay, pagliacci, table-reservation-goat with OpenTable + Tock) on top of the universal surfaces; any other cookie-consuming agent reads the plaintext sidecar, any other secrets-consuming CLI reads the bus.
 - Per-CLI secrets bus: bearer tokens, API keys, and `KEY=VALUE` auth blobs ride the same encrypted push and land at `~/.agentcookie/secrets/<cli>/secrets.env` (mode 0600) with an optional sealed twin.
 - `agentcookie secret list / get / set / rm / revoke / import-from / env` for managing the bus, and `pkg/agentcookiesecret` as an in-process Go reader library.
 - v2 adoption standard: drop an `agentcookie.toml` in your repo and `agentcookie discover` auto-detects it. Three integration tiers (explicit-manifest, pp-cli-derived auto-synthesized from `.printing-press.json`, and legacy v1 directories) coexist.
@@ -146,7 +146,6 @@ Working:
 
 Not yet:
 
-- More built-in cookie adapters beyond the five above. Anything else uses the plaintext sidecar via `AGENTCOOKIE_PLAIN_COOKIES`, or the secrets bus for non-cookie auth.
 - Python reader library at `clients/python/agentcookie_secret` (queued for v0.13.1; Go reader ships today).
 - Signature verification on adoption manifests (`signed_by` field reserved; v2.1).
 - `[secrets.command]` and `[secrets.keychain]` source kinds (reserved; v2.1).
