@@ -154,6 +154,25 @@ func runSource(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
+	// v0.14: also watch the v2 discovery paths (~/.agentcookie/manifests/
+	// + PP library) so dropping a new agentcookie.toml or regenerating a
+	// PP CLI triggers a push without restart.
+	discoveryWatcher := secretsbus.NewDiscoveryWatcher(
+		secretsbus.DiscoveryConfig{HomeDir: watchHome},
+		0,
+		func(ctx context.Context, delta secretsbus.RegistryDelta, _ *secretsbus.Registry) {
+			if sourceVerbose && (len(delta.Added)+len(delta.Removed) > 0) {
+				fmt.Fprintf(os.Stderr, "agentcookie source --watch: discovery: added=%v removed=%v\n", delta.Added, delta.Removed)
+			}
+			_, _ = push(ctx)
+		},
+	)
+	go func() {
+		if err := discoveryWatcher.Run(cmd.Context()); err != nil {
+			fmt.Fprintf(os.Stderr, "agentcookie source --watch: discovery watcher exited: %v\n", err)
+		}
+	}()
+
 	return w.Run(cmd.Context())
 }
 
@@ -189,11 +208,12 @@ func pushOnce(
 			totalRead, totalDropped, len(droppedHosts), len(all))
 	}
 
-	// v0.13 secrets bus: load per-CLI secrets from ~/.agentcookie/secrets/
-	// and apply each manifest's sync policy. Non-fatal errors are logged
-	// (e.g. an oversized secrets.env) but do not stop the push.
+	// v0.14: combined v1 bus + v2 discovery. LoadPayloadWithDiscovery
+	// runs v1 LoadPayload AND v2 Discover, reads each discovered project's
+	// [secrets.file] in place, applies sync policy, and merges. v1 bus
+	// wins per-key over v2 read-in-place per spec section 10.3.
 	home, _ := os.UserHomeDir()
-	secretsPayload, secretsErrs := secretsbus.LoadPayload(home)
+	secretsPayload, secretsErrs := secretsbus.LoadPayloadWithDiscovery(home)
 	for _, e := range secretsErrs {
 		fmt.Fprintf(os.Stderr, "agentcookie source: secrets-bus: %v\n", e)
 	}

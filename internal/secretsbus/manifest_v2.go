@@ -1,0 +1,250 @@
+// Package secretsbus's v2 adoption manifest. See
+// docs/spec-agentcookie-secrets-bus-v2-adoption.md for the format.
+package secretsbus
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+)
+
+// ManifestV2 is the parsed v2 adoption manifest. Distinct from the v1
+// per-CLI Manifest type which controls sync overrides inside
+// ~/.agentcookie/secrets/<name>/manifest.toml. v2 manifests live in
+// ~/.agentcookie/manifests/<name>.toml (and friends per spec section 2.2)
+// and declare a project's participation in agentcookie sync.
+type ManifestV2 struct {
+	SchemaVersion int    `toml:"schema_version"`
+	Name          string `toml:"name"`
+	DisplayName   string `toml:"display_name"`
+	Description   string `toml:"description,omitempty"`
+	ProjectKind   string `toml:"project_kind,omitempty"`
+	Homepage      string `toml:"homepage,omitempty"`
+	SignedBy      string `toml:"signed_by,omitempty"` // reserved for v2.1
+
+	Secrets ManifestV2Secrets `toml:"secrets"`
+	Sync    ManifestV2Sync    `toml:"sync,omitempty"`
+}
+
+// ManifestV2Secrets carries exactly one of File / Command / Keychain.
+// Multi-block declarations are a hard error at parse time.
+type ManifestV2Secrets struct {
+	File     *ManifestV2SecretsFile     `toml:"file,omitempty"`
+	Command  *ManifestV2SecretsCommand  `toml:"command,omitempty"`  // reserved
+	Keychain *ManifestV2SecretsKeychain `toml:"keychain,omitempty"` // reserved
+}
+
+// ManifestV2SecretsFile points at an env-shaped file the agent reads in place
+// on every push.
+type ManifestV2SecretsFile struct {
+	Path string `toml:"path"`
+}
+
+// ManifestV2SecretsCommand is reserved for v2.1.
+type ManifestV2SecretsCommand struct {
+	Exec []string `toml:"exec"`
+}
+
+// ManifestV2SecretsKeychain is reserved for v2.1.
+type ManifestV2SecretsKeychain struct {
+	Service string `toml:"service"`
+}
+
+// ManifestV2Sync mirrors the v1 sync table shape.
+type ManifestV2Sync struct {
+	Default bool            `toml:"default"`
+	Keys    map[string]bool `toml:"keys,omitempty"`
+}
+
+// ParseWarning carries a soft-warning message tied to a manifest path. The
+// parser accumulates these for unknown fields, reserved-field usage, and
+// other non-fatal anomalies.
+type ParseWarning struct {
+	Path    string
+	Message string
+}
+
+func (w ParseWarning) String() string {
+	return fmt.Sprintf("%s: %s", w.Path, w.Message)
+}
+
+// ErrManifestNotFound is returned by ParseManifestV2 when the path does not exist.
+var ErrManifestNotFound = errors.New("agentcookie.toml not found at path")
+
+// ParseManifestV2 reads, parses, and validates a v2 manifest from disk. The
+// returned ManifestV2 has every field on the parsed struct. Soft warnings
+// (unknown fields, deprecated fields) are returned as the second value; the
+// parser does not fail on them. Hard errors (schema mismatch, name traversal,
+// multi-block secrets) return a non-nil error.
+func ParseManifestV2(path string) (*ManifestV2, []ParseWarning, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, ErrManifestNotFound
+		}
+		return nil, nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	return parseManifestV2Bytes(data, path)
+}
+
+// parseManifestV2Bytes is the byte-input variant used by tests and the PP CLI
+// adapter (which synthesizes manifest bytes in memory).
+func parseManifestV2Bytes(data []byte, sourcePath string) (*ManifestV2, []ParseWarning, error) {
+	// First pass: typed decode. Use md.Undecoded() to find unknown fields.
+	m := &ManifestV2{}
+	md, err := toml.Decode(string(data), m)
+	if err != nil {
+		return nil, nil, fmt.Errorf("toml parse: %w", err)
+	}
+
+	var warnings []ParseWarning
+	for _, k := range md.Undecoded() {
+		key := k.String()
+		// Nested keys under known optional/reserved tables aren't true unknowns.
+		// Skip if the top-level key is one we recognize but is reserved (e.g.,
+		// secrets.command.exec inside an unsupported but parsed block).
+		if strings.HasPrefix(key, "secrets.command") || strings.HasPrefix(key, "secrets.keychain") {
+			continue
+		}
+		warnings = append(warnings, ParseWarning{
+			Path:    sourcePath,
+			Message: fmt.Sprintf("unknown field %q; ignored", key),
+		})
+	}
+
+	// Second pass: map decode to detect explicit-vs-omitted sync.default.
+	var raw map[string]interface{}
+	if _, err := toml.Decode(string(data), &raw); err != nil {
+		return nil, nil, fmt.Errorf("toml map parse: %w", err)
+	}
+
+	if err := validateManifestV2(m, sourcePath); err != nil {
+		return nil, warnings, err
+	}
+
+	// Apply sync defaults. sync.default omitted -> true per spec section 6.
+	if syncRaw, ok := raw["sync"].(map[string]interface{}); ok {
+		if _, ok := syncRaw["default"]; !ok {
+			m.Sync.Default = true
+		}
+	} else {
+		// Whole [sync] table omitted -> sync.default = true.
+		m.Sync.Default = true
+	}
+
+	if m.SignedBy != "" {
+		warnings = append(warnings, ParseWarning{
+			Path:    sourcePath,
+			Message: "signed_by field is reserved for v2.1; ignored in v2.0",
+		})
+	}
+
+	return m, warnings, nil
+}
+
+func validateManifestV2(m *ManifestV2, sourcePath string) error {
+	if m.SchemaVersion != 2 {
+		if m.SchemaVersion == 1 {
+			return fmt.Errorf("schema_version=1 is the v1 per-CLI sync override format, not the v2 adoption manifest; see docs/spec-agentcookie-secrets-bus-v1.md")
+		}
+		return fmt.Errorf("schema_version must be 2 (got %d); see docs/spec-agentcookie-secrets-bus-v2-adoption.md", m.SchemaVersion)
+	}
+	if m.Name == "" {
+		return errors.New("name is required")
+	}
+	if strings.Contains(m.Name, "..") {
+		return fmt.Errorf("name %q contains path-traversal segment", m.Name)
+	}
+	if !validCLIName(m.Name) {
+		return fmt.Errorf("name %q does not match spec section 3.1 (lowercase, alphanumeric+hyphens, 1-64 chars)", m.Name)
+	}
+	if m.DisplayName == "" {
+		return errors.New("display_name is required")
+	}
+	if len(m.DisplayName) > 200 {
+		return fmt.Errorf("display_name exceeds 200 chars")
+	}
+	if len(m.Description) > 200 {
+		return fmt.Errorf("description exceeds 200 chars")
+	}
+
+	if m.ProjectKind != "" {
+		switch m.ProjectKind {
+		case "cli", "skill", "service", "other":
+		default:
+			return fmt.Errorf("project_kind must be one of cli|skill|service|other (got %q)", m.ProjectKind)
+		}
+	}
+
+	// Exactly one [secrets.*] block.
+	srcCount := 0
+	if m.Secrets.File != nil {
+		srcCount++
+	}
+	if m.Secrets.Command != nil {
+		srcCount++
+	}
+	if m.Secrets.Keychain != nil {
+		srcCount++
+	}
+	if srcCount == 0 {
+		return errors.New("exactly one [secrets.*] block required; none found")
+	}
+	if srcCount > 1 {
+		return fmt.Errorf("exactly one [secrets.*] block required; %d found", srcCount)
+	}
+
+	if m.Secrets.Command != nil {
+		return errors.New("[secrets.command] source kind not yet supported in v2.0 (reserved for v2.1)")
+	}
+	if m.Secrets.Keychain != nil {
+		return errors.New("[secrets.keychain] source kind not yet supported in v2.0 (reserved for v2.1)")
+	}
+
+	if m.Secrets.File != nil {
+		if m.Secrets.File.Path == "" {
+			return errors.New("[secrets.file].path is required")
+		}
+		if strings.Contains(m.Secrets.File.Path, "..") {
+			return fmt.Errorf("[secrets.file].path %q contains path-traversal segment", m.Secrets.File.Path)
+		}
+	}
+
+	return nil
+}
+
+// ResolveSecretsPath expands ~/ in [secrets.file].path against the given
+// homeDir. Absolute paths are returned as-is. Returns an empty string if the
+// manifest has no [secrets.file] block.
+func (m *ManifestV2) ResolveSecretsPath(homeDir string) string {
+	if m.Secrets.File == nil {
+		return ""
+	}
+	p := m.Secrets.File.Path
+	if strings.HasPrefix(p, "~/") {
+		return filepath.Join(homeDir, p[2:])
+	}
+	if p == "~" {
+		return homeDir
+	}
+	return p
+}
+
+// SyncDefault returns the resolved default-ship behavior. Omitted -> true.
+func (m *ManifestV2) SyncDefault() bool {
+	return m.Sync.Default
+}
+
+// ShouldShipKey returns whether a given key should be included in the wire
+// envelope according to the manifest's sync policy. Spec section 6: per-key
+// entries override the default.
+func (m *ManifestV2) ShouldShipKey(key string) bool {
+	if override, ok := m.Sync.Keys[key]; ok {
+		return override
+	}
+	return m.SyncDefault()
+}
