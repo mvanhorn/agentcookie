@@ -18,8 +18,8 @@ export const FEATURES: Feature[] = [
     body: "Chrome's SQLite re-encrypted for the sink keychain, plaintext sidecar at ~/.agentcookie/cookies-plain.db, or per-CLI adapter session files.",
   },
   {
-    title: "zero-config drop-in for five PP CLIs",
-    body: "instacart, airbnb, ebay, pagliacci, table-reservation-goat. anything else reads the universal surfaces above.",
+    title: "works with Printing Press CLIs like",
+    body: "Stripe, Linear, Notion, Granola, Slack, Kalshi, ElevenLabs, Mercury, and dozens more - anything with a bearer token or API key reads the secrets bus. Five (instacart, airbnb, ebay, pagliacci, table-reservation-goat) additionally get a bespoke cookie adapter.",
   },
   {
     title: "per-CLI secrets bus",
