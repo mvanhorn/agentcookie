@@ -127,7 +127,7 @@ last run: 4s ago
 
 ## Status
 
-macOS only on both ends today. The source side reads Chrome on macOS via the Keychain-backed decrypt path; the sink relies on macOS LaunchAgent and Keychain conventions. Linux and Windows are on the roadmap.
+macOS only on both ends today. The source side reads Chrome on macOS via the Keychain-backed decrypt path; the sink relies on macOS LaunchAgent and Keychain conventions.
 
 Working:
 
@@ -151,7 +151,6 @@ Not yet:
 - `[secrets.command]` and `[secrets.keychain]` source kinds (reserved; v2.1).
 - `agentcookie pair --rotate` for live key rotation. Today: re-run `wizard install` on both sides.
 - One first-Mac, many second-Macs fan-out.
-- Linux and Windows on either side.
 - At-rest sealing of the sidecar + adapter session files is wired in but off by default; turns on via `wizard set-keychain-access --enable-sealing` once consumer-side support lands.
 
 ## Documentation
