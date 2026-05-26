@@ -21,7 +21,7 @@ export function FeatureGrid() {
       </div>
       <p className="mt-6 font-body text-sm text-text-2">
         macOS only on both ends today. 449+ unit tests across 26
-        packages. Linux and Windows on the roadmap.
+        packages.
       </p>
     </section>
   );

@@ -43,8 +43,7 @@ export function Footer() {
         </a>
       </div>
       <div className="text-[13px] text-text-2">
-        MIT licensed. macOS only today; Linux and Windows on the
-        roadmap.
+        MIT licensed. macOS only.
       </div>
     </footer>
   );
