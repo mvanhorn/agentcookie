@@ -133,7 +133,7 @@ Working:
 
 - Continuous laptop to second-Mac sync via fsnotify on Chrome's Cookies file, debounced, allowlist + blocklist filtered, AES-256-GCM over Tailscale.
 - Three cookie delivery surfaces on the sink (Chrome SQLite, plaintext sidecar, per-CLI adapter session files).
-- Zero-config drop-in cookie adapters for five PP CLIs (instacart, airbnb, ebay, pagliacci, table-reservation-goat with OpenTable + Tock) on top of the universal surfaces; any other cookie-consuming agent reads the plaintext sidecar, any other secrets-consuming CLI reads the bus.
+- Works with Printing Press CLIs like Stripe, Linear, Notion, Granola, Slack, Kalshi, ElevenLabs, Mercury, and dozens more: anything with a bearer token or API key reads the secrets bus, anything that reads cookies reads the plaintext sidecar. Five PP CLIs (instacart, airbnb, ebay, pagliacci, table-reservation-goat with OpenTable + Tock) additionally get a bespoke zero-config cookie adapter.
 - Per-CLI secrets bus: bearer tokens, API keys, and `KEY=VALUE` auth blobs ride the same encrypted push and land at `~/.agentcookie/secrets/<cli>/secrets.env` (mode 0600) with an optional sealed twin.
 - `agentcookie secret list / get / set / rm / revoke / import-from / env` for managing the bus, and `pkg/agentcookiesecret` as an in-process Go reader library.
 - v2 adoption standard: drop an `agentcookie.toml` in your repo and `agentcookie discover` auto-detects it. Three integration tiers (explicit-manifest, pp-cli-derived auto-synthesized from `.printing-press.json`, and legacy v1 directories) coexist.
