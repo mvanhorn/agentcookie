@@ -1,0 +1,226 @@
+@import "tailwindcss";
+
+/* ============================================================
+   agentcookie - globals.css
+   Single source of truth for tokens consumed by Tailwind utilities
+   and by raw CSS in this file. Mirrors the agentcla-web design
+   system (~/code/agentcla/web/app/globals.css) so the two sites
+   share a visual language. Token deviations should be deliberate
+   and documented.
+
+   Dark surface only - no light-mode equivalent (agentcla has one
+   for its sign page; agentcookie has no equivalent surface).
+   ============================================================ */
+
+:root {
+  /* Type families. Geist is loaded via next/font in app/layout.tsx;
+     the CSS variable names match the next/font outputs so these chains
+     fall back gracefully if next/font is misconfigured. */
+  --font-display: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo,
+    Consolas, monospace;
+  --font-body: var(--font-geist-sans), -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+
+  /* Type scale */
+  --fs-xs: 12px;
+  --fs-sm: 14px;
+  --fs-base: 16px;
+  --fs-md: 18px;
+  --fs-lg: 20px;
+  --fs-xl: 24px;
+  --fs-2xl: 32px;
+  --fs-3xl: 40px;
+  --fs-4xl: 56px;
+  --fs-hero: 88px;
+  --fs-hero-min: 48px;
+
+  /* Line heights */
+  --lh-tight: 1.1;
+  --lh-snug: 1.3;
+  --lh-body: 1.6;
+  --lh-prose: 1.7;
+
+  /* Tracking */
+  --tracking-tight: -0.02em;
+  --tracking-normal: 0em;
+  --tracking-wide: 0.04em;
+
+  /* Weights */
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  --space-9: 96px;
+  --space-10: 128px;
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  /* Layout */
+  --content-max: 1280px;
+  --prose-max: 65ch;
+  --chrome-max: 720px;
+
+  /* Motion */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-reveal: 600ms;
+
+  /* DARK PALETTE - lifted from agentcla. */
+  --bg-0: #0a0a0a;
+  --bg-1: #141414;
+  --bg-2: #1a1a1a;
+  --border-0: #262626;
+  --border-1: #404040;
+  --text-0: #fafafa;
+  --text-1: #a3a3a3;
+  --text-2: #737373;
+  --accent-agent: #7cf29c;
+  --accent-sign: #fbbf24;
+  --accent-danger: #ef4444;
+}
+
+html,
+body {
+  margin: 0;
+}
+body {
+  background: var(--bg-0);
+  color: var(--text-0);
+  font-family: var(--font-body);
+  font-size: var(--fs-base);
+  line-height: var(--lh-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  min-height: 100vh;
+}
+
+::selection {
+  background: var(--accent-agent);
+  color: var(--bg-0);
+}
+
+/* ---- Tailwind v4 @theme bridge ---------------------------- */
+/* Map our CSS variables into Tailwind's color/font/spacing scales so
+   utility classes like `bg-bg-0`, `text-accent-agent`, `font-display`
+   resolve at build time. */
+@theme {
+  --color-bg-0: var(--bg-0);
+  --color-bg-1: var(--bg-1);
+  --color-bg-2: var(--bg-2);
+  --color-border-0: var(--border-0);
+  --color-border-1: var(--border-1);
+  --color-text-0: var(--text-0);
+  --color-text-1: var(--text-1);
+  --color-text-2: var(--text-2);
+  --color-accent-agent: var(--accent-agent);
+  --color-accent-sign: var(--accent-sign);
+  --color-accent-danger: var(--accent-danger);
+
+  --font-display: var(--font-display);
+  --font-body: var(--font-body);
+}
+
+/* ---- Reveal-on-scroll ------------------------------------- */
+/* CSS scroll-driven animation; no JS. Browsers without
+   `animation-timeline: view()` skip the animation cleanly because the
+   keyframes never run. */
+.reveal-on-scroll {
+  opacity: 0;
+  transform: translateY(20px);
+  animation: reveal-in var(--duration-reveal) var(--ease-out-expo) both;
+  animation-timeline: view();
+  animation-range: entry 0% entry 60%;
+}
+@keyframes reveal-in {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ---- Terminal animation (homepage Terminal tile) ---------- */
+.terminal-line {
+  opacity: 0;
+  animation: terminal-line-in 1ms linear forwards;
+}
+.terminal-line.t-l1 {
+  animation-delay: 200ms;
+}
+.terminal-line.t-l2 {
+  animation-delay: 900ms;
+}
+.terminal-line.t-l3 {
+  animation-delay: 1500ms;
+}
+.terminal-line.t-l4 {
+  animation-delay: 2100ms;
+}
+.terminal-line.t-l5 {
+  animation-delay: 2700ms;
+}
+.terminal-line.t-l6 {
+  animation-delay: 3300ms;
+}
+.terminal-line.t-l7 {
+  animation-delay: 3900ms;
+}
+@keyframes terminal-line-in {
+  to {
+    opacity: 1;
+  }
+}
+.terminal-cursor::after {
+  content: "▋";
+  display: inline-block;
+  margin-left: 4px;
+  color: var(--accent-agent);
+  animation: terminal-cursor-blink 1s steps(2, jump-none) infinite;
+  animation-delay: 3900ms;
+}
+@keyframes terminal-cursor-blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ---- Reduced motion - non-negotiable ---------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .reveal-on-scroll {
+    opacity: 1;
+    transform: none;
+  }
+  .terminal-line {
+    opacity: 1;
+  }
+  .terminal-cursor::after {
+    animation: none;
+    opacity: 0;
+  }
+}
