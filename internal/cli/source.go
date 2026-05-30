@@ -236,14 +236,21 @@ func pushOnce(
 	dbsc.warned = len(dbscRes.Warned)
 	dbsc.skipped = len(dbscRes.Skipped)
 	dbsc.sample = dbscSampleReasons(dbscRes)
-	if n := dbsc.warned + dbsc.skipped; n > 0 {
-		verb := "shipping with a warning"
-		if skipDBSC {
-			verb = "skipping"
-		}
-		fmt.Fprintf(os.Stderr, "agentcookie source: %d cookie(s) look device-bound (DBSC); %s. These likely will not work on the sink. See README: DBSC.\n", n, verb)
-		for _, r := range dbsc.sample {
-			fmt.Fprintf(os.Stderr, "  - %s\n", r)
+	// Only print the DBSC detail block under --verbose: in --watch mode this
+	// fires on every cookie change and would flood the LaunchAgent log for
+	// any user with a persistent Google cookie. The durable signal lives in
+	// `agentcookie doctor` (source-state.json) and the JSON result map; the
+	// per-push human summary below carries a concise count.
+	if verbose {
+		if n := dbsc.warned + dbsc.skipped; n > 0 {
+			verb := "shipping with a warning"
+			if skipDBSC {
+				verb = "skipping"
+			}
+			fmt.Fprintf(os.Stderr, "agentcookie source: %d cookie(s) look device-bound (DBSC); %s. These likely will not work on the sink. See README: DBSC.\n", n, verb)
+			for _, r := range dbsc.sample {
+				fmt.Fprintf(os.Stderr, "  - %s\n", r)
+			}
 		}
 	}
 
@@ -277,7 +284,7 @@ func pushOnce(
 	}
 
 	if dryRun || (len(all) == 0 && secretsCLICount == 0) {
-		_ = emit(result, fmt.Sprintf("agentcookie source: %d cookies after blocklist, %d secrets clis (dry-run=%v)\n", len(all), secretsCLICount, dryRun))
+		_ = emit(result, fmt.Sprintf("agentcookie source: %d cookies after blocklist, %d secrets clis (dry-run=%v)%s\n", len(all), secretsCLICount, dryRun, dbscNote(dbsc)))
 		return 0, dbsc, nil
 	}
 
@@ -355,8 +362,18 @@ func pushOnce(
 	if resp.StatusCode != http.StatusOK {
 		return 0, dbsc, fmt.Errorf("sink returned %d: %s", resp.StatusCode, string(body))
 	}
-	_ = emit(result, fmt.Sprintf("agentcookie source: posted %d cookies, sink replied: %s\n", len(all), string(body)))
+	_ = emit(result, fmt.Sprintf("agentcookie source: posted %d cookies, sink replied: %s%s\n", len(all), string(body), dbscNote(dbsc)))
 	return len(all), dbsc, nil
+}
+
+// dbscNote returns a concise " (N DBSC-suspect: warned/skipped)" suffix for the
+// per-push human summary, or "" when nothing was flagged. Keeps the daemon's
+// single summary line informative without the verbose per-cookie block.
+func dbscNote(d dbscSummary) string {
+	if d.warned == 0 && d.skipped == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%d DBSC-suspect: %d warned, %d skipped)", d.warned+d.skipped, d.warned, d.skipped)
 }
 
 // dbscSampleReasons returns up to three reason strings (warns first, then
