@@ -71,6 +71,17 @@ describe("marketing homepage (/)", () => {
     }
   });
 
+  it("renders the DBSC FAQ answer in static HTML", () => {
+    // A security-aware reader asks "doesn't DBSC break this?" first.
+    // The answer must ship server-side (agent-readable), not behind a
+    // client-only accordion.
+    renderHome();
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("DBSC");
+    expect(text).toContain("opt-in per site");
+    expect(text).toContain("secrets bus is untouched");
+  });
+
   it("links to the canonical repo + docs in the footer", () => {
     renderHome();
     const links = Array.from(
