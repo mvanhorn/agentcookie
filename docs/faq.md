@@ -24,7 +24,18 @@ No. The source reads cookies with `immutable=1` (Chrome's recommended read-only 
 
 ## My agent gets logged out on a particular site after syncing - what happened?
 
-A few sites bind a session to a device fingerprint (canvas, screen size, accept-language, sometimes TLS JA3). Replicating the cookie alone is not enough; the site invalidates the session because the fingerprint differs. agentcookie cannot fix this in v0.1. Workarounds: remove the site from your allowlist and re-auth in the sink's Chrome directly, or use the pair-agent style remote-browser pattern for those sites.
+Two causes. First, a few sites bind a session to a device fingerprint (canvas, screen size, accept-language, sometimes TLS JA3); replicating the cookie alone is not enough and the site invalidates the session because the fingerprint differs. Second, the site may use Chrome's Device Bound Session Credentials (DBSC), which ties session refresh to a private key in the source Mac's Secure Enclave. In both cases the sink cannot reproduce the missing factor, so the session drops. Workarounds: remove the site from your allowlist and re-auth in the sink's Chrome directly, or use the pair-agent style remote-browser pattern for those sites. See the next entry for DBSC specifics.
+
+## Does Chrome's device-bound cookie protection (DBSC) break agentcookie?
+
+No, not for the sites you use today. The nuance:
+
+- DBSC is opt-in per site. A cookie is device-bound only if the site's backend asks for it. As of May 2026 the one broad adopter is Google's own account/Workspace cookies (generally available on Chrome for Windows first, rolling out on macOS in the next release). Almost every other site, and every Printing Press CLI agentcookie feeds, is unaffected and syncs as before.
+- The secrets bus is untouched. DBSC is a cookie protocol; bearer tokens, API keys, and OAuth refresh tokens on the bus replicate normally.
+- For a DBSC site, a copied cookie works on the sink only for its short-lived window (minutes) because the sink cannot sign the refresh challenge. agentcookie flags these in `agentcookie doctor` and ships them with a warning by default; pass `--skip-dbsc-suspect` (or set `AGENTCOOKIE_SKIP_DBSC_SUSPECT=1`) to drop them.
+- For Google sessions, copying cookies was never the right tool. Sign the sink's Chrome into the same Google account once and it establishes its own device-bound session locally, no copy needed.
+
+See [docs/threat-model.md](threat-model.md) for the full treatment.
 
 ## Can I use one source with multiple sinks?
 
