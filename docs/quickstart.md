@@ -126,3 +126,7 @@ A reasonable cron:
 ```
 
 Five-minute resolution is fine for most sites; session tokens generally rotate on the order of hours.
+
+## Step 7: Device-bound sessions (DBSC)
+
+A few sites bind a login to the source Mac's secure hardware through Chrome's Device Bound Session Credentials, so a replicated cookie only works on the sink for a few minutes before Chrome there cannot refresh it. Today this is mostly Google accounts. Do not rely on copied cookies for those sessions: sign the sink's Chrome into the same Google account once and it establishes its own device-bound session locally. agentcookie flags DBSC-suspect cookies in `agentcookie doctor` and, by default, ships them with a warning; pass `agentcookie source --skip-dbsc-suspect` (or set `AGENTCOOKIE_SKIP_DBSC_SUSPECT=1`) to drop them instead. Non-DBSC sites and the secrets bus are unaffected. See [threat-model.md](threat-model.md) for the full treatment.

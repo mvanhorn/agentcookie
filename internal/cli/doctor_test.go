@@ -270,6 +270,34 @@ func TestCheckSourceState(t *testing.T) {
 	})
 }
 
+func TestCheckDBSC(t *testing.T) {
+	t.Run("no state is OK", func(t *testing.T) {
+		c := checkDBSCFrom(nil)
+		if c.Severity != SeverityOK {
+			t.Fatalf("got %q (%q)", c.Severity, c.Detail)
+		}
+	})
+	t.Run("zero suspects is OK", func(t *testing.T) {
+		c := checkDBSCFrom(&state.SourceState{LastPush: time.Now()})
+		if c.Severity != SeverityOK {
+			t.Fatalf("got %q (%q)", c.Severity, c.Detail)
+		}
+	})
+	t.Run("suspects warn with remediation", func(t *testing.T) {
+		st := &state.SourceState{
+			LastDBSCWarned: 2,
+			LastDBSCSample: []string{"cookie \"SID\" on known DBSC host \".google.com\""},
+		}
+		c := checkDBSCFrom(st)
+		if c.Severity != SeverityWarn {
+			t.Fatalf("got %q (%q)", c.Severity, c.Detail)
+		}
+		if c.Remediation == "" {
+			t.Fatalf("expected remediation guidance")
+		}
+	})
+}
+
 // TestCheckSealing emits an informational OK either way.
 func TestCheckSealing(t *testing.T) {
 	t.Run("enabled", func(t *testing.T) {
@@ -381,9 +409,10 @@ peer:
 	})
 
 	// v0.12.0-beta.3 added two checks: Adapter coverage + CDP injector.
-	// v0.13 added the Secrets bus check.
-	if got := len(report.Checks); got != 11 {
-		t.Fatalf("got %d checks, want 11", got)
+	// v0.13 added the Secrets bus check. DBSC resilience added the DBSC
+	// check (source role only; present here since this fixture is source).
+	if got := len(report.Checks); got != 12 {
+		t.Fatalf("got %d checks, want 12", got)
 	}
 
 	// Serialize the envelope and confirm it round-trips.

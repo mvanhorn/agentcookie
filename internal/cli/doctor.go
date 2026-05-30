@@ -177,6 +177,7 @@ func buildReport(d doctorDeps) DoctorReport {
 	if srcCfg != nil {
 		st, err := d.LoadSourceState()
 		checks = append(checks, checkSourceStateFrom(st, err))
+		checks = append(checks, checkDBSCFrom(st))
 	} else {
 		checks = append(checks, Check{
 			Name:     "Source state",
@@ -274,7 +275,7 @@ func checkBinarySignatureWith(probe func() (string, error)) Check {
 	return Check{
 		Name:        "Binary signature",
 		Severity:    SeverityWarn,
-		Detail:     "ad-hoc signed (local build); not a release binary",
+		Detail:      "ad-hoc signed (local build); not a release binary",
 		Remediation: "fine for development; install the notarized release binary for production",
 	}
 }
@@ -555,6 +556,31 @@ func checkSourceStateFrom(st *state.SourceState, err error) Check {
 		Name:     "Source state",
 		Severity: SeverityOK,
 		Detail:   fmt.Sprintf("last push %s ago, 0 failures", age),
+	}
+}
+
+// checkDBSCFrom is informational: it surfaces how many cookies the last push
+// flagged as Device Bound Session Credentials (DBSC) suspects -- cookies bound
+// to this Mac that likely will not work on the sink. Zero suspects (or no
+// state yet) is OK; any suspects are a WARN so the user understands why those
+// sessions may not carry over.
+func checkDBSCFrom(st *state.SourceState) Check {
+	if st == nil || (st.LastDBSCWarned == 0 && st.LastDBSCSkipped == 0) {
+		return Check{
+			Name:     "DBSC",
+			Severity: SeverityOK,
+			Detail:   "no device-bound (DBSC) cookies flagged in the last push",
+		}
+	}
+	detail := fmt.Sprintf("last push flagged %d shipped-with-warning, %d skipped DBSC-suspect cookie(s)", st.LastDBSCWarned, st.LastDBSCSkipped)
+	if len(st.LastDBSCSample) > 0 {
+		detail += ": " + st.LastDBSCSample[0]
+	}
+	return Check{
+		Name:        "DBSC",
+		Severity:    SeverityWarn,
+		Detail:      detail,
+		Remediation: "these cookies are device-bound and may not work on the sink; for Google sessions, sign the sink's Chrome into the same account (see README: DBSC)",
 	}
 }
 

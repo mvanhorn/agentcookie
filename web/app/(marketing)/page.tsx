@@ -15,6 +15,7 @@ import { TopNav } from "@/components/marketing/TopNav";
 import { Hero } from "@/components/marketing/Hero";
 import { WhatItSyncs } from "@/components/marketing/WhatItSyncs";
 import { FeatureGrid } from "@/components/marketing/FeatureGrid";
+import { FAQ } from "@/components/marketing/FAQ";
 import { Footer } from "@/components/marketing/Footer";
 
 export default function MarketingHome() {
@@ -27,6 +28,7 @@ export default function MarketingHome() {
       <Hero />
       <WhatItSyncs />
       <FeatureGrid />
+      <FAQ />
       <Footer />
     </div>
   );

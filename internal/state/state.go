@@ -13,14 +13,24 @@ import (
 
 // SourceState is the source watcher's observable state, written on every push.
 type SourceState struct {
-	Role           string    `json:"role"`
-	LastPush       time.Time `json:"last_push,omitempty"`
-	LastPushCount  int       `json:"last_push_count"`
-	TotalPushes    int       `json:"total_pushes"`
-	TotalFailures  int       `json:"total_failures"`
-	LastError      string    `json:"last_error,omitempty"`
-	LastErrorAt    time.Time `json:"last_error_at,omitempty"`
-	SinkURL        string    `json:"sink_url"`
+	Role          string    `json:"role"`
+	LastPush      time.Time `json:"last_push,omitempty"`
+	LastPushCount int       `json:"last_push_count"`
+	TotalPushes   int       `json:"total_pushes"`
+	TotalFailures int       `json:"total_failures"`
+	LastError     string    `json:"last_error,omitempty"`
+	LastErrorAt   time.Time `json:"last_error_at,omitempty"`
+	SinkURL       string    `json:"sink_url"`
+
+	// LastDBSCWarned / LastDBSCSkipped count cookies the last push flagged
+	// as Device Bound Session Credentials (DBSC) suspects: cookies that are
+	// device-bound to this Mac and likely will not survive on the sink.
+	// Warned cookies were still shipped; Skipped were dropped (skip mode).
+	// LastDBSCSample carries a few human reasons so `agentcookie doctor` and
+	// `status` can show why without re-reading Chrome.
+	LastDBSCWarned  int      `json:"last_dbsc_warned,omitempty"`
+	LastDBSCSkipped int      `json:"last_dbsc_skipped,omitempty"`
+	LastDBSCSample  []string `json:"last_dbsc_sample,omitempty"`
 }
 
 // SinkState is the sink daemon's observable state, written on every accepted

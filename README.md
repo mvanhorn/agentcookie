@@ -141,8 +141,8 @@ Working:
 - Persistent replay defense; per-peer pairing-derived keys.
 - Apple Developer ID signed binaries; per-binary `-T` Keychain ACL on Chrome Safe Storage.
 - Headless second-Mac install over SSH with no GUI clicks required.
-- `agentcookie doctor` runs 11 health categories: binary signature, Tailscale, config, keystore, listener bind, sink/source state, sealing posture, adapter coverage, CDP injector health, and secrets bus coverage.
-- 449+ unit tests across 26 packages.
+- `agentcookie doctor` runs 12 health categories: binary signature, Tailscale, config, keystore, listener bind, sink/source state, sealing posture, adapter coverage, CDP injector health, secrets bus coverage, and DBSC-suspect cookies.
+- 466+ unit tests across 26 packages.
 
 Not yet:
 
@@ -152,6 +152,21 @@ Not yet:
 - `agentcookie pair --rotate` for live key rotation. Today: re-run `wizard install` on both sides.
 - One first-Mac, many second-Macs fan-out.
 - At-rest sealing of the sidecar + adapter session files is wired in but off by default; turns on via `wizard set-keychain-access --enable-sealing` once consumer-side support lands.
+
+## What about Chrome's device-bound cookies (DBSC)?
+
+Chrome's Device Bound Session Credentials (DBSC) tie a session to one machine's secure hardware so a stolen cookie cannot be replayed elsewhere. That is exactly the "move a cookie to another machine" shape agentcookie is built on, so it is worth being precise about what DBSC does and does not change here.
+
+DBSC is opt-in per site. A cookie becomes device-bound only when the site's own backend asks for it; nothing binds automatically, and a site binds only the specific session cookies it nominates. As of May 2026 the one broad adopter is Google's own account and Workspace cookies, and that protection went generally available on Chrome for Windows first. macOS support began rolling out gradually in the next Chrome release. The vast majority of sites agentcookie syncs, and every Printing Press CLI it feeds, do not use DBSC, so their cookies replicate to the second Mac and keep working exactly as before.
+
+For a site that has adopted DBSC, a copied cookie works on the second Mac only until its short-lived window (minutes) lapses, because the second Mac cannot sign the refresh challenge that the source Mac's Secure Enclave holds. agentcookie does not try to defeat that. Instead the source flags cookies that look device-bound and, by default, ships them with a warning you can see in `agentcookie doctor`. Pass `--skip-dbsc-suspect` (or set `AGENTCOOKIE_SKIP_DBSC_SUSPECT=1`) to drop them instead of shipping cookies that will not survive on the sink.
+
+Two things blunt the impact:
+
+- The secrets bus is untouched. DBSC is a cookie protocol. Bearer tokens, API keys, and OAuth refresh tokens that ride the bus to `~/.agentcookie/secrets/<cli>/secrets.env` are outside its scope and replicate normally.
+- For Google sessions specifically, copying cookies was never the right tool. Sign the second Mac's Chrome into the same Google account once and it establishes its own device-bound session there, no copy required. The agent on the sink reads that local session.
+
+In short: DBSC narrows one corner of the web (today, mostly Google) and agentcookie is honest about it, while the bulk of what it syncs, non-DBSC site cookies and the entire secrets bus, is unaffected. See [docs/threat-model.md](docs/threat-model.md) for the full treatment.
 
 ## Documentation
 

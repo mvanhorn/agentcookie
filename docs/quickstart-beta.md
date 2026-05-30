@@ -148,6 +148,7 @@ That's it. No login flow inside the CLI. The cookies the source pushed are alrea
 - **macOS only.** Linux/Windows sinks are roadmap.
 - **No live key rotation.** If you suspect a paired key is compromised, run `agentcookie wizard install` again on both sides to repair.
 - **eBay sessions die fast.** eBay's server binds sessions to your laptop's device fingerprint; replicated cookies fail `ebay-pp-cli` auth checks within hours of your last laptop login. Other PP CLIs are fine.
+- **Device-bound sessions (DBSC).** Some sites bind a login to your laptop's secure hardware via Chrome's Device Bound Session Credentials. Today that is mostly Google accounts. A replicated cookie works on the sink for only a few minutes before Chrome there cannot refresh it. For Google, sign the sink's Chrome into the same account once and it gets its own device-bound session locally, no copy needed. agentcookie flags DBSC-suspect cookies in `agentcookie doctor` and ships them with a warning by default; pass `--skip-dbsc-suspect` to drop them. Non-DBSC sites and the entire secrets bus are unaffected. See [threat-model.md](threat-model.md).
 - **First-time prompts.** macOS Gatekeeper triggers two Keychain prompts on the very first install (Chrome Safe Storage access, and the Tailscale interface check). One-time only.
 
 ## Help
