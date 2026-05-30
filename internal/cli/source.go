@@ -27,11 +27,20 @@ import (
 )
 
 var (
-	sourceOnce    bool
-	sourceWatch   bool
-	sourceVerbose bool
-	sourceDryRun  bool
+	sourceOnce     bool
+	sourceWatch    bool
+	sourceVerbose  bool
+	sourceDryRun   bool
+	sourceSkipDBSC bool
 )
+
+// dbscSummary carries the DBSC-suspect tally from one push back to the caller
+// so it can be recorded in SourceState for `doctor` / `status`.
+type dbscSummary struct {
+	warned  int
+	skipped int
+	sample  []string
+}
 
 var sourceCmd = &cobra.Command{
 	Use:   "source",
@@ -55,6 +64,7 @@ func init() {
 	sourceCmd.Flags().BoolVar(&sourceWatch, "watch", false, "long-running fsnotify watcher; pushes on every Chrome cookie write (debounced)")
 	sourceCmd.Flags().BoolVar(&sourceVerbose, "verbose", false, "log per-pattern decisions to stderr")
 	sourceCmd.Flags().BoolVar(&sourceDryRun, "dry-run", false, "read + filter but do not contact the sink")
+	sourceCmd.Flags().BoolVar(&sourceSkipDBSC, "skip-dbsc-suspect", false, "drop cookies that look device-bound (DBSC) instead of shipping them with a warning; also honored via AGENTCOOKIE_SKIP_DBSC_SUSPECT=1")
 }
 
 func runSource(cmd *cobra.Command, args []string) error {
@@ -93,8 +103,12 @@ func runSource(cmd *cobra.Command, args []string) error {
 	stateWriter := state.NewWriter(state.SourcePath(home))
 	srcState := &state.SourceState{Role: "source", SinkURL: cfg.Sink.URL}
 
+	// --skip-dbsc-suspect is also honored via env var so a LaunchAgent can
+	// opt in without a flag edit.
+	skipDBSC := sourceSkipDBSC || os.Getenv("AGENTCOOKIE_SKIP_DBSC_SUSPECT") == "1"
+
 	push := func(ctx context.Context) (int, error) {
-		n, err := pushOnce(ctx, cfg, blocklist, key, secret, sourceDryRun, sourceVerbose)
+		n, dbsc, err := pushOnce(ctx, cfg, blocklist, key, secret, sourceDryRun, sourceVerbose, skipDBSC)
 		if err != nil {
 			srcState.TotalFailures++
 			srcState.LastError = err.Error()
@@ -104,6 +118,9 @@ func runSource(cmd *cobra.Command, args []string) error {
 			srcState.LastPushCount = n
 			srcState.LastPush = time.Now().UTC()
 		}
+		srcState.LastDBSCWarned = dbsc.warned
+		srcState.LastDBSCSkipped = dbsc.skipped
+		srcState.LastDBSCSample = dbsc.sample
 		_ = stateWriter.Save(srcState)
 		return n, err
 	}
@@ -190,10 +207,13 @@ func pushOnce(
 	secret string,
 	dryRun bool,
 	verbose bool,
-) (int, error) {
+	skipDBSC bool,
+) (int, dbscSummary, error) {
+	var dbsc dbscSummary
+
 	all, err := chrome.ReadCookiesForHost(cfg.Chrome.DBPath, "%", key)
 	if err != nil {
-		return 0, fmt.Errorf("read cookies: %w", err)
+		return 0, dbsc, fmt.Errorf("read cookies: %w", err)
 	}
 	totalRead := len(all)
 
@@ -206,6 +226,25 @@ func pushOnce(
 	if verbose {
 		fmt.Fprintf(os.Stderr, "agentcookie source: read %d cookies, blocked %d on %d hosts, passing %d\n",
 			totalRead, totalDropped, len(droppedHosts), len(all))
+	}
+
+	// DBSC-suspect pass: flag (and optionally drop) cookies that look
+	// device-bound and would die on the sink. Warn mode (default) is
+	// non-destructive; skip mode drops them. See internal/chrome/dbsc.go.
+	dbscRes := chrome.ClassifyCookies(all, time.Now().UTC(), skipDBSC)
+	all = dbscRes.Shipped
+	dbsc.warned = len(dbscRes.Warned)
+	dbsc.skipped = len(dbscRes.Skipped)
+	dbsc.sample = dbscSampleReasons(dbscRes)
+	if n := dbsc.warned + dbsc.skipped; n > 0 {
+		verb := "shipping with a warning"
+		if skipDBSC {
+			verb = "skipping"
+		}
+		fmt.Fprintf(os.Stderr, "agentcookie source: %d cookie(s) look device-bound (DBSC); %s. These likely will not work on the sink. See README: DBSC.\n", n, verb)
+		for _, r := range dbsc.sample {
+			fmt.Fprintf(os.Stderr, "  - %s\n", r)
+		}
 	}
 
 	// v0.14: combined v1 bus + v2 discovery. LoadPayloadWithDiscovery
@@ -226,18 +265,20 @@ func pushOnce(
 	}
 
 	result := map[string]any{
-		"cookies_read":    totalRead,
-		"cookies_blocked": totalDropped,
-		"cookies_passing": len(all),
-		"secrets_clis":    secretsCLICount,
-		"dry_run":         dryRun,
-		"sink_url":        cfg.Sink.URL,
-		"posted":          false,
+		"cookies_read":         totalRead,
+		"cookies_blocked":      totalDropped,
+		"cookies_passing":      len(all),
+		"cookies_dbsc_warned":  dbsc.warned,
+		"cookies_dbsc_skipped": dbsc.skipped,
+		"secrets_clis":         secretsCLICount,
+		"dry_run":              dryRun,
+		"sink_url":             cfg.Sink.URL,
+		"posted":               false,
 	}
 
 	if dryRun || (len(all) == 0 && secretsCLICount == 0) {
 		_ = emit(result, fmt.Sprintf("agentcookie source: %d cookies after blocklist, %d secrets clis (dry-run=%v)\n", len(all), secretsCLICount, dryRun))
-		return 0, nil
+		return 0, dbsc, nil
 	}
 
 	// v0.7: pack Local Storage and IndexedDB alongside cookies. Both are
@@ -281,11 +322,11 @@ func pushOnce(
 	}
 	payload, err := json.Marshal(envelope)
 	if err != nil {
-		return 0, fmt.Errorf("marshal envelope: %w", err)
+		return 0, dbsc, fmt.Errorf("marshal envelope: %w", err)
 	}
 	sealed, err := transport.SealWithSecret(payload, secret)
 	if err != nil {
-		return 0, fmt.Errorf("seal payload: %w", err)
+		return 0, dbsc, fmt.Errorf("seal payload: %w", err)
 	}
 
 	// Bound the POST by the SyncClient profile's timeout (5 minutes
@@ -298,12 +339,12 @@ func pushOnce(
 	defer cancel()
 	req, err := http.NewRequestWithContext(postCtx, "POST", cfg.Sink.URL, bytes.NewReader(sealed))
 	if err != nil {
-		return 0, fmt.Errorf("new request: %w", err)
+		return 0, dbsc, fmt.Errorf("new request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	resp, err := httpserver.Client(httpserver.SyncClient).Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("POST to sink %s: %w", cfg.Sink.URL, err)
+		return 0, dbsc, fmt.Errorf("POST to sink %s: %w", cfg.Sink.URL, err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
@@ -312,10 +353,30 @@ func pushOnce(
 	result["sink_status"] = resp.StatusCode
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("sink returned %d: %s", resp.StatusCode, string(body))
+		return 0, dbsc, fmt.Errorf("sink returned %d: %s", resp.StatusCode, string(body))
 	}
 	_ = emit(result, fmt.Sprintf("agentcookie source: posted %d cookies, sink replied: %s\n", len(all), string(body)))
-	return len(all), nil
+	return len(all), dbsc, nil
+}
+
+// dbscSampleReasons returns up to three reason strings (warns first, then
+// skips) for surfacing in logs and SourceState without flooding output.
+func dbscSampleReasons(res chrome.DBSCResult) []string {
+	const max = 3
+	out := make([]string, 0, max)
+	for _, r := range res.Warned {
+		if len(out) == max {
+			return out
+		}
+		out = append(out, r)
+	}
+	for _, r := range res.Skipped {
+		if len(out) == max {
+			return out
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // emit writes machine output or human output depending on --json. The human
