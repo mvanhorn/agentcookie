@@ -82,7 +82,7 @@ func runSink(cmd *cobra.Command, args []string) error {
 	default:
 		password, err := chrome.SafeStoragePassword()
 		if err != nil {
-			return fmt.Errorf("read Chrome Safe Storage from Keychain: %w (run 'agentcookie wizard install --as sink' to trigger the one-time Keychain Always-Allow prompt, or set skip_chrome_sqlite: true in sink.yaml for headless installs)", err)
+			return fmt.Errorf("read Chrome Safe Storage from Keychain: %w (%s. To run sidecar+adapter only, set skip_chrome_sqlite: true in sink.yaml)", err, chrome.SafeStorageRemediation)
 		}
 		key, err = chrome.DeriveAESKey(password)
 		if err != nil {

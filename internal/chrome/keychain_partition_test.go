@@ -147,3 +147,18 @@ func TestSetSafeStoragePartitionListWithPassword_Success(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
+
+// TestSafeStorageRemediation_PointsToOnePasswordNotGUI is the U4 guard: the
+// daemon's read-failure guidance must point a headless sink at the
+// one-password SSH command, never the obsolete GUI "Always Allow" click.
+func TestSafeStorageRemediation_PointsToOnePasswordNotGUI(t *testing.T) {
+	if !strings.Contains(SafeStorageRemediation, "set-keychain-access") {
+		t.Errorf("remediation should name the one-password command: %q", SafeStorageRemediation)
+	}
+	if !strings.Contains(SafeStorageRemediation, "AGENTCOOKIE_LOGIN_PASSWORD") {
+		t.Errorf("remediation should mention the env override: %q", SafeStorageRemediation)
+	}
+	if strings.Contains(SafeStorageRemediation, "Always Allow") || strings.Contains(SafeStorageRemediation, "Keychain Access") {
+		t.Errorf("remediation must not send a headless sink to a GUI prompt: %q", SafeStorageRemediation)
+	}
+}
