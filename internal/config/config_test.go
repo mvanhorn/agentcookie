@@ -134,6 +134,71 @@ security:
 	})
 }
 
+// TestLoadSinkDeliveryMarker covers the v0.13 universal-cookie-delivery
+// marker. The delivery field round-trips through YAML so a later doctor
+// unit can report intent, and its absence keeps current behavior (no
+// migration, no silent flip on a binary upgrade).
+func TestLoadSinkDeliveryMarker(t *testing.T) {
+	t.Run("delivery universal round-trips", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "sink.yaml", `
+listen:
+  addr: 100.80.229.80:9999
+delivery: universal
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+		cfg, err := LoadSink(dir)
+		if err != nil {
+			t.Fatalf("LoadSink: %v", err)
+		}
+		if cfg.Delivery != "universal" {
+			t.Errorf("Delivery: got %q, want %q", cfg.Delivery, "universal")
+		}
+		if cfg.SkipChromeSQLite {
+			t.Errorf("universal install should not skip Chrome SQLite")
+		}
+	})
+
+	t.Run("delivery degraded round-trips", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "sink.yaml", `
+listen:
+  addr: 100.80.229.80:9999
+skip_chrome_sqlite: true
+delivery: degraded
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+		cfg, err := LoadSink(dir)
+		if err != nil {
+			t.Fatalf("LoadSink: %v", err)
+		}
+		if cfg.Delivery != "degraded" {
+			t.Errorf("Delivery: got %q, want %q", cfg.Delivery, "degraded")
+		}
+	})
+
+	t.Run("absent delivery defaults to empty (no migration)", func(t *testing.T) {
+		// A sink.yaml written before this field must load cleanly with an
+		// empty Delivery and unchanged behavior -- no silent flip.
+		dir := t.TempDir()
+		writeFile(t, dir, "sink.yaml", `
+listen:
+  addr: 100.80.229.80:9999
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+		cfg, err := LoadSink(dir)
+		if err != nil {
+			t.Fatalf("LoadSink: %v", err)
+		}
+		if cfg.Delivery != "" {
+			t.Errorf("Delivery: got %q, want empty (legacy default)", cfg.Delivery)
+		}
+	})
+}
+
 func TestLoadSinkHonorsExplicitListenAddr(t *testing.T) {
 	// Regression for v0.11 -> v0.12: an existing sink.yaml that already
 	// has a 100.x address keeps working without re-detection prompting.

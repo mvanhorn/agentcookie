@@ -14,7 +14,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/launchd"
@@ -241,7 +240,23 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 	// Chrome Safe Storage. That produced the 60-second timeout +
 	// alarming WARNING block documented as friction #19 in the
 	// 2026-05-19 dry-run.
-	skipChromeSQLite, cdpEnabled, cdpProfileDir := resolveSinkHeadlessMode()
+	skipChromeSQLite, cdpEnabled, cdpProfileDir, delivery := resolveSinkHeadlessMode()
+
+	// v0.13 (plan 2026-05-31-002, R5): for the default/universal-intent
+	// case the KEYCHAIN-OPEN OUTCOME determines the final delivery mode,
+	// so it must run BEFORE we render sink.yaml. A universal config
+	// (skip_chrome_sqlite=false) requires agentcookie to read the Chrome
+	// Safe Storage key (the sink daemon writes the real Default profile
+	// and reads the key to do so; see sink.go). On a box where
+	// agentcookie is not yet keychain-trusted (or has no GUI session),
+	// the any-app open fails -> we must DOWNGRADE to degraded so the
+	// rendered sink.yaml does not leave a daemon that cannot start.
+	//
+	// We perform the open up front (gated below), then re-derive the
+	// skip/cdp/delivery values from its outcome for the render.
+	skipChromeSQLite, cdpEnabled, cdpProfileDir, delivery, keychainOpened := resolveSinkDeliveryWithKeychain(
+		skipChromeSQLite, cdpEnabled, cdpProfileDir, delivery,
+	)
 
 	// v0.12 S1: resolve the tailnet 100.x address BEFORE writing
 	// sink.yaml. If Tailscale is not up the helper returns a
@@ -272,7 +287,7 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 		}
 		if err := writeYAMLIfMissing(
 			sinkYAMLPath,
-			renderSinkYAML(wizardPeer, listenAddr, skipChromeSQLite, cdpEnabled, cdpProfileDir),
+			renderSinkYAML(wizardPeer, listenAddr, skipChromeSQLite, cdpEnabled, cdpProfileDir, delivery),
 			wizardForce,
 		); err != nil {
 			return err
@@ -307,53 +322,12 @@ func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
 		fmt.Fprintf(os.Stderr, "agentcookie wizard: paired with source %q (fingerprint %s)\n", wizardPeer, res.Fingerprint)
 	}
 
-	// v0.7: trigger the one-time Keychain Always-Allow prompt for Chrome
-	// Safe Storage. The sink LaunchAgent reads this key on every startup
-	// to encrypt cookies for SQLite writes; without Always-Allow, the
-	// daemon would block on a Keychain prompt nobody can see.
-	//
-	// v0.12.0-beta.6: skip entirely in headless mode. When
-	// skip_chrome_sqlite resolves to true the sink daemon never reads
-	// Chrome Safe Storage, so the prompt is needless friction and
-	// (when run from a non-GUI context) hangs or errors loudly.
-	if !wizardSkipKeychainPrompt && !skipChromeSQLite {
-		fmt.Fprintln(os.Stderr, "agentcookie wizard: triggering Chrome Safe Storage Keychain prompt (click 'Always Allow' when macOS asks)")
-		if _, err := chrome.SafeStoragePassword(); err != nil {
-			return fmt.Errorf("Keychain access: %w (re-run after granting Always Allow, or pass --skip-keychain-prompt)", err)
-		}
-		fmt.Fprintln(os.Stderr, "agentcookie wizard: Keychain access granted; sink daemon can run unattended")
-	}
-
-	// v0.10: run the set-keychain-access strategy loop. This supersedes the
-	// v0.9 partition-list step -- v0.10's first strategy IS the same
-	// partition-list expansion, plus it verifies the result via the
-	// keybase/go-keychain API path kooky-CGO uses, and falls back to
-	// per-binary trust-list entries if the partition list alone does not
-	// cover ad-hoc-signed Go binaries. The whole thing runs inside a
-	// one-shot LaunchAgent (auto-unlocked keychain) so no login password
-	// prompt fires. See plan 2026-05-17-004.
-	//
-	// v0.12.0-beta.6: skip entirely in headless mode. The loop only
-	// matters for kooky-using PP CLIs that read Chrome's encrypted SQLite
-	// directly. In headless mode (sidecar+adapter delivery), no PP CLI
-	// touches Chrome's SQLite; the loop's 60s timeout + alarming
-	// WARNING was friction #19 in the 2026-05-21 dry-run.
-	switch {
-	case wizardSkipKeychainAccess:
-		// explicit opt-out preserved
-	case skipChromeSQLite:
-		fmt.Fprintln(os.Stderr, "agentcookie wizard: skipping set-keychain-access strategy loop (headless mode: sidecar+adapter delivery does not need Chrome Safe Storage access)")
-	default:
-		fmt.Fprintln(os.Stderr, "agentcookie wizard: running set-keychain-access strategy loop (broadens Chrome Safe Storage access for kooky-using CLIs)")
-		setKeychainExtraBinary = defaultKeychainTrustBinaries()
-		if err := runOuterWizard(setKeychainAccessCmd); err != nil {
-			// Do NOT abort install. Sink itself still works; only the
-			// per-CLI headless-read path is degraded.
-			fmt.Fprintf(os.Stderr, "agentcookie wizard: WARNING keychain access strategy loop failed: %v\n", err)
-			fmt.Fprintln(os.Stderr, "agentcookie wizard:   kooky-using CLIs on this sink will prompt for Keychain access on first read per binary")
-			fmt.Fprintln(os.Stderr, "agentcookie wizard:   see docs/runbook-v0.10-keychain-access.md for recovery")
-		}
-	}
+	// v0.13: the keychain open already ran (above, before sink.yaml was
+	// rendered) so its outcome could drive the skip/cdp/delivery render.
+	// All the keychain prompt + strategy-loop logic now lives in
+	// resolveSinkDeliveryWithKeychain. Nothing to do here; keychainOpened
+	// recorded whether the universal any-app open succeeded.
+	_ = keychainOpened
 
 	if !wizardSkipDaemon {
 		if err := installLaunchAgent(launchd.Spec{
@@ -695,7 +669,13 @@ peer:
 // matches the pre-beta.3 shape byte-for-byte — that's the regression
 // guard for installed v0.12.0-beta.2 friends (R6 in plan
 // 2026-05-21-001).
-func renderSinkYAML(peer, listenAddr string, skipChromeSQLite, cdpEnabled bool, cdpProfileDir string) string {
+//
+// v0.13 added the delivery marker. It is appended only when non-empty so
+// the legacy byte-for-byte shape (skip=false, cdp=false, delivery="")
+// stays a regression-stable target; the wizard install always passes a
+// concrete "universal"/"degraded" value, while tests and callers that
+// pass "" keep the pre-v0.13 output.
+func renderSinkYAML(peer, listenAddr string, skipChromeSQLite, cdpEnabled bool, cdpProfileDir, delivery string) string {
 	out := fmt.Sprintf(`listen:
   addr: %s
 peer:
@@ -710,14 +690,20 @@ peer:
 			out += fmt.Sprintf("  profile_dir: %s\n", cdpProfileDir)
 		}
 	}
+	if delivery != "" {
+		out += fmt.Sprintf("delivery: %s\n", delivery)
+	}
 	return out
 }
 
 // isHeadlessInstall returns true when stdin is not a terminal, which
 // signals an SSH-only install with no GUI session to answer Keychain
-// prompts. The wizard uses this to pick the v0.12.0-beta.3 headless
-// defaults (skip_chrome_sqlite + cdp). When in doubt (e.g. tests),
-// returns false to preserve legacy behavior.
+// prompts. Pre-v0.13 the wizard used this to auto-degrade no-TTY sink
+// installs (skip_chrome_sqlite + cdp). v0.13 made universal the default
+// regardless of TTY (the degraded fallback now happens non-fatally at the
+// keychain step), so resolveSinkHeadlessMode no longer consults this.
+// Retained as a small TTY probe for callers and tests. When in doubt
+// (e.g. tests), returns false.
 func isHeadlessInstall() bool {
 	stat, err := os.Stdin.Stat()
 	if err != nil {
@@ -726,32 +712,154 @@ func isHeadlessInstall() bool {
 	return (stat.Mode() & os.ModeCharDevice) == 0
 }
 
-// resolveSinkHeadlessMode applies the v0.12.0-beta.3 default-resolution
-// rules. Returns (skipChromeSQLite, cdpEnabled, cdpProfileDir).
+// Delivery markers recorded in sink.yaml so doctor reports the INTENT a
+// wizard install resolved to, rather than re-inferring it. See
+// config.SinkConfig.Delivery.
+const (
+	deliveryUniversal = "universal"
+	deliveryDegraded  = "degraded"
+)
+
+// resolveSinkHeadlessMode applies the v0.13 universal-default resolution
+// rules. Returns (skipChromeSQLite, cdpEnabled, cdpProfileDir, delivery).
+//
+// v0.13 change: a plain `wizard install --as sink` (neither
+// --skip-chrome-sqlite nor --write-chrome-sqlite passed) now defaults to
+// UNIVERSAL delivery -- skip=false, write the real Default Chrome profile,
+// and (at the keychain step) the any-app open -- so any unmodified cookie
+// tool works on the sink. The pre-v0.13 no-TTY auto-degrade is gone:
+// headless SSH installs default to universal too, and only fall back to
+// degraded non-fatally if the any-app keychain open cannot complete (see
+// the keychain block in wizardInstallSink, which prints the one-line
+// upgrade instruction without failing the install).
 //
 // Precedence:
-//  1. --skip-chrome-sqlite explicit -> skip=true.
-//  2. --write-chrome-sqlite explicit -> skip=false (overrides headless detect).
-//  3. No-TTY install -> skip=true (auto-detect).
-//  4. GUI install -> skip=false (legacy default, R6 regression guard).
+//  1. --skip-chrome-sqlite explicit -> skip=true (degraded opt-out).
+//  2. --write-chrome-sqlite explicit -> skip=false (universal).
+//  3. Neither flag -> skip=false (universal DEFAULT, the v0.13 change).
 //
 // CDP defaults: enabled when skip=true and --no-cdp is not set.
-func resolveSinkHeadlessMode() (skipChromeSQLite, cdpEnabled bool, cdpProfileDir string) {
+func resolveSinkHeadlessMode() (skipChromeSQLite, cdpEnabled bool, cdpProfileDir, delivery string) {
 	switch {
 	case wizardSkipChromeSQLite:
 		skipChromeSQLite = true
 	case wizardWriteChromeSQLite:
 		skipChromeSQLite = false
-	case isHeadlessInstall():
-		skipChromeSQLite = true
 	default:
+		// v0.13: universal is the default when neither flag is passed,
+		// independent of TTY. The degraded fallback for a never-trusted
+		// box happens at the keychain step, non-fatally.
 		skipChromeSQLite = false
 	}
 	if skipChromeSQLite && !wizardNoCDP {
 		cdpEnabled = true
 		cdpProfileDir = "~/.agentcookie/chrome-profile"
 	}
+	if skipChromeSQLite {
+		delivery = deliveryDegraded
+	} else {
+		delivery = deliveryUniversal
+	}
 	return
+}
+
+// attemptUniversalKeychainOpen performs the v0.13 any-app Chrome Safe
+// Storage open (U1's delete-and-recreate-with-A strategy) that makes the
+// key readable by ANY application, so any unmodified cookie tool reads it
+// with no per-binary trust list. It returns an error if the open could not
+// complete (typically: agentcookie is not yet in the Chrome Safe Storage
+// ACL, so the any-app strategy refused to delete rather than risk
+// destroying existing cookies, or there is no GUI session to open the
+// key).
+//
+// It is a function variable so tests can inject success/failure without
+// spawning the real one-shot LaunchAgent (mirrors execSecurityFunc in
+// wizard_keychain.go). The production implementation sets the any-app
+// flags and runs the outer wizard.
+var attemptUniversalKeychainOpen = func() error {
+	setKeychainAnyApp = true
+	setKeychainExtraBinary = defaultKeychainTrustBinaries()
+	return runOuterWizard(setKeychainAccessCmd)
+}
+
+// resolveSinkDeliveryWithKeychain takes the flag-resolved delivery mode
+// (from resolveSinkHeadlessMode) and applies the v0.13 keychain-open
+// outcome (plan 2026-05-31-002, R5). The keychain-open result determines
+// the FINAL delivery mode for the default/universal-intent case, so this
+// runs BEFORE sink.yaml is rendered.
+//
+// Behavior by intent:
+//   - Explicit --skip-chrome-sqlite (degraded opt-out): no keychain open
+//     attempted; stays degraded. Matches the old "skip the loop" branch.
+//   - Explicit --skip-keychain-access: no open attempted; the caller asked
+//     us not to touch the keychain. Stays as resolved (universal config but
+//     keychain left untouched -- explicit operator choice).
+//   - Explicit --write-chrome-sqlite (forced universal): attempt the open;
+//     if it fails, surface a clear WARNING but HONOR the explicit intent --
+//     do NOT silently downgrade. Universal config is rendered regardless.
+//   - Default (neither --skip-chrome-sqlite nor --write-chrome-sqlite): the
+//     universal-intent case. Attempt the open. On SUCCESS -> universal. On
+//     FAILURE -> DOWNGRADE to degraded (skip=true, CDP enabled like the old
+//     headless mode), print the one-line upgrade instruction, and continue
+//     NON-FATALLY so the install completes with a working sink.
+//
+// Returns the (possibly downgraded) skip/cdp/profileDir/delivery to render,
+// plus whether the universal any-app open actually succeeded.
+func resolveSinkDeliveryWithKeychain(
+	skipChromeSQLite, cdpEnabled bool, cdpProfileDir, delivery string,
+) (outSkip, outCDP bool, outProfileDir, outDelivery string, keychainOpened bool) {
+	// Degraded opt-out: never touch the keychain; the sink daemon won't
+	// read Chrome Safe Storage. This is also the pre-v0.13 friction #19
+	// fix (no 60s strategy-loop timeout in degraded mode).
+	if skipChromeSQLite {
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: skipping set-keychain-access strategy loop (degraded mode: sidecar+adapter delivery does not need Chrome Safe Storage access)")
+		return skipChromeSQLite, cdpEnabled, cdpProfileDir, delivery, false
+	}
+
+	// Universal config (skip=false). The keychain prompt / loop is the
+	// explicit opt-out path: --skip-keychain-prompt and
+	// --skip-keychain-access leave the keychain untouched. The operator
+	// asked for universal config without the open, so render universal
+	// and do not attempt the open.
+	if wizardSkipKeychainAccess || wizardSkipKeychainPrompt {
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: keychain open skipped by flag; rendering universal config without opening Chrome Safe Storage (cookie CLIs may prompt until you grant access once)")
+		return skipChromeSQLite, cdpEnabled, cdpProfileDir, delivery, false
+	}
+
+	// Universal default / forced-universal: attempt the any-app open. Its
+	// outcome determines the final delivery mode for the default case.
+	fmt.Fprintln(os.Stderr, "agentcookie wizard: running set-keychain-access strategy loop with --any-app (universal delivery: any cookie CLI reads Chrome Safe Storage with no per-binary work)")
+	if err := attemptUniversalKeychainOpen(); err != nil {
+		if wizardWriteChromeSQLite {
+			// EXPLICIT --write-chrome-sqlite: honor the intent. Surface a
+			// clear warning but do NOT downgrade; the operator forced
+			// universal and we respect that even if the box cannot open
+			// the key right now.
+			fmt.Fprintf(os.Stderr, "agentcookie wizard: WARNING --write-chrome-sqlite forced universal but the any-app keychain open did not complete: %v\n", err)
+			fmt.Fprintln(os.Stderr, "agentcookie wizard:   honoring explicit --write-chrome-sqlite; the sink will write the real Default profile but may fail to read Chrome Safe Storage until you grant access once.")
+			fmt.Fprintln(os.Stderr, "agentcookie wizard:   grant Chrome Safe Storage \"Always Allow\" once in Keychain Access, then run: agentcookie wizard set-keychain-access --any-app")
+			return skipChromeSQLite, cdpEnabled, cdpProfileDir, delivery, false
+		}
+		// DEFAULT (unspecified) case: DOWNGRADE to degraded, non-fatally.
+		// The any-app open could not complete (agentcookie not yet in the
+		// Chrome Safe Storage ACL, or no GUI session). Rendering universal
+		// here would leave a sink daemon that cannot read the key and so
+		// cannot start. Fall back to the old headless degraded mode
+		// (skip=true + CDP) so the install completes with a working sink.
+		fmt.Fprintf(os.Stderr, "agentcookie wizard: WARNING universal keychain open did not complete: %v\n", err)
+		fmt.Fprintln(os.Stderr, "agentcookie wizard:   downgrading this install to degraded (sidecar+adapter delivery + CDP); the sink is installed and syncing.")
+		fmt.Fprintln(os.Stderr, "agentcookie wizard:   upgrade to universal: grant Chrome Safe Storage \"Always Allow\" once in Keychain Access, then run: agentcookie wizard set-keychain-access --any-app")
+		degradedSkip := true
+		degradedCDP := false
+		degradedProfileDir := ""
+		if !wizardNoCDP {
+			degradedCDP = true
+			degradedProfileDir = "~/.agentcookie/chrome-profile"
+		}
+		return degradedSkip, degradedCDP, degradedProfileDir, deliveryDegraded, false
+	}
+	// Open succeeded: final config is universal.
+	return skipChromeSQLite, cdpEnabled, cdpProfileDir, delivery, true
 }
 
 // expandHome resolves a leading ~/ in a path against the current user's

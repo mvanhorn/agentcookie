@@ -33,6 +33,15 @@ type SourceConfig struct {
 // remain the cookie-delivery paths and are unaffected. This unblocks
 // SSH-only installs on headless Mac minis where no GUI session can
 // answer the Chrome Safe Storage Keychain prompt.
+//
+// Delivery is the v0.13 universal-cookie-delivery marker. It records the
+// INTENT a wizard install resolved to, so `doctor` can report "any cookie
+// CLI works here" vs "degraded" without re-inferring it from
+// SkipChromeSQLite + keychain probe state. Values: "universal" (real
+// Default Chrome profile + any-app keychain open) or "degraded" (the
+// -T/skip_chrome_sqlite opt-out). It is omitempty: an existing sink.yaml
+// written before this field keeps its current behavior with no migration
+// and no silent flip on a binary upgrade.
 type SinkConfig struct {
 	Listen           ListenRef   `yaml:"listen" json:"listen"`
 	Chrome           ChromeRef   `yaml:"chrome" json:"chrome"`
@@ -40,6 +49,7 @@ type SinkConfig struct {
 	Security         SecurityRef `yaml:"security,omitempty" json:"security,omitempty"`
 	SkipChromeSQLite bool        `yaml:"skip_chrome_sqlite,omitempty" json:"skip_chrome_sqlite,omitempty"`
 	CDP              CDPRef      `yaml:"cdp,omitempty" json:"cdp,omitempty"`
+	Delivery         string      `yaml:"delivery,omitempty" json:"delivery,omitempty"`
 }
 
 // CDPRef configures the v0.12.0-beta.3 CDP-injection mode. When Enabled,
