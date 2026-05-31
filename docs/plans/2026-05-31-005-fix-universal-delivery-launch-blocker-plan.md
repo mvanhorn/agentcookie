@@ -315,6 +315,7 @@ The two enabling edges are convergence-to-one-item (C) and password-gated-not-ve
 
 ### Deferred to Follow-Up Work
 
+- Live daemon-quiesce orchestration (auto-stop the sink daemon's CDP injector + Chrome during keychain setup, restart after). Post-launch hardening, NOT a launch blocker: a fresh sink install defaults to universal mode, which runs no CDP injector and so never spawns the duplicate-item race; the shipped value-preserved converge (U2, PR #71) recovers any pre-existing duplicates. Parked 2026-05-31 after live verification; launch proceeds on the shipped fix.
 - Tesla CLI secret-consumption proof (parked by the user); this plan is cookies-only.
 - Any printing-press / per-CLI change - not needed; universal delivery is the point.
 - Covering a truly arbitrary unsigned CGO tool beyond `teamid:`/`apple-tool:` (sign it, trust-list it, or use the U7 fallback) - documented boundary, not built here.
