@@ -239,6 +239,10 @@ func buildReport(d doctorDeps) DoctorReport {
 	// but the CLI reads TESLA_AUTH_TOKEN). WARN, recoverable via alias.
 	checks = append(checks, checkSecretCoverage())
 
+	// 13. Binary install. Flags multiple diverging agentcookie binaries so
+	// the on-PATH copy and the daemon's copy don't silently differ.
+	checks = append(checks, checkBinaryInstall())
+
 	exit := 0
 	for _, c := range checks {
 		if c.Severity == SeverityFail {
@@ -279,6 +283,83 @@ func checkSecretCoverage() Check {
 		Severity:    SeverityWarn,
 		Detail:      fmt.Sprintf("%d CLI(s) have synced secrets under a name they do not read: %s", len(mismatches), strings.Join(mismatches, ", ")),
 		Remediation: "run `agentcookie discover` for the detail, then `agentcookie secret alias <cli> <declared-env-var> <synced-key>`",
+	}
+}
+
+// checkBinaryInstall catches the footgun where multiple agentcookie binaries
+// exist on the machine (e.g. ~/go/bin/agentcookie stale on PATH while the
+// daemon runs ~/bin/agentcookie). When they differ, the binary a user invokes
+// for status/doctor may not be the one the daemon runs, producing misleading
+// output. WARN, never FAIL.
+func checkBinaryInstall() Check {
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(home, "go", "bin", "agentcookie"),
+		filepath.Join(home, "bin", "agentcookie"),
+		"/usr/local/bin/agentcookie",
+		"/opt/homebrew/bin/agentcookie",
+	}
+	if p, err := exec.LookPath("agentcookie"); err == nil {
+		candidates = append(candidates, p)
+	}
+	if self, err := os.Executable(); err == nil {
+		candidates = append(candidates, self)
+	}
+	return binaryInstallCheckFrom(candidates)
+}
+
+// binaryInstallCheckFrom is the testable core of checkBinaryInstall over an
+// explicit candidate list (so tests don't depend on the host's real PATH).
+func binaryInstallCheckFrom(candidates []string) Check {
+	type binInfo struct {
+		path string
+		size int64
+		mod  time.Time
+	}
+	seen := map[string]binInfo{}
+	for _, c := range candidates {
+		rp, err := filepath.EvalSymlinks(c)
+		if err != nil {
+			continue
+		}
+		if _, ok := seen[rp]; ok {
+			continue
+		}
+		fi, err := os.Stat(rp)
+		if err != nil || fi.IsDir() {
+			continue
+		}
+		seen[rp] = binInfo{path: rp, size: fi.Size(), mod: fi.ModTime()}
+	}
+
+	if len(seen) <= 1 {
+		return Check{Name: "Binary install", Severity: SeverityOK, Detail: "single agentcookie binary on this machine"}
+	}
+
+	infos := make([]binInfo, 0, len(seen))
+	for _, v := range seen {
+		infos = append(infos, v)
+	}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].path < infos[j].path })
+	differ := false
+	for i := 1; i < len(infos); i++ {
+		if infos[i].size != infos[0].size || !infos[i].mod.Equal(infos[0].mod) {
+			differ = true
+			break
+		}
+	}
+	paths := make([]string, 0, len(infos))
+	for _, in := range infos {
+		paths = append(paths, in.path)
+	}
+	if !differ {
+		return Check{Name: "Binary install", Severity: SeverityOK, Detail: fmt.Sprintf("%d identical agentcookie binaries (%s)", len(infos), strings.Join(paths, ", "))}
+	}
+	return Check{
+		Name:        "Binary install",
+		Severity:    SeverityWarn,
+		Detail:      fmt.Sprintf("%d agentcookie binaries differ; the one on PATH may not be the one your daemon runs: %s", len(infos), strings.Join(paths, ", ")),
+		Remediation: "reinstall so every location is the same build, or delete the stale copy, so status/doctor reflect the running daemon",
 	}
 }
 
@@ -744,7 +825,7 @@ func checkCDPInjector(sinkCfg *config.SinkConfig) Check {
 			return Check{
 				Name:     "CDP injector",
 				Severity: SeverityOK,
-				Detail:   "profile_dir=" + profileDir + ", Chrome=" + p,
+				Detail:   "profile_dir=" + profileDir + " is the synced/logged-in profile (your default Chrome profile is intentionally not written), Chrome=" + p,
 			}
 		}
 	}

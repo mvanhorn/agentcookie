@@ -400,20 +400,24 @@ peer:
 	writeKey(t, dir, "mac-mini", 0o600)
 
 	report := buildReport(doctorDeps{
-		ConfigDir:        dir,
-		BinarySignature:  func() (string, error) { return "designated => anchor apple generic and certificate leaf[subject.OU] = \"NM8VT393AR\"", nil },
-		TailscaleIP:      func() (string, error) { return "100.80.229.80", nil },
-		LoadSourceState:  func() (*state.SourceState, error) { return &state.SourceState{LastPush: time.Now().Add(-30 * time.Second)}, nil },
-		LoadSinkState:    func() (*state.SinkState, error) { return nil, nil },
-		MasterKeyExists:  func() bool { return false },
+		ConfigDir: dir,
+		BinarySignature: func() (string, error) {
+			return "designated => anchor apple generic and certificate leaf[subject.OU] = \"NM8VT393AR\"", nil
+		},
+		TailscaleIP: func() (string, error) { return "100.80.229.80", nil },
+		LoadSourceState: func() (*state.SourceState, error) {
+			return &state.SourceState{LastPush: time.Now().Add(-30 * time.Second)}, nil
+		},
+		LoadSinkState:   func() (*state.SinkState, error) { return nil, nil },
+		MasterKeyExists: func() bool { return false },
 	})
 
 	// v0.12.0-beta.3 added two checks: Adapter coverage + CDP injector.
 	// v0.13 added the Secrets bus check. DBSC resilience added the DBSC
 	// check (source role only; present here since this fixture is source).
-	// The consumption bridge added the Secret coverage check.
-	if got := len(report.Checks); got != 13 {
-		t.Fatalf("got %d checks, want 13", got)
+	// The consumption bridge added the Secret coverage + Binary install checks.
+	if got := len(report.Checks); got != 14 {
+		t.Fatalf("got %d checks, want 14", got)
 	}
 
 	// Serialize the envelope and confirm it round-trips.
@@ -447,12 +451,12 @@ func TestRunDoctorExitCodes(t *testing.T) {
 	dir := t.TempDir()
 	// All-fail-ish: no config at all.
 	report := buildReport(doctorDeps{
-		ConfigDir:        dir,
-		BinarySignature:  func() (string, error) { return "", errors.New("missing") },
-		TailscaleIP:      func() (string, error) { return "", errors.New("daemon down") },
-		LoadSourceState:  func() (*state.SourceState, error) { return nil, nil },
-		LoadSinkState:    func() (*state.SinkState, error) { return nil, nil },
-		MasterKeyExists:  func() bool { return false },
+		ConfigDir:       dir,
+		BinarySignature: func() (string, error) { return "", errors.New("missing") },
+		TailscaleIP:     func() (string, error) { return "", errors.New("daemon down") },
+		LoadSourceState: func() (*state.SourceState, error) { return nil, nil },
+		LoadSinkState:   func() (*state.SinkState, error) { return nil, nil },
+		MasterKeyExists: func() bool { return false },
 	})
 	if report.ExitCode == 0 {
 		t.Fatalf("expected non-zero exit code when checks FAIL; got 0")
