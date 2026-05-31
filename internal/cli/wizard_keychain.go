@@ -21,6 +21,7 @@ var (
 	setKeychainExtraBinary []string
 	innerRunnerMode        bool
 	setKeychainEnableSeal  bool
+	setKeychainAnyApp      bool
 )
 
 var setKeychainAccessCmd = &cobra.Command{
@@ -57,6 +58,13 @@ func init() {
 	// reads. Will become default-on once U12 lands in cli-printing-press.
 	setKeychainAccessCmd.Flags().BoolVar(&setKeychainEnableSeal, "enable-sealing", false, "create the agentcookie-master Keychain item and turn on at-rest sealing of the sidecar SQLite and adapter session files")
 	_ = setKeychainAccessCmd.Flags().MarkHidden("enable-sealing")
+	// --any-app: opt-in v0.10-style universal open. Recreates the Chrome
+	// Safe Storage item with -A (any application) so ANY unmodified cookie
+	// tool reads it with no per-binary trust list. Unlike the v0.10 code,
+	// this preserves the existing Safe Storage value (read-then-reuse) so
+	// existing Chrome cookies stay decryptable. SECURITY: any local process
+	// can then read Chrome cookies; only appropriate on a dedicated sink.
+	setKeychainAccessCmd.Flags().BoolVar(&setKeychainAnyApp, "any-app", false, "recreate Chrome Safe Storage with -A (any application) so any unmodified cookie tool reads it; preserves the existing key value; SECURITY: any local process can then read Chrome cookies")
 	wizardCmd.AddCommand(setKeychainAccessCmd)
 }
 
@@ -102,6 +110,9 @@ func runOuterWizard(cmd *cobra.Command) error {
 	if setKeychainEnableSeal {
 		argv = append(argv, "--enable-sealing")
 	}
+	if setKeychainAnyApp {
+		argv = append(argv, "--any-app")
+	}
 
 	fmt.Fprintln(os.Stderr, "agentcookie wizard: running keychain strategies via a one-shot LaunchAgent (no prompts expected; if a Mac mini desktop prompt appears, click Always Allow and re-run)")
 
@@ -139,7 +150,7 @@ func runOuterWizard(cmd *cobra.Command) error {
 // the login keychain is unlocked. Iterates strategies, probes after
 // each, emits structured JSON on stdout for the outer wizard to parse.
 func runInnerStrategyLoop(cmd *cobra.Command) error {
-	strategies := buildStrategies(setKeychainExtraBinary, setKeychainEnableSeal)
+	strategies := buildStrategies(setKeychainExtraBinary, setKeychainEnableSeal, setKeychainAnyApp)
 
 	var result runResult
 	for _, s := range strategies {
@@ -166,7 +177,7 @@ type kcStrategy struct {
 	apply func() (detail string, err error)
 }
 
-func buildStrategies(extraBinaries []string, enableSealing bool) []kcStrategy {
+func buildStrategies(extraBinaries []string, enableSealing bool, anyApp bool) []kcStrategy {
 	// Trust list: the running agentcookie binary plus every adapter
 	// binary in extraBinaries. Master key + Chrome Safe Storage ACLs
 	// both use this same list so any allowlisted process can read
@@ -181,7 +192,51 @@ func buildStrategies(extraBinaries []string, enableSealing bool) []kcStrategy {
 		trustArgs = append(trustArgs, "-T", ab)
 	}
 
-	out := []kcStrategy{
+	var out []kcStrategy
+
+	if anyApp {
+		// Opt-in v0.10-style universal open, corrected to preserve the
+		// existing Safe Storage value. This leads the chain when
+		// --any-app is set so that any unmodified cookie tool (yt-dlp,
+		// kooky, pycookiecheat, a random third-party CLI) reads Chrome
+		// Safe Storage with no per-binary trust list.
+		//
+		// CRITICAL correctness guard: we read the existing value FIRST.
+		// If that read fails, the caller is not yet in the item's ACL,
+		// and we MUST NOT delete the item: deleting then recreating with
+		// a different value permanently destroys all existing Chrome
+		// cookies (Chromium derives its AES key from this value via
+		// PBKDF2). On a read failure we refuse to delete and return the
+		// one-time GUI-grant instruction instead.
+		out = append(out, kcStrategy{
+			name: "delete-and-recreate-with-A",
+			apply: func() (string, error) {
+				existing, err := safeStoragePasswordFunc()
+				if err != nil {
+					// Refuse-to-delete guard: caller not yet trusted in
+					// the Chrome Safe Storage ACL. Do NOT delete anything.
+					return "", fmt.Errorf("cannot read existing Chrome Safe Storage value (%w); refusing to delete the item because recreating it with a different value would permanently destroy all existing Chrome cookies. Do the one-time \"Always Allow\" grant in Keychain Access (see docs/runbook-v0.10-keychain-access.md), then re-run", err)
+				}
+				// Value read OK. Safe to delete and recreate with -A and
+				// the SAME value (never a random one), so existing cookies
+				// stay decryptable.
+				_, _ = execSecurityFunc("delete-generic-password",
+					"-s", "Chrome Safe Storage", "-a", "Chrome")
+				args := []string{
+					"add-generic-password",
+					"-s", "Chrome Safe Storage", "-a", "Chrome",
+					"-w", existing,
+					"-A",
+				}
+				if detail, err := execSecurityFunc(args...); err != nil {
+					return detail, err
+				}
+				return "Chrome Safe Storage recreated with -A (any application) and the existing key value preserved. SECURITY WARNING: any local process can now read Chrome cookies; only appropriate on a dedicated agent sink.", nil
+			},
+		})
+	}
+
+	out = append(out, []kcStrategy{
 		{
 			// Primary v0.12 strategy: delete the existing Chrome Safe
 			// Storage item, recreate with a per-binary -T trust list
@@ -231,7 +286,7 @@ func buildStrategies(extraBinaries []string, enableSealing bool) []kcStrategy {
 					"-s", "Chrome Safe Storage", "-a", "Chrome")
 			},
 		},
-	}
+	}...)
 
 	for _, bin := range extraBinaries {
 		bin := bin
@@ -330,6 +385,13 @@ func execSecurity(args ...string) (string, error) {
 // observe whether the sealing-on path was taken without actually
 // writing to the macOS Keychain.
 var createMasterKeyFunc = keystore.CreateMasterKey
+
+// safeStoragePasswordFunc indirects chrome.SafeStoragePassword so tests
+// can inject a fake existing value (or a read failure) for the --any-app
+// delete-and-recreate-with-A strategy without touching the real Keychain.
+// The read-then-reuse guard depends on this seam to verify the recreate
+// uses the exact value read and that a read failure refuses to delete.
+var safeStoragePasswordFunc = chrome.SafeStoragePassword
 
 func lastJSONLine(s string) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")

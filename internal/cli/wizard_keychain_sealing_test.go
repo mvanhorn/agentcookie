@@ -29,7 +29,7 @@ func TestPrimaryStrategy_OffByDefault_DoesNotCreateMasterKey(t *testing.T) {
 		return nil
 	}
 
-	strategies := buildStrategies(nil, false)
+	strategies := buildStrategies(nil, false, false)
 	if len(strategies) < 1 {
 		t.Fatal("expected at least one strategy")
 	}
@@ -73,7 +73,7 @@ func TestPrimaryStrategy_WithSealingFlag_CreatesMasterKey(t *testing.T) {
 	}
 
 	extras := []string{"/Users/me/go/bin/instacart-pp-cli"}
-	strategies := buildStrategies(extras, true)
+	strategies := buildStrategies(extras, true, false)
 	if _, err := strategies[0].apply(); err != nil {
 		t.Fatalf("primary strategy apply: %v", err)
 	}
@@ -92,8 +92,8 @@ func TestPrimaryStrategy_WithSealingFlag_CreatesMasterKey(t *testing.T) {
 // chain length and ordering do not change when --enable-sealing is
 // toggled. Only the primary strategy's apply behavior differs.
 func TestBuildStrategies_ChainShapeUnchangedByFlag(t *testing.T) {
-	off := buildStrategies(nil, false)
-	on := buildStrategies(nil, true)
+	off := buildStrategies(nil, false, false)
+	on := buildStrategies(nil, true, false)
 	if len(off) != len(on) {
 		t.Errorf("strategy chain length differs by flag: off=%d on=%d", len(off), len(on))
 	}
