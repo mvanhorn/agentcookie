@@ -18,10 +18,11 @@ import (
 )
 
 var (
-	setKeychainExtraBinary []string
-	innerRunnerMode        bool
-	setKeychainEnableSeal  bool
-	setKeychainAnyApp      bool
+	setKeychainExtraBinary    []string
+	innerRunnerMode           bool
+	setKeychainEnableSeal     bool
+	setKeychainAnyApp         bool
+	setKeychainLegacyRecreate bool
 )
 
 var setKeychainAccessCmd = &cobra.Command{
@@ -65,6 +66,12 @@ func init() {
 	// existing Chrome cookies stay decryptable. SECURITY: any local process
 	// can then read Chrome cookies; only appropriate on a dedicated sink.
 	setKeychainAccessCmd.Flags().BoolVar(&setKeychainAnyApp, "any-app", false, "recreate Chrome Safe Storage with -A (any application) so any unmodified cookie tool reads it; preserves the existing key value; SECURITY: any local process can then read Chrome cookies")
+	// --recreate: opt into the legacy v0.12 LaunchAgent delete-and-recreate
+	// strategy chain. The v0.13 default is the inline one-password
+	// partition-list path (no LaunchAgent, no GUI prompt-storm). This flag
+	// is retained for the dedicated-sink / unsigned-CGO long tail where the
+	// partition path is insufficient.
+	setKeychainAccessCmd.Flags().BoolVar(&setKeychainLegacyRecreate, "recreate", false, "use the legacy LaunchAgent delete-and-recreate trust-list strategy instead of the default inline one-password partition-list path")
 	wizardCmd.AddCommand(setKeychainAccessCmd)
 }
 
@@ -90,7 +97,87 @@ func runSetKeychainAccess(cmd *cobra.Command, args []string) error {
 	if innerRunnerMode {
 		return runInnerStrategyLoop(cmd)
 	}
-	return runOuterWizard(cmd)
+	switch keychainStrategyMode(setKeychainAnyApp, setKeychainLegacyRecreate) {
+	case keychainModeRecreate:
+		return runOuterWizard(cmd)
+	default:
+		return runInlinePartitionAccess()
+	}
+}
+
+// keychain strategy routing modes.
+const (
+	keychainModeInline   = "inline"
+	keychainModeRecreate = "recreate"
+)
+
+// keychainStrategyMode resolves which onboarding strategy runs. The v0.13
+// default is the inline one-password partition path; --any-app and
+// --recreate both opt into the legacy LaunchAgent delete-and-recreate chain.
+// Pure function so the routing is unit-testable.
+func keychainStrategyMode(anyApp, legacyRecreate bool) string {
+	if anyApp || legacyRecreate {
+		return keychainModeRecreate
+	}
+	return keychainModeInline
+}
+
+// Seams for the inline partition path so the wizard logic is testable
+// without touching the real Keychain. Production wires them to the chrome
+// package; tests stub them.
+var (
+	resolveTeamFunc         = chrome.BinaryTeamID
+	setPartitionWithPwFunc  = chrome.SetSafeStoragePartitionListWithPassword
+	verifyPartitionReadFunc = verifyPartitionRead
+)
+
+// runInlinePartitionAccess is the v0.13 default keychain-access strategy. It
+// resolves the running binary's Developer ID team, prompts for the login
+// password once (or reads AGENTCOOKIE_LOGIN_PASSWORD), and sets the Chrome
+// Safe Storage partition list with that password via `security -k`. It
+// performs NO delete and NO LaunchAgent dispatch, so it runs cleanly over
+// SSH with a single password entry and no GUI SecurityAgent prompt, and
+// never touches the Safe Storage key value.
+func runInlinePartitionAccess() error {
+	self := agentcookieBinaryPath()
+	if self == "" {
+		return fmt.Errorf("cannot resolve the agentcookie binary path to determine its Developer ID team")
+	}
+	team, err := resolveTeamFunc(self)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agentcookie wizard: WARNING could not resolve Developer ID team (%v); the partition will cover security-CLI cookie tools only\n", err)
+	}
+	if team == "" {
+		fmt.Fprintln(os.Stderr, "agentcookie wizard: WARNING this agentcookie binary is not Developer-ID-signed; the partition covers security-CLI cookie tools (apple-tool) but not Dev-ID CGO readers. The sink daemon needs a signed binary to read via teamid.")
+	}
+
+	pw, err := acquireLoginPasswordFunc()
+	if err != nil {
+		return err
+	}
+
+	partitions := chrome.TeamPartitionList(team)
+	if err := setPartitionWithPwFunc(partitions, pw); err != nil {
+		return fmt.Errorf("set Chrome Safe Storage partition list: %w", err)
+	}
+
+	if verr := verifyPartitionReadFunc(); verr != nil {
+		fmt.Fprintf(os.Stderr, "agentcookie wizard: partition set (%s); a verification read from this session did not succeed (%v) -- this is expected over SSH where the login keychain re-locks; the daemon reads it in the GUI session.\n", partitions, verr)
+	} else {
+		fmt.Fprintf(os.Stderr, "agentcookie wizard: Chrome Safe Storage partition set and verified readable (%s); universal delivery enabled with no GUI prompt.\n", partitions)
+	}
+	return nil
+}
+
+// verifyPartitionRead confirms the Safe Storage item is readable via the
+// `security` CLI (now covered by the apple-tool partition). It deliberately
+// discards the read value (the secret) and only reports readability.
+func verifyPartitionRead() error {
+	if _, err := execSecurityFunc("find-generic-password",
+		"-s", "Chrome Safe Storage", "-a", "Chrome", "-w"); err != nil {
+		return err
+	}
+	return nil
 }
 
 // runOuterWizard is the user-facing path. It writes a one-shot LaunchAgent
