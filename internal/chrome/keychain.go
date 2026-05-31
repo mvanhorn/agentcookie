@@ -262,3 +262,52 @@ func redactPassword(s, password string) string {
 	}
 	return strings.ReplaceAll(s, password, "<redacted>")
 }
+
+// dumpKeychainRunner indirects `security dump-keychain` so CountSafeStorageItems
+// is testable without the real Keychain. dump-keychain lists item METADATA only
+// (service/account attributes, never the secret values), so it succeeds over
+// SSH without unlocking the login keychain — which is what lets doctor detect
+// the duplicate-item race from a locked SSH session.
+var dumpKeychainRunner = func() (string, error) {
+	out, err := exec.Command("/usr/bin/security", "dump-keychain").CombinedOutput()
+	return string(out), err
+}
+
+// safeStorageItemMarker is the dump-keychain line that appears exactly once per
+// Chrome Safe Storage generic-password item (the service attribute). Counting
+// these counts items.
+const safeStorageItemMarker = `"svce"<blob>="Chrome Safe Storage"`
+
+// CountSafeStorageItems returns how many Chrome Safe Storage keychain items
+// exist. Exactly one is healthy. More than one is the install-time
+// Chrome-relaunch race signature: the sink daemon's CDP injector relaunches
+// Chrome, Chrome recreates its own competing item, and now a partition set on
+// one item while a reader hits another diverge. Zero means Chrome has never
+// written its Safe Storage key on this box.
+func CountSafeStorageItems() (int, error) {
+	out, err := dumpKeychainRunner()
+	if out == "" && err != nil {
+		return 0, fmt.Errorf("dump keychain: %w", err)
+	}
+	n := 0
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, safeStorageItemMarker) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// IsKeychainLocked reports whether err is the macOS "User interaction is not
+// allowed" (-25308) failure. Over SSH that means the login keychain is locked,
+// NOT that the caller lacks ACL/partition access: the GUI-session daemon reads
+// the very same item fine, and a logged-in desktop Mac is unlocked. Callers use
+// this to avoid treating a locked-SSH read as "the grant failed" and to avoid
+// advising a destructive re-open when nothing is actually wrong with the grant.
+func IsKeychainLocked(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "25308") || strings.Contains(s, "interaction is not allowed")
+}

@@ -865,16 +865,26 @@ func checkCDPInjector(sinkCfg *config.SinkConfig) Check {
 // exported check wires the real KeybaseKeychainProbe; checkCookieDeliveryWith
 // is the testable core over an injected probe.
 func checkCookieDelivery(sinkCfg *config.SinkConfig) Check {
-	return checkCookieDeliveryWith(sinkCfg, func() (int, error) {
-		return chrome.KeybaseKeychainProbe(3 * time.Second)
-	})
+	return checkCookieDeliveryWith(sinkCfg,
+		func() (int, error) { return chrome.KeybaseKeychainProbe(3 * time.Second) },
+		chrome.CountSafeStorageItems,
+	)
 }
 
+// oneePasswordGrantRemediation is the canonical one-password grant instruction.
+// It is the SSH-safe inline partition path (one login-password entry on the
+// terminal, no GUI SecurityAgent click) — NOT the obsolete `--any-app` recreate,
+// which the live macOS 15.x verification (2026-05-31) proved unnecessary for the
+// signed daemon: the partition with teamid:<team> grants the daemon read and the
+// apple-tool: entry grants security-CLI tools (yt-dlp, gallery-dl).
+const onePasswordGrantRemediation = "grant access over SSH with one login-password entry: `agentcookie wizard set-keychain-access` (non-interactive: AGENTCOOKIE_LOGIN_PASSWORD=… agentcookie wizard set-keychain-access)"
+
 // checkCookieDeliveryWith is the testable core of checkCookieDelivery over an
-// injected keychain probe (so tests don't depend on the host Keychain). A
-// probe returning n>0 with no error means the Chrome Safe Storage key is
-// readable by any local process.
-func checkCookieDeliveryWith(sinkCfg *config.SinkConfig, probe func() (int, error)) Check {
+// injected keychain probe and item counter (so tests don't depend on the host
+// Keychain). A probe returning n>0 with no error means the Chrome Safe Storage
+// key is readable. countItems reports how many Chrome Safe Storage keychain
+// items exist; >1 is the install-time duplicate-item race.
+func checkCookieDeliveryWith(sinkCfg *config.SinkConfig, probe func() (int, error), countItems func() (int, error)) Check {
 	if sinkCfg == nil {
 		return Check{
 			Name:     "Cookie delivery",
@@ -894,12 +904,26 @@ func checkCookieDeliveryWith(sinkCfg *config.SinkConfig, probe func() (int, erro
 			Name:        "Cookie delivery",
 			Severity:    SeverityInfo,
 			Detail:      "degraded: writes a separate profile; only agentcookie-aware tools work",
-			Remediation: "run `agentcookie wizard set-keychain-access --any-app` and set delivery universal (skip_chrome_sqlite=false) for any unmodified cookie CLI to work here",
+			Remediation: "set delivery universal (skip_chrome_sqlite=false), then " + onePasswordGrantRemediation,
 		}
 	}
 
 	keyLen, err := probe()
 	keyReadable := err == nil && keyLen > 0
+
+	// Duplicate-item race takes priority over a clean OK/partial verdict: even
+	// when the key reads now, more than one Chrome Safe Storage item means a
+	// later reader can hit the ungranted duplicate. It is also detectable over
+	// a locked SSH session (dump-keychain reads metadata without unlocking), so
+	// it is the most actionable signal we can surface there.
+	if n, cerr := countItems(); cerr == nil && n > 1 {
+		return Check{
+			Name:        "Cookie delivery",
+			Severity:    SeverityWarn,
+			Detail:      fmt.Sprintf("race: %d Chrome Safe Storage keychain items exist; the install-time Chrome-relaunch race left duplicates, so a cookie reader may hit a different item than the one granted access", n),
+			Remediation: "converge to one item and re-grant: `agentcookie wizard set-keychain-access` (quiesces Chrome, collapses duplicates value-preserved, re-sets the partition)",
+		}
+	}
 
 	if keyReadable {
 		detail := "universal: real Default profile written and Chrome Safe Storage readable; any unmodified cookie CLI works here"
@@ -913,14 +937,28 @@ func checkCookieDeliveryWith(sinkCfg *config.SinkConfig, probe func() (int, erro
 		}
 	}
 
-	// Real profile is written but the key is not readable by other processes
-	// (universal intended, but the any-app keychain open never happened or
-	// failed). An unmodified CLI sees the cookies but can't decrypt them.
+	// Real profile written but the probe could not read the key. Distinguish a
+	// LOCKED login keychain (expected over SSH; the GUI-session daemon and a
+	// logged-in desktop read it fine) from a genuinely ungranted key. The
+	// locked case is a false negative, not a failure, so it is INFO with no
+	// destructive remediation.
+	if chrome.IsKeychainLocked(err) {
+		return Check{
+			Name:        "Cookie delivery",
+			Severity:    SeverityInfo,
+			Detail:      "universal config; the Chrome Safe Storage key can't be verified from this session because the login keychain is locked (expected over SSH). The sink daemon reads it in its unlocked GUI session, and a logged-in Mac is unlocked too",
+			Remediation: "if an unmodified cookie CLI on this box can't decrypt, unlock first (`security unlock-keychain`) or run it from the GUI session; the grant itself is one-password via `agentcookie wizard set-keychain-access`",
+		}
+	}
+
+	// Genuinely not readable (not locked, single item): the one-password grant
+	// has not run on this box. An unmodified CLI sees the cookies but can't
+	// decrypt them.
 	return Check{
 		Name:        "Cookie delivery",
 		Severity:    SeverityWarn,
-		Detail:      "partial: real Default profile written but Chrome Safe Storage key is not readable by other apps; unmodified cookie CLIs can't decrypt synced cookies",
-		Remediation: "run `agentcookie wizard set-keychain-access --any-app` to open the Chrome Safe Storage key to any local process",
+		Detail:      "partial: real Default profile written but the Chrome Safe Storage key has not been granted to cookie readers; unmodified cookie CLIs can't decrypt synced cookies",
+		Remediation: onePasswordGrantRemediation,
 	}
 }
 

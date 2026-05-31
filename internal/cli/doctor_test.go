@@ -360,22 +360,29 @@ func TestCheckCDPInjector(t *testing.T) {
 }
 
 // TestCheckCookieDelivery covers the universal-cookie-delivery check's
-// three branches plus the source-only skip, using an injected keychain
-// probe so the test never touches the host Keychain.
+// branches (U4): source-only skip, universal OK, degraded INFO, genuinely-
+// ungranted partial WARN, locked-SSH false-negative INFO, and the
+// duplicate-item race WARN. Uses injected probe + item counter so the test
+// never touches the host Keychain.
 func TestCheckCookieDelivery(t *testing.T) {
 	okProbe := func() (int, error) { return 24, nil }
-	closedProbe := func() (int, error) { return 0, errors.New("not readable by this process") }
+	ungrantedProbe := func() (int, error) { return 0, errors.New("not readable by this process") }
+	lockedProbe := func() (int, error) {
+		return 0, errors.New("keybase keychain GetGenericPassword: User interaction is not allowed. (-25308)")
+	}
+	oneItem := func() (int, error) { return 1, nil }
+	twoItems := func() (int, error) { return 2, nil }
 
 	t.Run("source-only skipped", func(t *testing.T) {
-		c := checkCookieDeliveryWith(nil, okProbe)
+		c := checkCookieDeliveryWith(nil, okProbe, oneItem)
 		if c.Severity != SeveritySkipped {
 			t.Fatalf("got %q, want SKIPPED", c.Severity)
 		}
 	})
 
-	t.Run("universal OK when profile written and key readable", func(t *testing.T) {
+	t.Run("universal OK when profile written, key readable, one item", func(t *testing.T) {
 		cfg := &config.SinkConfig{SkipChromeSQLite: false, Delivery: "universal"}
-		c := checkCookieDeliveryWith(cfg, okProbe)
+		c := checkCookieDeliveryWith(cfg, okProbe, oneItem)
 		if c.Severity != SeverityOK {
 			t.Fatalf("got %q (%q), want OK", c.Severity, c.Detail)
 		}
@@ -386,7 +393,7 @@ func TestCheckCookieDelivery(t *testing.T) {
 
 	t.Run("universal OK without delivery marker still reads probe as truth", func(t *testing.T) {
 		cfg := &config.SinkConfig{SkipChromeSQLite: false} // Delivery unset
-		c := checkCookieDeliveryWith(cfg, okProbe)
+		c := checkCookieDeliveryWith(cfg, okProbe, oneItem)
 		if c.Severity != SeverityOK {
 			t.Fatalf("got %q (%q), want OK", c.Severity, c.Detail)
 		}
@@ -395,33 +402,63 @@ func TestCheckCookieDelivery(t *testing.T) {
 		}
 	})
 
-	t.Run("degraded is INFO not a failure", func(t *testing.T) {
+	t.Run("degraded is INFO and names the one-password grant, not --any-app", func(t *testing.T) {
 		cfg := &config.SinkConfig{SkipChromeSQLite: true, Delivery: "degraded"}
-		// Probe should not even be consulted on the degraded branch, but
-		// pass a readable one to prove config drives this path.
-		c := checkCookieDeliveryWith(cfg, okProbe)
+		c := checkCookieDeliveryWith(cfg, okProbe, oneItem)
 		if c.Severity != SeverityInfo {
 			t.Fatalf("got %q (%q), want INFO", c.Severity, c.Detail)
 		}
 		if !strings.Contains(c.Detail, "degraded") {
 			t.Errorf("detail should mention degraded: %q", c.Detail)
 		}
-		if !strings.Contains(c.Remediation, "set-keychain-access --any-app") {
-			t.Errorf("remediation missing --any-app step: %q", c.Remediation)
+		if !strings.Contains(c.Remediation, "set-keychain-access") {
+			t.Errorf("remediation missing set-keychain-access: %q", c.Remediation)
+		}
+		if strings.Contains(c.Remediation, "--any-app") {
+			t.Errorf("remediation must not advise the obsolete --any-app: %q", c.Remediation)
 		}
 	})
 
-	t.Run("partial warns and names the --any-app step", func(t *testing.T) {
+	t.Run("genuinely ungranted (not locked, one item) warns partial with one-password fix", func(t *testing.T) {
 		cfg := &config.SinkConfig{SkipChromeSQLite: false, Delivery: "universal"}
-		c := checkCookieDeliveryWith(cfg, closedProbe)
+		c := checkCookieDeliveryWith(cfg, ungrantedProbe, oneItem)
 		if c.Severity != SeverityWarn {
 			t.Fatalf("got %q (%q), want WARN", c.Severity, c.Detail)
 		}
 		if !strings.Contains(c.Detail, "partial") {
 			t.Errorf("detail should mention partial: %q", c.Detail)
 		}
-		if !strings.Contains(c.Remediation, "set-keychain-access --any-app") {
-			t.Errorf("remediation missing --any-app step: %q", c.Remediation)
+		if !strings.Contains(c.Remediation, "set-keychain-access") || strings.Contains(c.Remediation, "--any-app") {
+			t.Errorf("remediation should be the one-password grant, not --any-app: %q", c.Remediation)
+		}
+	})
+
+	t.Run("locked SSH keychain is an INFO false-negative, no destructive fix", func(t *testing.T) {
+		cfg := &config.SinkConfig{SkipChromeSQLite: false, Delivery: "universal"}
+		c := checkCookieDeliveryWith(cfg, lockedProbe, oneItem)
+		if c.Severity != SeverityInfo {
+			t.Fatalf("got %q (%q), want INFO (locked-SSH is not a failure)", c.Severity, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "locked") {
+			t.Errorf("detail should explain the locked keychain: %q", c.Detail)
+		}
+		if strings.Contains(c.Remediation, "--any-app") {
+			t.Errorf("locked-SSH must not advise --any-app: %q", c.Remediation)
+		}
+	})
+
+	t.Run("duplicate-item race warns regardless of probe", func(t *testing.T) {
+		cfg := &config.SinkConfig{SkipChromeSQLite: false, Delivery: "universal"}
+		// Even with a readable probe, >1 item is the race signature and wins.
+		c := checkCookieDeliveryWith(cfg, okProbe, twoItems)
+		if c.Severity != SeverityWarn {
+			t.Fatalf("got %q (%q), want WARN", c.Severity, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "race") || !strings.Contains(c.Detail, "2") {
+			t.Errorf("detail should name the race and item count: %q", c.Detail)
+		}
+		if !strings.Contains(c.Remediation, "converge") {
+			t.Errorf("remediation should mention converge: %q", c.Remediation)
 		}
 	})
 }
