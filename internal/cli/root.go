@@ -46,7 +46,7 @@ func Execute() {
 	rootCmd.PersistentFlags().StringVar(&common.ConfigDir, "config-dir", defaultConfigDir(), "directory holding source.yaml, sink.yaml, allowlist.yaml")
 	rootCmd.PersistentFlags().BoolVar(&common.JSON, "json", false, "emit machine-readable JSON output where the subcommand supports it")
 
-	rootCmd.AddCommand(sourceCmd, sinkCmd, pairCmd, statusCmd, versionCmd, wizardCmd, doctorCmd, secretCmd, discoverCmd)
+	rootCmd.AddCommand(sourceCmd, sinkCmd, pairCmd, statusCmd, versionCmd, wizardCmd, doctorCmd, secretCmd, discoverCmd, cookiesCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		// Cobra already prints usage on flag errors; surface RunE errors here.
