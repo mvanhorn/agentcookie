@@ -266,3 +266,129 @@ func TestRandomKeychainPassword_NonEmptyAndUnique(t *testing.T) {
 		t.Errorf("password unexpectedly short (%d chars): %q", len(a), a)
 	}
 }
+
+// --- U2: inline one-password partition strategy ---
+
+func TestKeychainStrategyMode_Routing(t *testing.T) {
+	if got := keychainStrategyMode(false, false); got != keychainModeInline {
+		t.Errorf("default should route inline, got %q", got)
+	}
+	if got := keychainStrategyMode(true, false); got != keychainModeRecreate {
+		t.Errorf("--any-app should route recreate, got %q", got)
+	}
+	if got := keychainStrategyMode(false, true); got != keychainModeRecreate {
+		t.Errorf("--recreate should route recreate, got %q", got)
+	}
+}
+
+func TestRunInlinePartitionAccess_SetsTeamPartitionNoDelete(t *testing.T) {
+	origTeam, origSet, origVerify, origPw, origSec := resolveTeamFunc, setPartitionWithPwFunc, verifyPartitionReadFunc, acquireLoginPasswordFunc, execSecurityFunc
+	defer func() {
+		resolveTeamFunc, setPartitionWithPwFunc, verifyPartitionReadFunc, acquireLoginPasswordFunc, execSecurityFunc = origTeam, origSet, origVerify, origPw, origSec
+	}()
+
+	resolveTeamFunc = func(string) (string, error) { return "NM8VT393AR", nil }
+	acquireLoginPasswordFunc = func() (string, error) { return "pw", nil }
+	verifyPartitionReadFunc = func() error { return nil }
+
+	var gotPartitions, gotPw string
+	setPartitionWithPwFunc = func(partitions, pw string) error {
+		gotPartitions, gotPw = partitions, pw
+		return nil
+	}
+	// Guard: the inline path must NEVER shell out a delete-generic-password.
+	var sawDelete bool
+	execSecurityFunc = func(args ...string) (string, error) {
+		if len(args) > 0 && strings.Contains(args[0], "delete") {
+			sawDelete = true
+		}
+		return "", nil
+	}
+
+	if err := runInlinePartitionAccess(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPartitions != "apple-tool:,apple:,teamid:NM8VT393AR" {
+		t.Errorf("partitions = %q, want team partition", gotPartitions)
+	}
+	if gotPw != "pw" {
+		t.Errorf("password not passed through, got %q", gotPw)
+	}
+	if sawDelete {
+		t.Error("inline path must not delete the Safe Storage item")
+	}
+}
+
+func TestRunInlinePartitionAccess_EmptyTeamFallsBackToDefaultPartition(t *testing.T) {
+	origTeam, origSet, origVerify, origPw := resolveTeamFunc, setPartitionWithPwFunc, verifyPartitionReadFunc, acquireLoginPasswordFunc
+	defer func() {
+		resolveTeamFunc, setPartitionWithPwFunc, verifyPartitionReadFunc, acquireLoginPasswordFunc = origTeam, origSet, origVerify, origPw
+	}()
+	resolveTeamFunc = func(string) (string, error) { return "", nil } // ad-hoc binary
+	acquireLoginPasswordFunc = func() (string, error) { return "pw", nil }
+	verifyPartitionReadFunc = func() error { return nil }
+	var gotPartitions string
+	setPartitionWithPwFunc = func(partitions, _ string) error { gotPartitions = partitions; return nil }
+
+	if err := runInlinePartitionAccess(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(gotPartitions, "teamid:") {
+		t.Errorf("empty team must not add teamid:, got %q", gotPartitions)
+	}
+	if gotPartitions != "apple-tool:,apple:" {
+		t.Errorf("partitions = %q, want default", gotPartitions)
+	}
+}
+
+func TestRunInlinePartitionAccess_NoPasswordReturnsActionableError(t *testing.T) {
+	origTeam, origPw := resolveTeamFunc, acquireLoginPasswordFunc
+	defer func() { resolveTeamFunc, acquireLoginPasswordFunc = origTeam, origPw }()
+	resolveTeamFunc = func(string) (string, error) { return "NM8VT393AR", nil }
+	acquireLoginPasswordFunc = func() (string, error) { return "", errNoInteractivePassword }
+
+	err := runInlinePartitionAccess()
+	if err == nil {
+		t.Fatal("expected an error when no password is available")
+	}
+	if !strings.Contains(err.Error(), loginPasswordEnv) {
+		t.Errorf("error should name the env override, got %v", err)
+	}
+}
+
+func TestRunInlinePartitionAccess_VerifyFailureIsNonFatal(t *testing.T) {
+	origTeam, origSet, origVerify, origPw := resolveTeamFunc, setPartitionWithPwFunc, verifyPartitionReadFunc, acquireLoginPasswordFunc
+	defer func() {
+		resolveTeamFunc, setPartitionWithPwFunc, verifyPartitionReadFunc, acquireLoginPasswordFunc = origTeam, origSet, origVerify, origPw
+	}()
+	resolveTeamFunc = func(string) (string, error) { return "NM8VT393AR", nil }
+	acquireLoginPasswordFunc = func() (string, error) { return "pw", nil }
+	setPartitionWithPwFunc = func(string, string) error { return nil }
+	// Verification read fails (e.g. SSH keychain re-locked) -- must NOT fail the step.
+	verifyPartitionReadFunc = func() error { return fmt.Errorf("interaction not allowed") }
+
+	if err := runInlinePartitionAccess(); err != nil {
+		t.Errorf("verify failure must be non-fatal once the partition set succeeded, got %v", err)
+	}
+}
+
+func TestAcquireLoginPassword_EnvOverride(t *testing.T) {
+	t.Setenv(loginPasswordEnv, "from-env")
+	got, err := acquireLoginPassword()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "from-env" {
+		t.Errorf("got %q, want from-env", got)
+	}
+}
+
+func TestAcquireLoginPassword_NonInteractiveNoEnv(t *testing.T) {
+	t.Setenv(loginPasswordEnv, "")
+	orig := stdinIsTerminal
+	defer func() { stdinIsTerminal = orig }()
+	stdinIsTerminal = func() bool { return false }
+	if _, err := acquireLoginPassword(); err == nil {
+		t.Error("expected errNoInteractivePassword when no TTY and no env")
+	}
+}

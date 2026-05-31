@@ -6,7 +6,7 @@ import (
 )
 
 func TestBuildPartitionListArgv_DefaultsToDefaultPartitionList(t *testing.T) {
-	got := buildPartitionListArgv("")
+	got := buildPartitionListArgv("", "")
 	want := []string{
 		"set-generic-password-partition-list",
 		"-S", DefaultPartitionList,
@@ -20,7 +20,7 @@ func TestBuildPartitionListArgv_DefaultsToDefaultPartitionList(t *testing.T) {
 
 func TestBuildPartitionListArgv_CustomPartitionsPassthrough(t *testing.T) {
 	custom := "apple-tool:,apple:,teamid:ABC1234"
-	got := buildPartitionListArgv(custom)
+	got := buildPartitionListArgv(custom, "")
 	if got[2] != custom {
 		t.Errorf("partition list arg: got %q, want %q", got[2], custom)
 	}
@@ -36,7 +36,7 @@ func TestBuildPartitionListArgv_CustomPartitionsPassthrough(t *testing.T) {
 func TestBuildPartitionListArgv_SubcommandIsFirst(t *testing.T) {
 	// The `security` CLI dispatches on argv[0]. Mis-ordering here would
 	// silently hit the wrong subcommand.
-	got := buildPartitionListArgv("")
+	got := buildPartitionListArgv("", "")
 	if got[0] != "set-generic-password-partition-list" {
 		t.Errorf("subcommand arg[0]: got %q, want set-generic-password-partition-list", got[0])
 	}

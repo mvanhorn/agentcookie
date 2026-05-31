@@ -1,5 +1,12 @@
 # v0.12 security hardening runbook
 
+> **Superseded for keychain onboarding (v0.13):** the keychain-access steps
+> in this runbook (the LaunchAgent delete-and-recreate `-A`/`-T` strategies)
+> are no longer the default. The sink now grants Chrome Safe Storage access
+> via a single SSH-friendly, no-GUI-prompt partition command — see
+> `docs/runbook-v0.13-one-password-keychain.md`. The rest of this runbook
+> (signing, threat model, non-keychain hardening) still applies.
+
 This runbook covers the install, verify, and recover paths for the v0.12 security work. Read alongside `docs/threat-model.md` (what v0.12 protects against) and `docs/runbook-v0.12-codesign.md` (how the Developer ID signing pipeline works).
 
 ## What changed from v0.11
