@@ -25,7 +25,7 @@ $ ssh second-mac 'table-reservation-goat-pp-cli goat "omakase" --location seattl
 
 No `auth login`. No Keychain prompt. No paste-the-cookie ritual. No re-entering API keys you already configured on your laptop. The agent's sessions were already there when the request hit.
 
-The same is true for browser-driving agents. Point them at the agentcookie-managed Chrome profile on the second Mac and your agent sees the same logged-in state you have on your laptop. Or skip Chrome entirely: read the plaintext cookies sidecar at `~/.agentcookie/cookies-plain.db` from any agent that knows cookies, and the per-CLI secrets the same agent persisted under `~/.agentcookie/secrets/<cli>/secrets.env`.
+The same is true for browser-driving agents and for any unmodified cookie tool. On a universal sink (the default), agentcookie writes your real Default Chrome profile and opens its Safe Storage key with a single login-password entry at install, so a tool that has never heard of agentcookie, yt-dlp, gallery-dl, a Polymarket CLI, a browser-driving agent, reads your synced, logged-in session with no per-tool setup. Prefer not to touch Chrome at all? Read the plaintext cookies sidecar at `~/.agentcookie/cookies-plain.db`, and the per-CLI secrets under `~/.agentcookie/secrets/<cli>/secrets.env`.
 
 ## What this fixes
 
@@ -77,7 +77,7 @@ agentcookie source --watch  (decrypt Chrome with Keychain key,
                                                   optional sealed twin under the v0.12 master key)
 ```
 
-Three cookie surfaces because different agents read cookies differently. A browser-driving agent uses surface 1 (or its own profile pointed at the sidecar). A CLI with a built-in adapter uses surface 3. A raw cookies consumer uses surface 2. The sink runs all three after every sync, so the agent picks what fits.
+Three cookie surfaces because different agents read cookies differently. Universal delivery (surface 1, the real Default profile plus the one-password Safe Storage open) is the default and is what makes any unmodified cookie tool work; the sidecar (surface 2) and per-CLI adapters (surface 3) are the agentcookie-aware paths that also work in degraded mode, when no login password is available to open the key. The sink runs all three after every sync, so the agent picks what fits.
 
 Bearer tokens, API keys, and other per-CLI auth blobs ride the same encrypted push and land at `~/.agentcookie/secrets/<cli>/secrets.env` on the sink. CLIs read them via environment variables, the in-process `pkg/agentcookiesecret` Go library, or a project's own `agentcookie.toml` manifest (see the adoption standard below).
 
@@ -99,7 +99,7 @@ agentcookie wizard install --as sink --peer <first-mac-hostname> \
   --code <pairing-code> --pair-url http://<first-mac-hostname>:9998/pair
 ```
 
-The sink wizard installs a LaunchAgent, configures Chrome Safe Storage access (or skips it cleanly on a headless install where there's no GUI session to click prompts), and registers the five built-in adapters that fire after every sync. After install, all sync work runs unattended.
+The sink wizard installs a LaunchAgent, opens Chrome Safe Storage for universal delivery with one login-password entry over SSH (no GUI click), and registers the five built-in adapters that fire after every sync. If no password is available (a fully non-interactive install with no `AGENTCOOKIE_LOGIN_PASSWORD`), it lands in degraded mode (sidecar + adapters) and prints the one-line `agentcookie wizard set-keychain-access` upgrade command. After install, all sync work runs unattended.
 
 See [docs/quickstart.md](docs/quickstart.md) for the long-form walkthrough and [docs/quickstart-beta.md](docs/quickstart-beta.md) for the headless flow if you're installing the second Mac over SSH.
 
@@ -139,14 +139,15 @@ Working:
 - v2 adoption standard: drop an `agentcookie.toml` in your repo and `agentcookie discover` auto-detects it. Three integration tiers (explicit-manifest, pp-cli-derived auto-synthesized from `.printing-press.json`, and legacy v1 directories) coexist.
 - Tailnet-only listeners on both ends; pair endpoint rate-limited with a 64-bit code.
 - Persistent replay defense; per-peer pairing-derived keys.
-- Apple Developer ID signed binaries; per-binary `-T` Keychain ACL on Chrome Safe Storage.
-- Headless second-Mac install over SSH with no GUI clicks required.
-- `agentcookie doctor` runs 12 health categories: binary signature, Tailscale, config, keystore, listener bind, sink/source state, sealing posture, adapter coverage, CDP injector health, secrets bus coverage, and DBSC-suspect cookies.
-- 466+ unit tests across 26 packages.
+- Universal cookie delivery: one macOS login-password entry at install (no GUI click) opens the sink's Chrome Safe Storage key to any cookie reader via a partition list (`apple-tool:,apple:,teamid:<your-team>`), so unmodified cookie tools (yt-dlp, gallery-dl, browser-driving agents, the Printing Press CLIs) read the real synced Default Chrome profile. Verified live on macOS 15.x.
+- Apple Developer ID signed binaries; the sink daemon reads Chrome Safe Storage via the `teamid:` partition (no per-binary trust list, no recreate of the key value).
+- Headless second-Mac install over SSH: one login-password entry, no GUI SecurityAgent click. A box with no password available installs in degraded mode (sidecar + adapters still work) and prints the one-line upgrade command.
+- `agentcookie doctor` runs fifteen health categories including cookie delivery (universal vs degraded, with duplicate-keychain-item race detection), binary signature + install, Tailscale, config, keystore, listener bind, sink/source state, sealing posture, adapter coverage, CDP injector health, secrets-bus + secret coverage, and DBSC-suspect cookies.
+- 520+ unit tests across 26 packages.
 
 Not yet:
 
-- Python reader library at `clients/python/agentcookie_secret` (queued for v0.13.1; Go reader ships today).
+- Python reader library at `clients/python/agentcookie_secret` (planned; the Go reader ships today).
 - Signature verification on adoption manifests (`signed_by` field reserved; v2.1).
 - `[secrets.command]` and `[secrets.keychain]` source kinds (reserved; v2.1).
 - `agentcookie pair --rotate` for live key rotation. Today: re-run `wizard install` on both sides.
@@ -178,7 +179,8 @@ In short: DBSC narrows one corner of the web (today, mostly Google) and agentcoo
 | [Threat model](docs/threat-model.md) | what agentcookie does and does not protect against |
 | [FAQ](docs/faq.md) | common questions |
 | [Headless quickstart](docs/quickstart-beta.md) | SSH-only install on a headless second Mac |
-| [v0.10 keychain runbook](docs/runbook-v0.10-keychain-access.md) | sink's Keychain ACL setup |
+| [v0.13 one-password keychain runbook](docs/runbook-v0.13-one-password-keychain.md) | universal delivery: the one-password Safe Storage partition open, the duplicate-item race + converge, and the unsigned-CGO boundary |
+| [v0.10 keychain runbook](docs/runbook-v0.10-keychain-access.md) | legacy sink Keychain ACL setup (superseded by v0.13 for the grant path) |
 | [v0.11 adapter runbook](docs/runbook-v0.11-adapter-cookie-push.md) | adapter mechanism + how to write your own |
 | [v0.12 security runbook](docs/runbook-v0.12-security-hardening.md) | sealed master key, tailnet-only listeners, rate-limited pairing |
 | [v0.12 codesign runbook](docs/runbook-v0.12-codesign.md) | Developer ID signing, notarization, CI secrets, renewal |
