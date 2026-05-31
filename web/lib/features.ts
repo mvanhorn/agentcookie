@@ -14,8 +14,12 @@ export const FEATURES: Feature[] = [
     body: "fsnotify on Chrome's Cookies file, debounced, allowlist + blocklist filtered, AES-256-GCM over Tailscale.",
   },
   {
+    title: "universal cookie delivery",
+    body: "one login-password entry at install (no GUI click) opens Chrome Safe Storage to any cookie reader, so unmodified tools - yt-dlp, gallery-dl, browser-driving agents, the Printing Press CLIs - read the real synced Default Chrome profile. verified live on macOS 15.x.",
+  },
+  {
     title: "three cookie delivery surfaces",
-    body: "Chrome's SQLite re-encrypted for the sink keychain, plaintext sidecar at ~/.agentcookie/cookies-plain.db, or per-CLI adapter session files.",
+    body: "universal (the real Default profile + one-password keychain open) is the default; the plaintext sidecar at ~/.agentcookie/cookies-plain.db and per-CLI adapter session files are the agentcookie-aware paths that also work in degraded mode.",
   },
   {
     title: "works with Printing Press CLIs like",
@@ -39,14 +43,14 @@ export const FEATURES: Feature[] = [
   },
   {
     title: "Apple Developer ID signed",
-    body: "every release binary signed and timestamped. per-binary -T Keychain ACL on Chrome Safe Storage so no AllowAlways prompt fires after install.",
+    body: "every release binary signed and timestamped. the sink daemon reads Chrome Safe Storage via the teamid: partition - no per-binary trust list, no recreate of the key value, no AllowAlways prompt after install.",
   },
   {
     title: "headless install over SSH",
-    body: "no GUI clicks required. install-beta.sh runs end to end on a Mac mini you have never opened a window on.",
+    body: "one login-password entry, no GUI SecurityAgent click. a box with no password lands in degraded mode (sidecar + adapters) and prints the one-line upgrade command.",
   },
   {
-    title: "11-category doctor",
-    body: "binary signature, Tailscale, config, keystore, listener bind, sink/source state, sealing posture, adapter coverage, CDP injector health, and secrets bus coverage.",
+    title: "fifteen-category doctor",
+    body: "cookie delivery (universal vs degraded, with duplicate-keychain-item race detection), binary signature + install, Tailscale, config, keystore, listener bind, sink/source state, sealing posture, adapter coverage, CDP injector health, secrets-bus + secret coverage, and DBSC-suspect cookies.",
   },
 ];
