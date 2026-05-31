@@ -763,23 +763,23 @@ func resolveSinkHeadlessMode() (skipChromeSQLite, cdpEnabled bool, cdpProfileDir
 	return
 }
 
-// attemptUniversalKeychainOpen performs the v0.13 any-app Chrome Safe
-// Storage open (U1's delete-and-recreate-with-A strategy) that makes the
-// key readable by ANY application, so any unmodified cookie tool reads it
-// with no per-binary trust list. It returns an error if the open could not
-// complete (typically: agentcookie is not yet in the Chrome Safe Storage
-// ACL, so the any-app strategy refused to delete rather than risk
-// destroying existing cookies, or there is no GUI session to open the
-// key).
+// attemptUniversalKeychainOpen performs the v0.13 universal Chrome Safe
+// Storage open. As of the one-password onboarding change this is the inline
+// partition-list path: it prompts for the login password once (or reads
+// AGENTCOOKIE_LOGIN_PASSWORD), sets the partition list with that password
+// via `security -k`, and never deletes or rewrites the Safe Storage item.
+// It runs cleanly over SSH with no GUI SecurityAgent prompt.
+//
+// It returns an error when the open could not complete (typically: no login
+// password is available because the install is fully non-interactive with no
+// AGENTCOOKIE_LOGIN_PASSWORD set, or the `security` partition set failed). On
+// that error the caller downgrades to degraded non-fatally.
 //
 // It is a function variable so tests can inject success/failure without
-// spawning the real one-shot LaunchAgent (mirrors execSecurityFunc in
-// wizard_keychain.go). The production implementation sets the any-app
-// flags and runs the outer wizard.
+// touching the real Keychain (mirrors execSecurityFunc in
+// wizard_keychain.go).
 var attemptUniversalKeychainOpen = func() error {
-	setKeychainAnyApp = true
-	setKeychainExtraBinary = defaultKeychainTrustBinaries()
-	return runOuterWizard(setKeychainAccessCmd)
+	return runInlinePartitionAccess()
 }
 
 // resolveSinkDeliveryWithKeychain takes the flag-resolved delivery mode
@@ -826,29 +826,30 @@ func resolveSinkDeliveryWithKeychain(
 		return skipChromeSQLite, cdpEnabled, cdpProfileDir, delivery, false
 	}
 
-	// Universal default / forced-universal: attempt the any-app open. Its
-	// outcome determines the final delivery mode for the default case.
-	fmt.Fprintln(os.Stderr, "agentcookie wizard: running set-keychain-access strategy loop with --any-app (universal delivery: any cookie CLI reads Chrome Safe Storage with no per-binary work)")
+	// Universal default / forced-universal: attempt the inline one-password
+	// partition open. Its outcome determines the final delivery mode for the
+	// default case.
+	fmt.Fprintln(os.Stderr, "agentcookie wizard: opening Chrome Safe Storage via the one-password partition path (universal delivery: any cookie CLI reads it; you'll be asked for your macOS login password once, no GUI prompt)")
 	if err := attemptUniversalKeychainOpen(); err != nil {
 		if wizardWriteChromeSQLite {
 			// EXPLICIT --write-chrome-sqlite: honor the intent. Surface a
 			// clear warning but do NOT downgrade; the operator forced
 			// universal and we respect that even if the box cannot open
 			// the key right now.
-			fmt.Fprintf(os.Stderr, "agentcookie wizard: WARNING --write-chrome-sqlite forced universal but the any-app keychain open did not complete: %v\n", err)
-			fmt.Fprintln(os.Stderr, "agentcookie wizard:   honoring explicit --write-chrome-sqlite; the sink will write the real Default profile but may fail to read Chrome Safe Storage until you grant access once.")
-			fmt.Fprintln(os.Stderr, "agentcookie wizard:   grant Chrome Safe Storage \"Always Allow\" once in Keychain Access, then run: agentcookie wizard set-keychain-access --any-app")
+			fmt.Fprintf(os.Stderr, "agentcookie wizard: WARNING --write-chrome-sqlite forced universal but the keychain open did not complete: %v\n", err)
+			fmt.Fprintln(os.Stderr, "agentcookie wizard:   honoring explicit --write-chrome-sqlite; the sink will write the real Default profile but may fail to read Chrome Safe Storage until you open it once.")
+			fmt.Fprintln(os.Stderr, "agentcookie wizard:   open it over SSH with one password: agentcookie wizard set-keychain-access   (or non-interactively: AGENTCOOKIE_LOGIN_PASSWORD=… agentcookie wizard set-keychain-access)")
 			return skipChromeSQLite, cdpEnabled, cdpProfileDir, delivery, false
 		}
 		// DEFAULT (unspecified) case: DOWNGRADE to degraded, non-fatally.
-		// The any-app open could not complete (agentcookie not yet in the
-		// Chrome Safe Storage ACL, or no GUI session). Rendering universal
+		// The open could not complete (most often: fully non-interactive
+		// install with no AGENTCOOKIE_LOGIN_PASSWORD set). Rendering universal
 		// here would leave a sink daemon that cannot read the key and so
-		// cannot start. Fall back to the old headless degraded mode
-		// (skip=true + CDP) so the install completes with a working sink.
+		// cannot start. Fall back to degraded (skip=true + CDP) so the
+		// install completes with a working sink.
 		fmt.Fprintf(os.Stderr, "agentcookie wizard: WARNING universal keychain open did not complete: %v\n", err)
 		fmt.Fprintln(os.Stderr, "agentcookie wizard:   downgrading this install to degraded (sidecar+adapter delivery + CDP); the sink is installed and syncing.")
-		fmt.Fprintln(os.Stderr, "agentcookie wizard:   upgrade to universal: grant Chrome Safe Storage \"Always Allow\" once in Keychain Access, then run: agentcookie wizard set-keychain-access --any-app")
+		fmt.Fprintln(os.Stderr, "agentcookie wizard:   upgrade to universal over SSH with one password: agentcookie wizard set-keychain-access   (non-interactive: AGENTCOOKIE_LOGIN_PASSWORD=… agentcookie wizard set-keychain-access)")
 		degradedSkip := true
 		degradedCDP := false
 		degradedProfileDir := ""

@@ -99,6 +99,11 @@ func runSetKeychainAccess(cmd *cobra.Command, args []string) error {
 	}
 	switch keychainStrategyMode(setKeychainAnyApp, setKeychainLegacyRecreate) {
 	case keychainModeRecreate:
+		// The legacy recreate chain benefits from the default kooky-using
+		// CLI trust list when the operator did not name binaries explicitly.
+		if len(setKeychainExtraBinary) == 0 {
+			setKeychainExtraBinary = defaultKeychainTrustBinaries()
+		}
 		return runOuterWizard(cmd)
 	default:
 		return runInlinePartitionAccess()

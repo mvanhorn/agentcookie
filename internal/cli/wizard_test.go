@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,35 +109,34 @@ func TestRenderSinkYAML_DeliveryMarker(t *testing.T) {
 	})
 }
 
-// TestUniversalInstallPassesAnyApp documents that the universal default
-// branch in wizardInstallSink opts the keychain step into U1's --any-app
-// strategy, while the degraded opt-out keeps the per-binary -T behavior
-// (setKeychainAnyApp stays false). This mirrors the structural gating
-// test below; the actual loop runs out-of-process via runOuterWizard.
-func TestUniversalInstallPassesAnyApp(t *testing.T) {
+// TestUniversalInstallRunsInlineOpen documents the v0.13 one-password
+// change: the universal default branch runs the INLINE partition open
+// (runInlinePartitionAccess via the attemptUniversalKeychainOpen seam), not
+// the legacy --any-app LaunchAgent recreate. The degraded opt-out and an
+// explicit --skip-keychain-access still skip the open entirely.
+func TestUniversalInstallRunsInlineOpen(t *testing.T) {
 	cases := []struct {
 		name             string
 		skipChromeSQLite bool
 		skipKeychainAcc  bool
-		wantLoopRuns     bool
-		wantAnyApp       bool
+		wantOpenRuns     bool
 	}{
-		{"universal default opens any-app", false, false, true, true},
-		{"degraded opt-out keeps -T (no any-app)", true, false, false, false},
-		{"explicit --skip-keychain-access: no loop, no any-app", false, true, false, false},
+		{"universal default runs inline open", false, false, true},
+		{"degraded opt-out skips open", true, false, false},
+		{"explicit --skip-keychain-access skips open", false, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Model the same gating decision wizardInstallSink makes.
-			loopRuns := !tc.skipKeychainAcc && !tc.skipChromeSQLite
-			anyApp := loopRuns // the default (universal) branch sets setKeychainAnyApp=true
-			if loopRuns != tc.wantLoopRuns {
-				t.Errorf("loopRuns: got %v, want %v", loopRuns, tc.wantLoopRuns)
-			}
-			if anyApp != tc.wantAnyApp {
-				t.Errorf("anyApp: got %v, want %v", anyApp, tc.wantAnyApp)
+			// Model the same gating decision resolveSinkDeliveryWithKeychain makes.
+			openRuns := !tc.skipKeychainAcc && !tc.skipChromeSQLite
+			if openRuns != tc.wantOpenRuns {
+				t.Errorf("openRuns: got %v, want %v", openRuns, tc.wantOpenRuns)
 			}
 		})
+	}
+	// The universal default must NOT route through the legacy recreate chain.
+	if keychainStrategyMode(setKeychainAnyApp, setKeychainLegacyRecreate) != keychainModeInline {
+		t.Error("default keychain strategy should be inline, not recreate")
 	}
 }
 
@@ -299,7 +299,7 @@ func TestResolveSinkDeliveryWithKeychain(t *testing.T) {
 		skip, cdp, _, delivery := resolveSinkHeadlessMode()
 		skip, cdp, profileDir, delivery, opened := resolveSinkDeliveryWithKeychain(skip, cdp, "", delivery)
 		if !called {
-			t.Errorf("default install should attempt the any-app keychain open")
+			t.Errorf("default install should attempt the inline keychain open")
 		}
 		if !opened {
 			t.Errorf("successful open should report keychainOpened=true")
@@ -463,4 +463,59 @@ func TestGuardConfigPeerMismatch(t *testing.T) {
 	if err := guardConfigPeerMismatch("sink", missing, "any-name"); err != nil {
 		t.Errorf("missing file should not error, got: %v", err)
 	}
+}
+
+// TestDowngradeMessageIsActionableOnePasswordCommand asserts the v0.13
+// downgrade guidance points the operator at the one-password SSH command,
+// not the obsolete "Always Allow in Keychain Access" GUI step (wrong for a
+// headless sink). Captures os.Stderr around the resolver's failure branch.
+func TestDowngradeMessageIsActionableOnePasswordCommand(t *testing.T) {
+	saveOpen := attemptUniversalKeychainOpen
+	saveSkip, saveWrite, saveNoCDP := wizardSkipChromeSQLite, wizardWriteChromeSQLite, wizardNoCDP
+	saveAccess, savePrompt := wizardSkipKeychainAccess, wizardSkipKeychainPrompt
+	defer func() {
+		attemptUniversalKeychainOpen = saveOpen
+		wizardSkipChromeSQLite, wizardWriteChromeSQLite, wizardNoCDP = saveSkip, saveWrite, saveNoCDP
+		wizardSkipKeychainAccess, wizardSkipKeychainPrompt = saveAccess, savePrompt
+	}()
+	wizardSkipChromeSQLite, wizardWriteChromeSQLite, wizardNoCDP = false, false, false
+	wizardSkipKeychainAccess, wizardSkipKeychainPrompt = false, false
+	attemptUniversalKeychainOpen = func() error { return errInjectedKeychainOpen }
+
+	out := captureStderr(t, func() {
+		skip, cdp, _, delivery := resolveSinkHeadlessMode()
+		resolveSinkDeliveryWithKeychain(skip, cdp, "", delivery)
+	})
+
+	if !strings.Contains(out, "set-keychain-access") {
+		t.Errorf("downgrade message should name the one-password command, got:\n%s", out)
+	}
+	if !strings.Contains(out, loginPasswordEnv) {
+		t.Errorf("downgrade message should mention the env override, got:\n%s", out)
+	}
+	if strings.Contains(out, "Always Allow") || strings.Contains(out, "Keychain Access") {
+		t.Errorf("downgrade message must not point a headless sink at a GUI prompt, got:\n%s", out)
+	}
+}
+
+// captureStderr redirects os.Stderr for the duration of fn and returns what
+// was written. These wizard tests mutate package globals and are not run in
+// parallel, so swapping os.Stderr is safe here.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	done := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	fn()
+	_ = w.Close()
+	os.Stderr = orig
+	return <-done
 }
