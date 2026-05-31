@@ -108,6 +108,59 @@ unlocked, so its `teamid:` read succeeds once the partition is set. A direct
 is a session-lock artifact, not a partition failure; the daemon (GUI session)
 is the authoritative reader.
 
+## Verified live on macOS 15.3.1 (2026-05-31)
+
+End-to-end confirmation on the headless sink (moltbot-mini, Apple M-series,
+agentcookie binary Developer-ID-signed `NM8VT393AR`):
+
+- `agentcookie wizard set-keychain-access` reported **"Chrome Safe Storage
+  partition set and verified readable (apple-tool:,apple:,teamid:NM8VT393AR);
+  universal delivery enabled with no GUI prompt"** — one terminal password,
+  zero GUI clicks.
+- The sink daemon then read the key in its GUI session and wrote the real
+  Default Chrome profile with the full synced cookie set (8875 cookies).
+- A direct `security find-generic-password -s "Chrome Safe Storage" -a Chrome
+  -w` (after `security unlock-keychain`) returned the key — the `apple-tool:`
+  path that yt-dlp / gallery-dl / curl-impersonate use.
+
+This **retires the earlier hypothesis that the partition is unusable on
+macOS 15.x**. It is usable; the only thing that ever blocked universal
+delivery was the duplicate-item race below, not a macOS limitation. The
+`--any-app` Always-Allow click is **not** required on the signed-binary path.
+
+`pycookiecheat` reads via the Python `keyring` library (a direct
+`SecItemCopyMatching` from an unsigned homebrew python), not the `security`
+CLI, so it is the documented **unsigned-CGO** class that `apple-tool:` /
+`teamid:` do not cover. Its `-25308` over SSH is expected, not a bug — sign it
+with your team or use the `--any-app` fallback below.
+
+## Duplicate-item race (the real blocker, fixed)
+
+If a sink ran in degraded mode with CDP injection, the injector relaunches
+Chrome and Chrome recreates its **own** Chrome Safe Storage keychain item. The
+keychain then holds more than one item, the partition is set on one while a
+reader hits another, and the install's verification read fails — which is what
+left the live sink stuck at `delivery: degraded`.
+
+`agentcookie wizard set-keychain-access` now collapses duplicate items to one
+**before** setting the partition (value-preserved; it refuses to delete if it
+cannot first read the existing value, since a changed value would destroy all
+existing cookies). `agentcookie doctor` flags the race directly:
+
+```
+[WARN] Cookie delivery: race: N Chrome Safe Storage keychain items exist ...
+       Remediation: converge to one item and re-grant: agentcookie wizard set-keychain-access
+```
+
+To converge manually, quiesce first so nothing recreates a duplicate
+mid-operation, then re-grant:
+
+```
+launchctl bootout gui/$(id -u)/dev.agentcookie.sink   # stop the CDP injector
+pkill -x "Google Chrome"                              # stop the racer
+agentcookie wizard set-keychain-access                # converge + grant
+```
+
 ## Recover / narrow
 
 Nothing is deleted, so there is no destructive rollback. To narrow access
