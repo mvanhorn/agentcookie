@@ -519,3 +519,19 @@ func captureStderr(t *testing.T, fn func()) string {
 	os.Stderr = orig
 	return <-done
 }
+
+// TestSkipChromeSQLiteHelpNotStale guards the U5 fix: the --skip-chrome-sqlite
+// help must not claim the old "auto-set when no TTY" behavior, which v0.13's
+// universal-by-default resolution removed.
+func TestSkipChromeSQLiteHelpNotStale(t *testing.T) {
+	f := wizardInstallCmd.Flags().Lookup("skip-chrome-sqlite")
+	if f == nil {
+		t.Fatal("skip-chrome-sqlite flag not found")
+	}
+	if strings.Contains(strings.ToLower(f.Usage), "auto-set when no tty") {
+		t.Errorf("stale help text still present: %q", f.Usage)
+	}
+	if !strings.Contains(strings.ToLower(f.Usage), "degraded") {
+		t.Errorf("help should describe the degraded opt-out: %q", f.Usage)
+	}
+}
