@@ -161,6 +161,18 @@ func runInlinePartitionAccess() error {
 		return err
 	}
 
+	// Race fix (U2): before granting access, collapse any duplicate Chrome
+	// Safe Storage items down to one. Duplicates are the install-time
+	// Chrome-relaunch race signature -- a partition set on one item while a
+	// reader hits another. No-op on the healthy single-item path, so the
+	// proven happy path is unchanged; only a contaminated keychain triggers
+	// the value-preserved collapse, which refuses if the value can't be read.
+	if removed, cerr := convergeSafeStorageToOneItem(pw); cerr != nil {
+		return fmt.Errorf("converge duplicate Chrome Safe Storage items: %w", cerr)
+	} else if removed > 0 {
+		fmt.Fprintf(os.Stderr, "agentcookie wizard: collapsed %d duplicate Chrome Safe Storage item(s) to one (existing key value preserved) before granting access\n", removed)
+	}
+
 	partitions := chrome.TeamPartitionList(team)
 	if err := setPartitionWithPwFunc(partitions, pw); err != nil {
 		return fmt.Errorf("set Chrome Safe Storage partition list: %w", err)
@@ -172,6 +184,70 @@ func runInlinePartitionAccess() error {
 		fmt.Fprintf(os.Stderr, "agentcookie wizard: Chrome Safe Storage partition set and verified readable (%s); universal delivery enabled with no GUI prompt.\n", partitions)
 	}
 	return nil
+}
+
+// Seams for the converge step so its delete/re-add logic is unit-testable
+// without touching the real Keychain.
+var (
+	countSafeStorageItemsFunc = chrome.CountSafeStorageItems
+	unlockKeychainFunc        = func(pw string) error {
+		if pw == "" {
+			return nil // GUI session is already unlocked; nothing to do.
+		}
+		_, err := execSecurityFunc("unlock-keychain", "-p", pw)
+		return err
+	}
+)
+
+// convergeSafeStorageToOneItem collapses duplicate Chrome Safe Storage items
+// to exactly one, preserving the existing key value. Returns the number of
+// duplicate items removed (0 when already single or absent -- the common,
+// proven path, where this is a pure no-op).
+//
+// Duplicates are the install-time Chrome-relaunch race: the sink daemon's CDP
+// injector relaunches Chrome, Chrome recreates its own competing item, and now
+// a partition set on one item while a reader hits another diverge.
+//
+// COOKIE-SAFETY (KTD3/KTD4): it reads the existing value FIRST and refuses to
+// delete anything if the value cannot be read, because recreating the item
+// with a different value would permanently destroy all existing Chrome cookies
+// (Chromium derives its AES key from this value via PBKDF2). The surviving item
+// is recreated with the SAME value, never a random one. This mirrors the proven
+// read-then-reuse guard in the --any-app strategy above.
+func convergeSafeStorageToOneItem(loginPassword string) (removed int, err error) {
+	n, err := countSafeStorageItemsFunc()
+	if err != nil {
+		return 0, fmt.Errorf("count items: %w", err)
+	}
+	if n <= 1 {
+		return 0, nil // healthy (or no key yet) -- nothing to collapse.
+	}
+
+	// Reading the existing value over SSH needs an unlocked login keychain;
+	// unlock with the same password used for the partition set. In the GUI
+	// session (empty password) the keychain is already unlocked.
+	if uerr := unlockKeychainFunc(loginPassword); uerr != nil {
+		return 0, fmt.Errorf("unlock login keychain to read existing value: %w", uerr)
+	}
+	existing, rerr := safeStoragePasswordFunc()
+	if rerr != nil {
+		// Refuse-to-delete guard: never collapse when we cannot preserve the
+		// value, or we would wipe every existing cookie.
+		return 0, fmt.Errorf("cannot read existing Chrome Safe Storage value (%w); refusing to collapse %d duplicate item(s) because recreating with a different value would permanently destroy all existing Chrome cookies. Grant this binary read access once, then re-run", rerr, n)
+	}
+
+	// Delete every matching item, then re-add exactly one with the SAME value.
+	for i := 0; i < n; i++ {
+		if _, derr := execSecurityFunc("delete-generic-password",
+			"-s", "Chrome Safe Storage", "-a", "Chrome"); derr != nil {
+			break // nothing left to delete
+		}
+	}
+	if _, aerr := execSecurityFunc("add-generic-password",
+		"-s", "Chrome Safe Storage", "-a", "Chrome", "-w", existing); aerr != nil {
+		return 0, fmt.Errorf("re-add single Chrome Safe Storage item with preserved value: %w", aerr)
+	}
+	return n - 1, nil
 }
 
 // verifyPartitionRead confirms the Safe Storage item is readable via the
