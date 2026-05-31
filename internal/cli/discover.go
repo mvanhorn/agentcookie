@@ -47,6 +47,8 @@ type discoverJSONRow struct {
 	DisplayName     string `json:"display_name,omitempty"`
 	KeyCount        int    `json:"key_count"`
 	SyncSummary     string `json:"sync_summary,omitempty"`
+	Coverage        string `json:"coverage,omitempty"`
+	CoverageDetail  string `json:"coverage_detail,omitempty"`
 }
 
 type discoverJSONOutput struct {
@@ -89,7 +91,8 @@ func runDiscover(cmd *cobra.Command, _ []string) error {
 	}
 
 	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tTIER\tSOURCE\tREAD-IN-PLACE\tKEYS")
+	fmt.Fprintln(tw, "NAME\tTIER\tREAD-IN-PLACE\tKEYS\tCOVERAGE")
+	var mismatches []discoverJSONRow
 	for _, name := range sortedRegistryKeys(reg) {
 		rp := reg.Projects[name]
 		row := projectToRow(rp)
@@ -97,9 +100,22 @@ func runDiscover(cmd *cobra.Command, _ []string) error {
 		if readPath == "" {
 			readPath = "(legacy bus dir)"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\n", row.Name, row.Kind, row.SourcePath, readPath, row.KeyCount)
+		coverage := row.Coverage
+		if row.Coverage == "MISMATCH" {
+			coverage = "MISMATCH (" + row.CoverageDetail + ")"
+			mismatches = append(mismatches, row)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", row.Name, row.Kind, readPath, row.KeyCount, coverage)
 	}
 	_ = tw.Flush()
+
+	if len(mismatches) > 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "")
+		fmt.Fprintf(cmd.OutOrStdout(), "%d CLI(s) have synced secrets that do not match the auth env var they read:\n", len(mismatches))
+		for _, m := range mismatches {
+			fmt.Fprintf(cmd.OutOrStdout(), "  %s: %s\n", m.Name, m.CoverageDetail)
+		}
+	}
 
 	if discoverVerbose {
 		if len(reg.Skipped) > 0 {
@@ -136,6 +152,7 @@ func projectToRow(rp *secretsbus.RegisteredProject) discoverJSONRow {
 			row.SyncSummary = fmt.Sprintf("default=false, %d allowed", len(rp.Manifest.Sync.Keys))
 		}
 	}
+	row.Coverage, row.CoverageDetail = secretCoverage(rp.Name, declaredKeysOf(rp))
 	return row
 }
 

@@ -411,8 +411,9 @@ peer:
 	// v0.12.0-beta.3 added two checks: Adapter coverage + CDP injector.
 	// v0.13 added the Secrets bus check. DBSC resilience added the DBSC
 	// check (source role only; present here since this fixture is source).
-	if got := len(report.Checks); got != 12 {
-		t.Fatalf("got %d checks, want 12", got)
+	// The consumption bridge added the Secret coverage check.
+	if got := len(report.Checks); got != 13 {
+		t.Fatalf("got %d checks, want 13", got)
 	}
 
 	// Serialize the envelope and confirm it round-trips.

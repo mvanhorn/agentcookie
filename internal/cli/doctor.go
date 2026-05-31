@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
+	"github.com/mvanhorn/agentcookie/internal/secretsbus"
 	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 	"github.com/mvanhorn/agentcookie/internal/state"
 	"github.com/mvanhorn/agentcookie/internal/tsclient"
@@ -232,6 +234,11 @@ func buildReport(d doctorDeps) DoctorReport {
 	// writes via `agentcookie secret`, sink writes via U4's writer).
 	checks = append(checks, checkSecretsBus())
 
+	// 12. Secret coverage. Flags CLIs whose synced secret store does not
+	// provide the auth env var the CLI reads (e.g. store has OAUTH_BEARER
+	// but the CLI reads TESLA_AUTH_TOKEN). WARN, recoverable via alias.
+	checks = append(checks, checkSecretCoverage())
+
 	exit := 0
 	for _, c := range checks {
 		if c.Severity == SeverityFail {
@@ -244,6 +251,34 @@ func buildReport(d doctorDeps) DoctorReport {
 		Version:  Version,
 		ExitCode: exit,
 		Checks:   checks,
+	}
+}
+
+// checkSecretCoverage flags CLIs whose synced secret store does not provide
+// the auth env var the CLI reads (the Tesla case: store has OAUTH_BEARER but
+// the CLI reads TESLA_AUTH_TOKEN). WARN, not FAIL: it is a real but
+// recoverable misconfiguration the operator fixes with `secret alias`.
+func checkSecretCoverage() Check {
+	home, _ := os.UserHomeDir()
+	reg, _ := secretsbus.Discover(secretsbus.DiscoveryConfig{HomeDir: home})
+	if reg == nil || len(reg.Projects) == 0 {
+		return Check{Name: "Secret coverage", Severity: SeverityOK, Detail: "no secrets-bus CLIs registered"}
+	}
+	var mismatches []string
+	for name, rp := range reg.Projects {
+		if status, _ := secretCoverage(name, declaredKeysOf(rp)); status == "MISMATCH" {
+			mismatches = append(mismatches, name)
+		}
+	}
+	if len(mismatches) == 0 {
+		return Check{Name: "Secret coverage", Severity: SeverityOK, Detail: "synced secrets match the auth env var each CLI reads"}
+	}
+	sort.Strings(mismatches)
+	return Check{
+		Name:        "Secret coverage",
+		Severity:    SeverityWarn,
+		Detail:      fmt.Sprintf("%d CLI(s) have synced secrets under a name they do not read: %s", len(mismatches), strings.Join(mismatches, ", ")),
+		Remediation: "run `agentcookie discover` for the detail, then `agentcookie secret alias <cli> <declared-env-var> <synced-key>`",
 	}
 }
 
