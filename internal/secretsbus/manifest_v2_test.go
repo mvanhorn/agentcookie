@@ -391,8 +391,37 @@ exec = ["echo", "hi"]
 	if err == nil {
 		t.Fatal("expected error on multi-block")
 	}
-	if !strings.Contains(err.Error(), "exactly one") {
-		t.Errorf("error should mention 'exactly one': %v", err)
+	if !strings.Contains(err.Error(), "at most one") {
+		t.Errorf("error should reject multiple blocks: %v", err)
+	}
+}
+
+func TestParseManifestV2_FilesOnlyIsValid(t *testing.T) {
+	// A CLI whose secret source is a carried file (no env-shaped [secrets.*]).
+	body := `
+schema_version = 2
+name = "tesla-pp-cli"
+display_name = "Tesla"
+
+[[files]]
+source = "~/.config/tesla-pp-cli/config.toml"
+key = "TESLA_CONFIG_TOML"
+target = "tesla-pp-cli/config.toml"
+env = "TESLA_CONFIG"
+`
+	if _, _, err := parseManifestV2Bytes([]byte(body), "test.toml"); err != nil {
+		t.Fatalf("[[files]]-only manifest should be valid: %v", err)
+	}
+}
+
+func TestParseManifestV2_RejectsNoSource(t *testing.T) {
+	body := `
+schema_version = 2
+name = "demo"
+display_name = "Demo"
+`
+	if _, _, err := parseManifestV2Bytes([]byte(body), "test.toml"); err == nil {
+		t.Fatal("a manifest with no [secrets.*] and no [[files]] must be rejected")
 	}
 }
 

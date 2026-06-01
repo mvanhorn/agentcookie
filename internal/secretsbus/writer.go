@@ -95,6 +95,12 @@ func WritePayload(homeDir string, payload map[string]map[string]string, sealingE
 		for k := range consumed {
 			delete(safe, k)
 		}
+		// Point path-reading CLIs at the carried files: a [[files]] item with an
+		// `env` set emits <ENV>=<abs materialized path> into secrets.env so
+		// `secret env` surfaces it (e.g. TESLA_CONFIG, TESLA_FLEET_KEY_FILE).
+		for envName, absPath := range matRes.EnvAdditions {
+			safe[envName] = absPath
+		}
 
 		if len(safe) == 0 {
 			if matRes.FilesWritten > 0 {

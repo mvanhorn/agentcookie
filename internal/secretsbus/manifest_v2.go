@@ -80,6 +80,12 @@ type ManifestV2File struct {
 	// Optional marks the item as opt-in. When true, discovery does not carry
 	// it unless the user explicitly enables it. Default false (carried).
 	Optional bool `toml:"optional,omitempty"`
+	// Env, when set, names an environment variable that `secret env` emits on
+	// the sink carrying the ABSOLUTE materialized path of this file, so a
+	// consumer CLI that reads a file by path (e.g. a Tesla CLI reading
+	// TESLA_CONFIG / TESLA_FLEET_KEY_FILE) is pointed at the carried file with
+	// no per-machine path hardcoding. Must be a valid env-var name. Optional.
+	Env string `toml:"env,omitempty"`
 }
 
 // ManifestV2Secrets carries exactly one of File / Command / Keychain.
@@ -243,11 +249,11 @@ func validateManifestV2(m *ManifestV2, sourcePath string) error {
 	if m.Secrets.Keychain != nil {
 		srcCount++
 	}
-	if srcCount == 0 {
-		return errors.New("exactly one [secrets.*] block required; none found")
+	if srcCount == 0 && len(m.Files) == 0 {
+		return errors.New("a secret source is required: one [secrets.*] block or at least one [[files]] item")
 	}
 	if srcCount > 1 {
-		return fmt.Errorf("exactly one [secrets.*] block required; %d found", srcCount)
+		return fmt.Errorf("at most one [secrets.*] block allowed; %d found", srcCount)
 	}
 
 	if m.Secrets.Command != nil {
@@ -296,6 +302,9 @@ func validateManifestV2(m *ManifestV2, sourcePath string) error {
 		seenFileKeys[f.Key] = true
 		if err := validateMaterializeTarget(f.Target); err != nil {
 			return fmt.Errorf("[[files]] item %d (key %q): %w", i, f.Key, err)
+		}
+		if f.Env != "" && !validEnvKey(f.Env) {
+			return fmt.Errorf("[[files]] item %d (key %q): env %q is not a valid env var name", i, f.Key, f.Env)
 		}
 	}
 
