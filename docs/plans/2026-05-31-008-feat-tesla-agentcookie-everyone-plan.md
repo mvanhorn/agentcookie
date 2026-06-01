@@ -3,6 +3,7 @@ title: "feat: any agentcookie + tesla-pp-cli user gets a working Tesla on the si
 type: feat
 status: active
 date: 2026-05-31
+deepened: 2026-05-31
 repos: "agentcookie (private) + printing-press-library (public, library/devices/tesla)"
 plan_home: agentcookie/docs/plans
 supersedes: docs/plans/2026-05-31-007-feat-tesla-agentcookie-manifest-plan.md (which assumed a one-file manifest fix; live testing this session disproved that)
@@ -21,7 +22,38 @@ For any user who runs agentcookie and installs tesla-pp-cli from Printing Press,
 2. Stale bearer: the bus carries a one-time snapshot of the bearer that expired (observed 8 days stale). The source CLI refreshes its own token independently and agentcookie never re-syncs the refreshed value, so the sink gets a dead token and the Fleet API returns 401.
 3. Signed-command cars: a signed-command-required car (e.g. Snowflake) needs the EC signing key (`TESLA_FLEET_KEY_FILE`) and tesla-control on the sink. Plain REST returns 403 ("Vehicle Command Protocol required"). REST-only cars (e.g. Stella) work from the bearer alone.
 
-All three were proven live this session: setting the alias made `discover` report `ok`; the bus token's expiry was May 23; Stella unlocked over REST and Snowflake unlocked only via the signed Fleet path once pointed at the key. This plan makes all three automatic for every user, not just this machine: agentcookie auto-aliases the Tesla bearer, the sink self-refreshes so the token never goes stale, and discovery provisions the signing path for signed-command cars (opt-in). No tesla-pp-cli auth code change is required; the CLI already reads `TESLA_AUTH_TOKEN`, `TESLA_FLEET_KEY_FILE`, and can `auth refresh`.
+All three were proven live this session. This plan makes all three automatic for every user.
+
+---
+
+## Deepening Synthesis (2026-05-31) -- architecture corrected
+
+A deepening pass (security + feasibility reviewers reading the actual tesla-pp-cli + agentcookie code) caught a load-bearing flaw of the same class that killed plan 007, and three forks were resolved with the user. The architecture below SUPERSEDES the env-export-plus-alias approach in the units further down where they conflict; prose here governs.
+
+### Flaw found (would have broken U4)
+
+- `tesla-pp-cli auth refresh` reads the refresh token from `config.toml`, never from env (`internal/config/config.go` env surface is `TESLA_AUTH_TOKEN` only). So shipping refresh/client creds as env vars does nothing for refresh.
+- `AuthHeader()` makes the env `TESLA_AUTH_TOKEN` WIN over the refreshed `access_token` in config, so a stale synced env bearer would shadow a freshly-minted one, reintroducing the exact 401 this plan kills.
+- The auth-export must hook the `config.go` `SaveTokens`/`SaveFleetTokens` methods (re-serializing the full post-save `cfg`), or the common 401 auto-refresh path silently misses re-export.
+- The secrets bus is a flat env envelope; a multiline PEM cannot ride as a `KEY=VALUE` value, only base64-single-key works. tesla-pp-cli already ships an AES-GCM `auth export`/`import` bundle that includes the private key.
+- The v2 manifest allows exactly one `[secrets.*]` block and has no "opt-in sealed file mapped to an env var" grammar; U3 must extend the spec.
+
+### Decisions (resolved with the user)
+
+1. **Sink reads a synced `config.toml`, not env (no alias for Tesla).** The bus carries the source's tesla `config.toml` to the sink (as a sealed file via U3's file-carriage); the sink reads + refreshes it in place exactly like the source. This removes the auth-export env file, the `TESLA_AUTH_TOKEN` env path for Tesla, and the env-vs-config shadowing entirely. U1's `[aliases]` (shipped) stays the general mechanism but Tesla no longer needs it. NEW RISK to handle in execution: if Tesla rotates refresh tokens on refresh, source and sink refreshing independently can invalidate each other; the plan must define a single-refresher rule (e.g. sink refreshes, source stops; or the sink is read-only and the source is the sole refresher and re-syncs) -- open question for U4.
+2. **Build agentcookie sealed file-carriage (U3), base64-single-key + a v2 grammar extension.** It carries arbitrary sealed files (the `config.toml` and the opt-in signing key), materialized 0600 under `~/.agentcookie/`. General for any CLI. Note the existing tesla `auth export`/`import` bundle as prior art but build the general bus capability.
+3. **Refresh + `client_secret` stay the default (needed for never-stale), documented.** Not opt-in. The plan documents the blast-radius equivalence (sink compromise = durable REST-car command access) and the revocation steps. Only the signing key (signed-command cars) is opt-in.
+
+### Security additions to fold into the plan (from the security lens)
+
+- A Threat Model / Revocation section: blast radius is one user / one Fleet app / one keypair; revocation = deregister the Fleet app at developer.tesla.com + delete the materialized sink files + the bus item; multi-tenant sink is out of scope (per-user 0600 under user-owned paths only).
+- Define what "sealed" means honestly: encrypted in transit over the tailnet AND at rest in the bus, but the materialized `config.toml`/key on the sink are 0600 plaintext files -- so the on-sink security is file permissions, state it plainly.
+- `agentcookie.env`/materialized files are deleted on `auth logout` / uninstall (add a teardown + a test); note unencrypted-backup exposure.
+- No agentcookie audit trail for signed-command use; the user's only detection path is Tesla's own vehicle-command history -- state as a known gap in Scope Boundaries.
+- Any file the CLI writes for agentcookie is gated on agentcookie opt-in (presence of the manifest / a confirmed install step), never written silently for users who do not run agentcookie.
+- Sink self-refresh invocation must avoid leaking secrets via process environment (`/proc/<pid>/environ`); prefer in-process refresh over a shell-out with env-set secrets.
+
+---
 
 ## Problem Frame
 
