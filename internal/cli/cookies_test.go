@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -39,6 +41,15 @@ func TestHostMatchesDomain(t *testing.T) {
 func makeSidecar(t *testing.T, rows [][3]string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "cookies-plain.db")
+	makeSidecarAt(t, path, rows)
+	return path
+}
+
+func makeSidecarAt(t *testing.T, path string, rows [][3]string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir sidecar parent: %v", err)
+	}
 	db, err := sql.Open("sqlite3", path)
 	if err != nil {
 		t.Fatalf("open sidecar: %v", err)
@@ -56,7 +67,6 @@ func makeSidecar(t *testing.T, rows [][3]string) string {
 			t.Fatalf("insert: %v", err)
 		}
 	}
-	return path
 }
 
 func names(cookies []sidecar.Cookie) map[string]bool {
@@ -123,6 +133,71 @@ func TestCollectDomainCookies_MissingFile(t *testing.T) {
 	}
 }
 
+func TestCookiesCommandMalformedBlocklistReturnsError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := t.TempDir()
+	writeCLIFile(t, filepath.Join(configDir, "blocklist.yaml"), `
+version: 1
+domains: []
+unexpected: true
+`)
+
+	out, err := runCookiesCommandForTest(t, configDir, ".amazon.com", false)
+	if err == nil {
+		t.Fatal("cookies command should fail on malformed blocklist")
+	}
+	if !strings.Contains(err.Error(), "load blocklist") {
+		t.Errorf("error should name blocklist load, got %v", err)
+	}
+	if out != "" {
+		t.Errorf("malformed blocklist should not emit cookies, got %q", out)
+	}
+}
+
+func TestCookiesCommandWellFormedBlocklist(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sidecarPath := filepath.Join(home, ".agentcookie", "cookies-plain.db")
+	makeSidecarAt(t, sidecarPath, [][3]string{
+		{"amazon.com", "session-token", "tok"},
+		{"www.amazon.com", "ubid", "ub"},
+	})
+	configDir := t.TempDir()
+	writeCLIFile(t, filepath.Join(configDir, "blocklist.yaml"), `
+version: 1
+domains:
+  - pattern: "amazon.com"
+  - pattern: "%.amazon.com"
+`)
+
+	out, err := runCookiesCommandForTest(t, configDir, ".amazon.com", false)
+	if err != nil {
+		t.Fatalf("cookies command: %v", err)
+	}
+	if got := strings.TrimSpace(out); got != "" {
+		t.Errorf("blocklisted domain should emit no cookies, got %q", out)
+	}
+}
+
+func TestCookiesCommandMissingBlocklistSyncAll(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sidecarPath := filepath.Join(home, ".agentcookie", "cookies-plain.db")
+	makeSidecarAt(t, sidecarPath, [][3]string{
+		{"amazon.com", "session-token", "tok"},
+	})
+	configDir := t.TempDir()
+
+	out, err := runCookiesCommandForTest(t, configDir, ".amazon.com", false)
+	if err != nil {
+		t.Fatalf("cookies command missing blocklist: %v", err)
+	}
+	if strings.TrimSpace(out) != "session-token=tok" {
+		t.Errorf("missing blocklist output = %q, want session-token=tok", out)
+	}
+}
+
 func TestEmitCookies_Header(t *testing.T) {
 	var buf bytes.Buffer
 	cookies := []sidecar.Cookie{
@@ -160,4 +235,23 @@ func TestEmitCookies_EmptyJSON(t *testing.T) {
 	if got := buf.String(); got != "[]\n" {
 		t.Errorf("empty JSON = %q, want %q", got, "[]\n")
 	}
+}
+
+func runCookiesCommandForTest(t *testing.T, configDir, domain string, asJSON bool) (string, error) {
+	t.Helper()
+	oldDir := common.ConfigDir
+	oldJSON := common.JSON
+	oldDomain := cookiesDomain
+	common.ConfigDir = configDir
+	common.JSON = asJSON
+	cookiesDomain = domain
+	t.Cleanup(func() {
+		common.ConfigDir = oldDir
+		common.JSON = oldJSON
+		cookiesDomain = oldDomain
+	})
+
+	out := &bytes.Buffer{}
+	err := cookiesCmd.RunE(commandWithOutput(out), nil)
+	return out.String(), err
 }

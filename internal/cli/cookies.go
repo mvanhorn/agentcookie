@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"github.com/mvanhorn/agentcookie/pkg/sidecar"
 )
@@ -40,7 +39,10 @@ with --json.
 		}
 		// Enforce the same blocklist the sink applies, so a blocked domain
 		// never leaks out through this door.
-		bl, _ := config.LoadBlocklist(common.ConfigDir)
+		bl, err := loadFreshBlocklist()
+		if err != nil {
+			return fmt.Errorf("cookies: load blocklist: %w", err)
+		}
 		matcher := protocol.NewBlocklistMatcher(bl)
 
 		cookies, err := collectDomainCookies(path, cookiesDomain, matcher)

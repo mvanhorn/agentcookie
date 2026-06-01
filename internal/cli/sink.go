@@ -94,16 +94,7 @@ func runSink(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Sink-side blocklist (defense in depth). Empty or missing blocklist =
-	// sync everything the source pushed. Patterns that match host_keys are
-	// dropped on the sink side regardless of what the source sent.
-	bl, _ := config.LoadBlocklist(common.ConfigDir)
-	blockMatcher := protocol.NewBlocklistMatcher(bl)
-	if blockMatcher.PatternCount() == 0 {
-		fmt.Fprintln(os.Stderr, "agentcookie sink: blocklist empty; sync-all mode")
-	} else {
-		fmt.Fprintf(os.Stderr, "agentcookie sink: blocklist has %d opt-out patterns\n", blockMatcher.PatternCount())
-	}
+	logSinkStartupBlocklistStatus()
 
 	// Persistent replay-defense state. Survives sink restart so a
 	// captured /sync envelope cannot be replayed after a reboot. A
@@ -124,6 +115,39 @@ func runSink(cmd *cobra.Command, args []string) error {
 		ListenAddr: cfg.Listen.Addr,
 	}
 
+	mux := newSinkMux(cfg, transportSecret, key, seqTracker, stateWriter, sinkState)
+
+	srv := httpserver.Configure(&http.Server{Addr: cfg.Listen.Addr, Handler: mux}, httpserver.SinkSync)
+	if sinkDryRun {
+		fmt.Fprintf(os.Stderr, "agentcookie sink: listening on http://%s (dry-run; no Chrome state will be modified)\n", cfg.Listen.Addr)
+	} else {
+		fmt.Fprintf(os.Stderr, "agentcookie sink: listening on http://%s (db=%s)\n", cfg.Listen.Addr, cfg.Chrome.DBPath)
+	}
+	return srv.ListenAndServe()
+}
+
+func logSinkStartupBlocklistStatus() {
+	bl, err := loadFreshBlocklist()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agentcookie sink: blocklist load failed; /sync will fail closed until fixed: %v\n", err)
+		return
+	}
+	blockMatcher := protocol.NewBlocklistMatcher(bl)
+	if blockMatcher.PatternCount() == 0 {
+		fmt.Fprintln(os.Stderr, "agentcookie sink: blocklist empty; sync-all mode")
+	} else {
+		fmt.Fprintf(os.Stderr, "agentcookie sink: blocklist has %d opt-out patterns\n", blockMatcher.PatternCount())
+	}
+}
+
+func newSinkMux(
+	cfg *config.SinkConfig,
+	transportSecret string,
+	key []byte,
+	seqTracker *protocol.SequenceTracker,
+	stateWriter *state.Writer,
+	sinkState *state.SinkState,
+) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintln(w, "ok")
@@ -153,6 +177,16 @@ func runSink(cmd *cobra.Command, args []string) error {
 			http.Error(w, fmt.Sprintf("protocol version mismatch: got %d, sink speaks %d-%d", envelope.ProtocolVersion, protocol.MinVersion, protocol.Version), http.StatusBadRequest)
 			return
 		}
+
+		bl, err := loadFreshBlocklist()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "agentcookie sink: blocklist load failed: %v\n", err)
+			recordSinkReject(sinkState, stateWriter, err)
+			http.Error(w, "load blocklist: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		blockMatcher := protocol.NewBlocklistMatcher(bl)
+
 		if !seqTracker.Accept(envelope.SourceHostname, envelope.Sequence) {
 			http.Error(w, fmt.Sprintf("sequence %d not greater than last seen for %q (replay defense)", envelope.Sequence, envelope.SourceHostname), http.StatusConflict)
 			return
@@ -207,10 +241,7 @@ func runSink(cmd *cobra.Command, args []string) error {
 		}
 		if writeErr != nil {
 			fmt.Fprintf(os.Stderr, "agentcookie sink: write failed (cookies=%d ls=%d idb=%d mode=%s): %v\n", result.Cookies, result.LocalStorage, result.IndexedDB, writeMode, writeErr)
-			sinkState.LastError = writeErr.Error()
-			sinkState.LastErrorAt = time.Now().UTC()
-			sinkState.TotalRejects++
-			_ = stateWriter.Save(sinkState)
+			recordSinkReject(sinkState, stateWriter, writeErr)
 			http.Error(w, fmt.Sprintf("apply envelope: %v", writeErr), http.StatusInternalServerError)
 			return
 		}
@@ -280,14 +311,19 @@ func runSink(cmd *cobra.Command, args []string) error {
 		_ = stateWriter.Save(sinkState)
 		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies (%d sidecar), %d localStorage origins, %d indexedDB origins; dropped %d blocklisted cookies\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, dropped)
 	})
+	return mux
+}
 
-	srv := httpserver.Configure(&http.Server{Addr: cfg.Listen.Addr, Handler: mux}, httpserver.SinkSync)
-	if sinkDryRun {
-		fmt.Fprintf(os.Stderr, "agentcookie sink: listening on http://%s (dry-run; no Chrome state will be modified)\n", cfg.Listen.Addr)
-	} else {
-		fmt.Fprintf(os.Stderr, "agentcookie sink: listening on http://%s (db=%s)\n", cfg.Listen.Addr, cfg.Chrome.DBPath)
+func recordSinkReject(sinkState *state.SinkState, stateWriter *state.Writer, err error) {
+	if sinkState == nil {
+		return
 	}
-	return srv.ListenAndServe()
+	sinkState.LastError = err.Error()
+	sinkState.LastErrorAt = time.Now().UTC()
+	sinkState.TotalRejects++
+	if stateWriter != nil {
+		_ = stateWriter.Save(sinkState)
+	}
 }
 
 // toStateAdapterResults converts sinkpush.Result slices to the state
