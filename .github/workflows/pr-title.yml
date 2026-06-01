@@ -1,0 +1,38 @@
+name: pr-title
+
+# Enforce Conventional Commit style on PR titles (the title becomes the squash
+# commit subject). Scope is optional -- agentcookie's history mixes scoped
+# (fix(cli): ...) and unscoped (docs: ...) titles.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  pr-title:
+    name: pr-title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: amannn/action-semantic-pull-request@v6
+        with:
+          types: |
+            feat
+            fix
+            docs
+            chore
+            refactor
+            test
+            ci
+            perf
+            build
+            style
+            revert
+          requireScope: false
+          subjectPattern: ^.+$
+          subjectPatternError: "PR title must have a description after the colon"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
