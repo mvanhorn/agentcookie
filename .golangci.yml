@@ -8,6 +8,7 @@ linters:
   enable:
     - govet
     - errcheck
+    - ineffassign
     - staticcheck
     - unused
     # Catches accumulated "Go has a newer way to do this" patterns:
