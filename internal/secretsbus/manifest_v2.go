@@ -28,6 +28,17 @@ type ManifestV2 struct {
 
 	Secrets ManifestV2Secrets `toml:"secrets"`
 	Sync    ManifestV2Sync    `toml:"sync,omitempty"`
+
+	// Aliases declares consumer-env-var -> synced-bus-key mappings so a CLI
+	// that reads a different env var name than the key its secret was imported
+	// under is wired automatically, with no per-user `secret alias` command.
+	// Example: a Tesla CLI reads TESLA_AUTH_TOKEN but agentcookie imports the
+	// bearer as OAUTH_BEARER, so the manifest declares
+	//   [aliases]
+	//   TESLA_AUTH_TOKEN = "OAUTH_BEARER"
+	// `secret env` applies these live on every call (tracking refreshes), and
+	// an explicit local `secret alias` still overrides a manifest alias.
+	Aliases map[string]string `toml:"aliases,omitempty"`
 }
 
 // ManifestV2Secrets carries exactly one of File / Command / Keychain.
@@ -214,7 +225,40 @@ func validateManifestV2(m *ManifestV2, sourcePath string) error {
 		}
 	}
 
+	for declared, stored := range m.Aliases {
+		if !validEnvKey(declared) {
+			return fmt.Errorf("[aliases] key %q is not a valid env var name (A-Z, 0-9, underscore; not starting with a digit)", declared)
+		}
+		if !validEnvKey(stored) {
+			return fmt.Errorf("[aliases] %q maps to %q, which is not a valid env var name", declared, stored)
+		}
+	}
+
 	return nil
+}
+
+// validEnvKey reports whether s is a shell-safe environment variable name:
+// an initial letter or underscore followed by letters, digits, or underscores.
+// Used to validate manifest [aliases] entries (both the declared consumer var
+// and the synced bus key it maps from).
+func validEnvKey(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		isLetter := (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
+		isDigit := r >= '0' && r <= '9'
+		if i == 0 {
+			if !isLetter && r != '_' {
+				return false
+			}
+			continue
+		}
+		if !isLetter && !isDigit && r != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 // ResolveSecretsPath expands ~/ in [secrets.file].path against the given

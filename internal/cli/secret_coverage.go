@@ -40,7 +40,7 @@ func secretCoverage(cliName string, declared []string) (status, detail string) {
 	for _, k := range storeKeys {
 		have[k] = true
 	}
-	aliases, _ := readAliases(cliName)
+	aliases := effectiveAliases(cliName)
 
 	var missing []string
 	for _, d := range declared {

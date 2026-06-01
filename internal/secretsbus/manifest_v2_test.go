@@ -100,6 +100,53 @@ path = "~/.config/demo/.env"
 	}
 }
 
+func TestParseManifestV2_ParsesAliases(t *testing.T) {
+	body := `
+schema_version = 2
+name = "tesla-pp-cli"
+display_name = "Tesla"
+
+[secrets.file]
+path = "~/.config/tesla-pp-cli/config.toml"
+
+[aliases]
+TESLA_AUTH_TOKEN = "OAUTH_BEARER"
+`
+	m, warnings, err := parseManifestV2Bytes([]byte(body), "test.toml")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, w := range warnings {
+		if strings.Contains(w.Message, "aliases") {
+			t.Errorf("aliases should not warn as unknown: %v", w)
+		}
+	}
+	if got := m.Aliases["TESLA_AUTH_TOKEN"]; got != "OAUTH_BEARER" {
+		t.Errorf("alias = %q, want OAUTH_BEARER", got)
+	}
+}
+
+func TestParseManifestV2_RejectsInvalidAliasName(t *testing.T) {
+	body := `
+schema_version = 2
+name = "demo"
+display_name = "Demo"
+
+[secrets.file]
+path = "~/.config/demo/.env"
+
+[aliases]
+"not a valid var" = "OAUTH_BEARER"
+`
+	_, _, err := parseManifestV2Bytes([]byte(body), "test.toml")
+	if err == nil {
+		t.Fatal("expected error rejecting invalid alias env var name")
+	}
+	if !strings.Contains(err.Error(), "aliases") {
+		t.Errorf("error should reference aliases: %v", err)
+	}
+}
+
 func TestParseManifestV2_RejectsV1Schema(t *testing.T) {
 	body := `
 schema_version = 1
