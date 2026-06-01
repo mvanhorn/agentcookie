@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -286,9 +287,7 @@ func runSecretImportFrom(cmd *cobra.Command, args []string) error {
 	if existing == nil {
 		existing = map[string]string{}
 	}
-	for k, v := range flat {
-		existing[k] = v
-	}
+	maps.Copy(existing, flat)
 	if err := os.MkdirAll(filepath.Dir(envPath), 0o700); err != nil {
 		return err
 	}
@@ -456,12 +455,12 @@ func validBusKey(k string) bool {
 		isDigit := r >= '0' && r <= '9'
 		isUnder := r == '_'
 		if i == 0 {
-			if !(isLetter || isUnder) {
+			if !isLetter && !isUnder {
 				return false
 			}
 			continue
 		}
-		if !(isLetter || isDigit || isUnder) {
+		if !isLetter && !isDigit && !isUnder {
 			return false
 		}
 	}
@@ -536,15 +535,15 @@ func parseEnvBytesShim(data []byte) (map[string]string, error) {
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		eq := strings.IndexByte(line, '=')
-		if eq < 0 {
+		before, after, ok := strings.Cut(line, "=")
+		if !ok {
 			return nil, fmt.Errorf("line %d: missing '='", ln)
 		}
-		key := line[:eq]
+		key := before
 		if key != strings.TrimSpace(key) {
 			return nil, fmt.Errorf("line %d: whitespace around '='", ln)
 		}
-		val := line[eq+1:]
+		val := after
 		if len(val) >= 2 {
 			first, last := val[0], val[len(val)-1]
 			if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
@@ -661,9 +660,7 @@ func manifestAliases(cliName string) map[string]string {
 	if !ok || rp.Manifest == nil {
 		return out
 	}
-	for declared, stored := range rp.Manifest.Aliases {
-		out[declared] = stored
-	}
+	maps.Copy(out, rp.Manifest.Aliases)
 	return out
 }
 
@@ -675,9 +672,7 @@ func manifestAliases(cliName string) map[string]string {
 func effectiveAliases(cliName string) map[string]string {
 	merged := manifestAliases(cliName)
 	local, _ := readAliases(cliName)
-	for declared, stored := range local {
-		merged[declared] = stored
-	}
+	maps.Copy(merged, local)
 	return merged
 }
 

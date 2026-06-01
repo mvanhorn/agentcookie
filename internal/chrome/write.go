@@ -138,10 +138,10 @@ func readTableColumns(db *sql.DB, table string) (map[string]bool, error) {
 	cols := map[string]bool{}
 	for rows.Next() {
 		var (
-			cid          int
-			name, ctype  string
-			notNull, pk  int
-			dfltValue    sql.NullString
+			cid         int
+			name, ctype string
+			notNull, pk int
+			dfltValue   sql.NullString
 		)
 		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dfltValue, &pk); err != nil {
 			return nil, err

@@ -48,15 +48,15 @@ func TestBlocklistMatcher_DropsMatchingHosts(t *testing.T) {
 	}
 	m := NewBlocklistMatcher(bl)
 	cases := map[string]bool{
-		"www.chase.com":          true,
-		"chase.com":              true,
-		".chase.com":              true,
-		"foo.vanguard.com":       true,
-		"passwords.example.com":  true,
-		"CHASE.COM":              true, // case-insensitive
-		"safe.example.com":       false,
-		"github.com":             false,
-		"":                       false,
+		"www.chase.com":         true,
+		"chase.com":             true,
+		".chase.com":            true,
+		"foo.vanguard.com":      true,
+		"passwords.example.com": true,
+		"CHASE.COM":             true, // case-insensitive
+		"safe.example.com":      false,
+		"github.com":            false,
+		"":                      false,
 	}
 	for host, wantBlocked := range cases {
 		got := m.MatchesHost(host)

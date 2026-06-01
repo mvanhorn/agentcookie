@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1112,11 +1113,8 @@ func countEnvKeys(data []byte) int {
 		if len(trim) == 0 || trim[0] == '#' {
 			continue
 		}
-		for _, b := range trim {
-			if b == '=' {
-				n++
-				break
-			}
+		if slices.Contains(trim, '=') {
+			n++
 		}
 	}
 	return n

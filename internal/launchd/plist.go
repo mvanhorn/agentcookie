@@ -24,10 +24,10 @@ const (
 
 // Spec is the input to plist generation. All paths must be absolute.
 type Spec struct {
-	Role        Role
-	BinaryPath  string
-	LogDir      string
-	ExtraArgs   []string
+	Role       Role
+	BinaryPath string
+	LogDir     string
+	ExtraArgs  []string
 }
 
 // Label returns the launchd Label corresponding to the spec's role. Labels

@@ -114,14 +114,12 @@ func TestRunSourceRejectsBadCode(t *testing.T) {
 	defer cancel()
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		// Source-side error not checked: we cancel the ctx below, which
 		// returns context.Canceled. The signal we care about is that the
 		// sink call returns the right rejection.
 		_, _, _ = RunSource(ctx, addr, "laptop.test", io.Discard)
-	}()
+	})
 
 	waitForListen(t, addr)
 

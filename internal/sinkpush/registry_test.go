@@ -11,18 +11,18 @@ import (
 // stubAdapter is a configurable test double for Adapter. Each field
 // controls one observable behavior so tests can isolate concerns.
 type stubAdapter struct {
-	name        string
-	installed   bool
-	patterns    []string
-	pushErr     error
-	pushed      [][]chrome.Cookie // history of Push calls for assertions
-	binaryPath  string
+	name       string
+	installed  bool
+	patterns   []string
+	pushErr    error
+	pushed     [][]chrome.Cookie // history of Push calls for assertions
+	binaryPath string
 }
 
-func (s *stubAdapter) Name() string                   { return s.name }
-func (s *stubAdapter) CLIBinary() string              { return s.binaryPath }
-func (s *stubAdapter) IsInstalled() bool              { return s.installed }
-func (s *stubAdapter) CookieHostPatterns() []string   { return s.patterns }
+func (s *stubAdapter) Name() string                 { return s.name }
+func (s *stubAdapter) CLIBinary() string            { return s.binaryPath }
+func (s *stubAdapter) IsInstalled() bool            { return s.installed }
+func (s *stubAdapter) CookieHostPatterns() []string { return s.patterns }
 func (s *stubAdapter) Push(c []chrome.Cookie) error {
 	s.pushed = append(s.pushed, c)
 	return s.pushErr

@@ -27,8 +27,8 @@ var ErrNotInstalled = errors.New("tsclient: Tailscale CLI not found")
 // Status is a thin JSON view over `tailscale status --json` containing only
 // the fields agentcookie cares about. The real JSON has many more fields.
 type Status struct {
-	Version string         `json:"Version"`
-	Self    *PeerStatus    `json:"Self"`
+	Version string                 `json:"Version"`
+	Self    *PeerStatus            `json:"Self"`
 	Peer    map[string]*PeerStatus `json:"Peer"`
 }
 

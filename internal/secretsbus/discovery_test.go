@@ -191,8 +191,7 @@ func TestDiscoveryWatcher_DetectsNewManifest(t *testing.T) {
 	w := NewDiscoveryWatcher(cfg, 50*time.Millisecond, func(_ context.Context, d RegistryDelta, _ *Registry) {
 		deltas <- d
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go w.Run(ctx)
 	time.Sleep(150 * time.Millisecond) // let initial snapshot fire
 

@@ -51,6 +51,8 @@ type Manifest struct {
 
 // defaultSync returns the effective default. v1 spec: default is true when
 // the manifest omits [sync] entirely or omits sync.default.
+//
+//nolint:unused // intentionally retained; documents the v1 sync default semantics
 func (m *Manifest) defaultSync() bool {
 	// Burntsushi/toml zero-values Default to false; we need to distinguish
 	// "omitted" from "explicit false." We can't from the parsed struct
@@ -199,18 +201,18 @@ func parseEnvFile(path string) (map[string]string, error) {
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		eq := strings.IndexByte(line, '=')
-		if eq < 0 {
+		before, after, ok := strings.Cut(line, "=")
+		if !ok {
 			return nil, fmt.Errorf("line %d: missing '=' (expected KEY=VALUE)", lineNum)
 		}
-		key := line[:eq]
+		key := before
 		if key != strings.TrimRight(key, " \t") || key != strings.TrimLeft(key, " \t") {
 			return nil, fmt.Errorf("line %d: whitespace around '=' is not allowed", lineNum)
 		}
 		if !validKeyName(key) {
 			return nil, fmt.Errorf("line %d: invalid key name %q", lineNum, key)
 		}
-		value := line[eq+1:]
+		value := after
 
 		if strings.HasSuffix(value, "\\") {
 			pending.WriteString(value[:len(value)-1])
@@ -253,12 +255,12 @@ func validKeyName(k string) bool {
 		isDigit := r >= '0' && r <= '9'
 		isUnder := r == '_'
 		if i == 0 {
-			if !(isLetter || isUnder) {
+			if !isLetter && !isUnder {
 				return false
 			}
 			continue
 		}
-		if !(isLetter || isDigit || isUnder) {
+		if !isLetter && !isDigit && !isUnder {
 			return false
 		}
 	}
@@ -283,12 +285,12 @@ func loadManifest(path string) (*Manifest, bool, error) {
 	}
 	// Two-pass: first decode into a generic map to detect whether
 	// sync.default was set explicitly; second pass into the typed struct.
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := toml.Unmarshal(data, &raw); err != nil {
 		return nil, false, fmt.Errorf("unmarshal: %w", err)
 	}
 	explicit := false
-	if syncRaw, ok := raw["sync"].(map[string]interface{}); ok {
+	if syncRaw, ok := raw["sync"].(map[string]any); ok {
 		if _, ok := syncRaw["default"]; ok {
 			explicit = true
 		}

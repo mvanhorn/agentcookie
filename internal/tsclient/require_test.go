@@ -157,18 +157,18 @@ func TestRequireTailnetIP_NilContext(t *testing.T) {
 
 func TestIsTailnetIP(t *testing.T) {
 	cases := map[string]bool{
-		"100.80.229.80":  true,
-		"100.64.0.0":     true,
+		"100.80.229.80":   true,
+		"100.64.0.0":      true,
 		"100.127.255.255": true,
-		"100.63.0.0":     false, // one below the block
-		"100.128.0.0":    false, // one above the block
-		"127.0.0.1":      false, // loopback, not tailnet
-		"0.0.0.0":        false, // any-interface bind, definitely not tailnet
-		"192.168.1.1":    false,
-		"":               false,
-		"not an ip":      false,
-		"::1":            false, // IPv6 loopback
-		"100::1":         false, // IPv6 unrelated
+		"100.63.0.0":      false, // one below the block
+		"100.128.0.0":     false, // one above the block
+		"127.0.0.1":       false, // loopback, not tailnet
+		"0.0.0.0":         false, // any-interface bind, definitely not tailnet
+		"192.168.1.1":     false,
+		"":                false,
+		"not an ip":       false,
+		"::1":             false, // IPv6 loopback
+		"100::1":          false, // IPv6 unrelated
 	}
 	for in, want := range cases {
 		t.Run(in, func(t *testing.T) {

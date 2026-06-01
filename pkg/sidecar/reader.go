@@ -33,13 +33,13 @@ const SealedPrefix = "agc1:"
 // Cookie is the public shape returned by ReadSidecar. Fields mirror
 // the columns kooky-style consumers already inspect.
 type Cookie struct {
-	HostKey     string
-	Name        string
-	Value       string
-	Path        string
-	ExpiresUTC  int64
-	IsSecure    bool
-	IsHTTPOnly  bool
+	HostKey    string
+	Name       string
+	Value      string
+	Path       string
+	ExpiresUTC int64
+	IsSecure   bool
+	IsHTTPOnly bool
 }
 
 // DefaultPath returns the default sidecar location. agentcookie sink

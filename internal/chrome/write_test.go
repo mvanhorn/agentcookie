@@ -178,7 +178,7 @@ func TestWriteCookies_MetaVersionIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "Cookies")
 	seedEmptyCookiesDB(t, path)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if _, err := WriteCookies(path, []Cookie{{HostKey: ".a.com", Name: "n", Value: "v", Path: "/"}}, testKey); err != nil {
 			t.Fatalf("WriteCookies pass %d: %v", i, err)
 		}

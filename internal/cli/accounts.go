@@ -157,8 +157,8 @@ func accountListResult(bl *config.Blocklist) accountsListResult {
 	consumed := make(map[string]bool, len(patterns))
 	domains := make([]string, 0)
 	for pattern := range patterns {
-		if strings.HasPrefix(pattern, "%.") {
-			domain := strings.TrimPrefix(pattern, "%.")
+		if after, ok := strings.CutPrefix(pattern, "%."); ok {
+			domain := after
 			if patterns[domain] {
 				domains = append(domains, domain)
 				consumed[pattern] = true
@@ -295,7 +295,7 @@ func normalizeAccountDomain(raw string) (string, error) {
 	if domain == "" || strings.Contains(domain, "..") || !accountDomainPattern.MatchString(domain) {
 		return "", fmt.Errorf("accounts: invalid domain %q", raw)
 	}
-	for _, label := range strings.Split(domain, ".") {
+	for label := range strings.SplitSeq(domain, ".") {
 		if label == "" || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
 			return "", fmt.Errorf("accounts: invalid domain %q", raw)
 		}

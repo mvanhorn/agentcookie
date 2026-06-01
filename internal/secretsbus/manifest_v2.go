@@ -175,7 +175,7 @@ func parseManifestV2Bytes(data []byte, sourcePath string) (*ManifestV2, []ParseW
 	}
 
 	// Second pass: map decode to detect explicit-vs-omitted sync.default.
-	var raw map[string]interface{}
+	var raw map[string]any
 	if _, err := toml.Decode(string(data), &raw); err != nil {
 		return nil, nil, fmt.Errorf("toml map parse: %w", err)
 	}
@@ -185,7 +185,7 @@ func parseManifestV2Bytes(data []byte, sourcePath string) (*ManifestV2, []ParseW
 	}
 
 	// Apply sync defaults. sync.default omitted -> true per spec section 6.
-	if syncRaw, ok := raw["sync"].(map[string]interface{}); ok {
+	if syncRaw, ok := raw["sync"].(map[string]any); ok {
 		if _, ok := syncRaw["default"]; !ok {
 			m.Sync.Default = true
 		}

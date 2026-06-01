@@ -155,7 +155,7 @@ func isUnsignedCodesignOutput(out string) bool {
 // codesign's verbose output. Returns "" for a missing line or the literal
 // "not set" sentinel codesign emits for ad-hoc signatures.
 func parseTeamIdentifier(codesignOutput string) string {
-	for _, line := range strings.Split(codesignOutput, "\n") {
+	for line := range strings.SplitSeq(codesignOutput, "\n") {
 		line = strings.TrimSpace(line)
 		const prefix = "TeamIdentifier="
 		if !strings.HasPrefix(line, prefix) {
@@ -290,7 +290,7 @@ func CountSafeStorageItems() (int, error) {
 		return 0, fmt.Errorf("dump keychain: %w", err)
 	}
 	n := 0
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.Contains(line, safeStorageItemMarker) {
 			n++
 		}

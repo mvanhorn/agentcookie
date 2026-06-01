@@ -206,18 +206,18 @@ func parseEnvScanner(scanner *bufio.Scanner) (map[string]string, error) {
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		eq := strings.IndexByte(line, '=')
-		if eq < 0 {
+		before, after, ok := strings.Cut(line, "=")
+		if !ok {
 			return nil, fmt.Errorf("line %d: missing '=' (expected KEY=VALUE)", lineNum)
 		}
-		key := line[:eq]
+		key := before
 		if key != strings.TrimRight(key, " \t") || key != strings.TrimLeft(key, " \t") {
 			return nil, fmt.Errorf("line %d: whitespace around '=' is not allowed", lineNum)
 		}
 		if !validKeyName(key) {
 			return nil, fmt.Errorf("line %d: invalid key name %q", lineNum, key)
 		}
-		value := line[eq+1:]
+		value := after
 
 		if strings.HasSuffix(value, "\\") {
 			pending.WriteString(value[:len(value)-1])
@@ -274,12 +274,12 @@ func validKeyName(k string) bool {
 		isDigit := r >= '0' && r <= '9'
 		isUnder := r == '_'
 		if i == 0 {
-			if !(isLetter || isUnder) {
+			if !isLetter && !isUnder {
 				return false
 			}
 			continue
 		}
-		if !(isLetter || isDigit || isUnder) {
+		if !isLetter && !isDigit && !isUnder {
 			return false
 		}
 	}

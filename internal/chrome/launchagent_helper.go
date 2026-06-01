@@ -185,11 +185,11 @@ func agentStateAndExit(label string) (string, int, bool) {
 }
 
 func scanField(text, key string) string {
-	idx := strings.Index(text, key)
-	if idx < 0 {
+	_, after, ok := strings.Cut(text, key)
+	if !ok {
 		return ""
 	}
-	tail := text[idx+len(key):]
+	tail := after
 	end := strings.IndexByte(tail, '\n')
 	if end < 0 {
 		end = len(tail)
