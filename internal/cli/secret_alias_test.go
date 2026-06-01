@@ -54,6 +54,68 @@ func TestSecretEnv_AppliesAlias(t *testing.T) {
 	}
 }
 
+// writeManifest drops a v2 adoption manifest at the priority-1 discovery path
+// so secret env / coverage pick up its declared [aliases].
+func writeManifest(t *testing.T, home, cli, body string) {
+	t.Helper()
+	dir := filepath.Join(home, ".agentcookie", "manifests")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, cli+".toml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSecretEnv_AppliesManifestAlias(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSecrets(t, home, "tesla-pp-cli", "OAUTH_BEARER=tok-bearer\nOAUTH_REFRESH=tok-refresh\n")
+	// No local `secret alias`; the mapping ships in the manifest.
+	writeManifest(t, home, "tesla-pp-cli", `
+schema_version = 2
+name = "tesla-pp-cli"
+display_name = "Tesla"
+
+[secrets.file]
+path = "~/.config/tesla-pp-cli/config.toml"
+
+[aliases]
+TESLA_AUTH_TOKEN = "OAUTH_BEARER"
+`)
+	out := envLines(t, "tesla-pp-cli")
+	if !strings.Contains(out, "TESLA_AUTH_TOKEN=tok-bearer") {
+		t.Errorf("manifest alias should auto-wire TESLA_AUTH_TOKEN with no local alias, got:\n%s", out)
+	}
+}
+
+func TestSecretEnv_LocalAliasOverridesManifest(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSecrets(t, home, "tesla-pp-cli", "OAUTH_BEARER=tok-bearer\nALT=tok-alt\n")
+	writeManifest(t, home, "tesla-pp-cli", `
+schema_version = 2
+name = "tesla-pp-cli"
+display_name = "Tesla"
+
+[secrets.file]
+path = "~/.config/tesla-pp-cli/config.toml"
+
+[aliases]
+TESLA_AUTH_TOKEN = "OAUTH_BEARER"
+`)
+	// Local alias points the same declared var at a different stored key.
+	aliasCmd := secretAliasCmd
+	aliasCmd.SetOut(&bytes.Buffer{})
+	if err := runSecretAlias(aliasCmd, []string{"tesla-pp-cli", "TESLA_AUTH_TOKEN", "ALT"}); err != nil {
+		t.Fatalf("set local alias: %v", err)
+	}
+	out := envLines(t, "tesla-pp-cli")
+	if !strings.Contains(out, "TESLA_AUTH_TOKEN=tok-alt") {
+		t.Errorf("local alias should override the manifest mapping, got:\n%s", out)
+	}
+}
+
 func TestSecretEnv_NoAliasesUnchanged(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

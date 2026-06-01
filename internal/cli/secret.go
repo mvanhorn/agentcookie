@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mvanhorn/agentcookie/internal/keystore"
+	"github.com/mvanhorn/agentcookie/internal/secretsbus"
 )
 
 var secretCmd = &cobra.Command{
@@ -604,10 +605,7 @@ func runSecretEnv(cmd *cobra.Command, args []string) error {
 	// TESLA_AUTH_TOKEN) is emitted carrying the live value of the synced key
 	// it maps to (e.g. OAUTH_BEARER). Resolved on every call so it tracks
 	// token refreshes rather than going stale.
-	aliases, err := readAliases(cliName)
-	if err != nil {
-		return fmt.Errorf("read aliases: %w", err)
-	}
+	aliases := effectiveAliases(cliName)
 	for declared, stored := range aliases {
 		if v, ok := kv[stored]; ok {
 			kv[declared] = v
@@ -642,6 +640,45 @@ func readAliases(cliName string) (map[string]string, error) {
 		return nil, err
 	}
 	return m, nil
+}
+
+// manifestAliases returns the [aliases] mapping declared in the CLI's
+// agentcookie.toml, discovered from the v2 registry. These ship with the CLI
+// so any user gets the mapping automatically, with no `secret alias` command.
+// A discovery failure or absent manifest yields an empty map (not an error):
+// alias resolution must never break `secret env`.
+func manifestAliases(cliName string) map[string]string {
+	out := map[string]string{}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return out
+	}
+	reg, _ := secretsbus.Discover(secretsbus.DiscoveryConfig{HomeDir: home})
+	if reg == nil {
+		return out
+	}
+	rp, ok := reg.Projects[cliName]
+	if !ok || rp.Manifest == nil {
+		return out
+	}
+	for declared, stored := range rp.Manifest.Aliases {
+		out[declared] = stored
+	}
+	return out
+}
+
+// effectiveAliases merges the automatic, ship-with-the-CLI manifest aliases
+// (base) with explicit local `secret alias` entries from aliases.env (override).
+// A local alias for the same declared var wins over the manifest, so a user can
+// always override the default mapping. This is what makes a CLI like
+// tesla-pp-cli auto-connect for any user without a manual alias command.
+func effectiveAliases(cliName string) map[string]string {
+	merged := manifestAliases(cliName)
+	local, _ := readAliases(cliName)
+	for declared, stored := range local {
+		merged[declared] = stored
+	}
+	return merged
 }
 
 var secretAliasCmd = &cobra.Command{

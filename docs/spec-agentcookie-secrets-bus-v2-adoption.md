@@ -74,7 +74,21 @@ default = true                                # optional; defaults to true
 [sync.keys]
 SETUP_COMPLETE = false                        # optional per-key overrides
 FROM_BROWSER = false
+
+# Optional. Declare consumer-env-var -> synced-bus-key mappings so a CLI that
+# reads a different env var name than the key its secret was imported under is
+# wired automatically, with no per-user `agentcookie secret alias` command.
+[aliases]
+TESLA_AUTH_TOKEN = "OAUTH_BEARER"             # CLI reads TESLA_AUTH_TOKEN; bus stores it as OAUTH_BEARER
 ```
+
+### 2.3.1 Aliases
+
+The optional `[aliases]` table maps a consumer's declared env var name (the key) to the synced bus key that holds its value (the value). `agentcookie secret env <name>` applies these live on every call, so the mapping tracks token refreshes rather than going stale, and a CLI like `tesla-pp-cli` (which reads `TESLA_AUTH_TOKEN`) auto-connects to a bearer that agentcookie imported as `OAUTH_BEARER` for any user, with no manual command.
+
+- Both the declared var (key) and the bus key (value) must be valid environment variable names: an initial letter or underscore, then letters, digits, or underscores. Invalid names are a hard parse error.
+- An explicit local `agentcookie secret alias` entry for the same declared var overrides the manifest alias, so a user can always redirect the mapping.
+- An alias whose bus key is absent emits nothing for that declared var (no-op), matching the local-alias behavior.
 
 ### 2.4 Reserved fields
 
