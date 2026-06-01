@@ -616,11 +616,11 @@ func (p *pairingInfoWriter) Write(data []byte) (int, error) {
 
 func extractCode(text string) string {
 	const tag = "pairing code:"
-	i := strings.Index(text, tag)
-	if i < 0 {
+	_, after, ok := strings.Cut(text, tag)
+	if !ok {
 		return ""
 	}
-	tail := text[i+len(tag):]
+	tail := after
 	fields := strings.Fields(tail)
 	if len(fields) == 0 {
 		return ""
@@ -704,6 +704,8 @@ peer:
 // keychain step), so resolveSinkHeadlessMode no longer consults this.
 // Retained as a small TTY probe for callers and tests. When in doubt
 // (e.g. tests), returns false.
+//
+//nolint:unused // intentionally retained TTY probe for callers/tests
 func isHeadlessInstall() bool {
 	stat, err := os.Stdin.Stat()
 	if err != nil {

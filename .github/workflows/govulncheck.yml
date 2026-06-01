@@ -1,0 +1,34 @@
+name: govulncheck
+
+# Reachable-vulnerability scan of the module. Runs on every PR and can be
+# triggered manually. Uses govulncheck's default package-reachability mode,
+# which fails only on vulnerabilities actually reachable from the code (low
+# false-positive rate). Do not switch to -scan=module unless the repo wants
+# dependency-presence hygiene rather than reachable-vulnerability blocking.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+
+      - name: Run govulncheck
+        run: govulncheck ./...

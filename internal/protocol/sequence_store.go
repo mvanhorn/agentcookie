@@ -3,6 +3,7 @@ package protocol
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 )
@@ -114,9 +115,7 @@ type MemorySequenceStore struct {
 // given state. Pass nil for an empty store.
 func NewMemorySequenceStore(seed map[string]int64) *MemorySequenceStore {
 	st := map[string]int64{}
-	for k, v := range seed {
-		st[k] = v
-	}
+	maps.Copy(st, seed)
 	return &MemorySequenceStore{State: st}
 }
 
@@ -125,9 +124,7 @@ func (m *MemorySequenceStore) Load() (map[string]int64, error) {
 		return nil, m.FailLoad
 	}
 	out := map[string]int64{}
-	for k, v := range m.State {
-		out[k] = v
-	}
+	maps.Copy(out, m.State)
 	return out, nil
 }
 
@@ -137,9 +134,7 @@ func (m *MemorySequenceStore) Save(state map[string]int64) error {
 	}
 	m.SaveCount++
 	cp := map[string]int64{}
-	for k, v := range state {
-		cp[k] = v
-	}
+	maps.Copy(cp, state)
 	m.State = cp
 	return nil
 }

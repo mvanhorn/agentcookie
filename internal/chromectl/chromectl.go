@@ -4,16 +4,16 @@
 // LevelDB). One package, one ceremony, used by every writer.
 //
 // The ceremony:
-//   1. Caller asks for Chrome to be quit
-//   2. osascript "tell application Google Chrome to quit" sends an
-//      AppleEvent that lets Chrome save session state and persist
-//      preferences before exiting
-//   3. Caller polls until the process is gone
-//   4. Caller does its file writes
-//   5. Caller asks Chrome to relaunch via open(1)
-//   6. Caller polls until Chrome's user-data-dir is in a stable state
-//      (its Local State file is being written, indicating Chrome boot
-//      finished initial setup)
+//  1. Caller asks for Chrome to be quit
+//  2. osascript "tell application Google Chrome to quit" sends an
+//     AppleEvent that lets Chrome save session state and persist
+//     preferences before exiting
+//  3. Caller polls until the process is gone
+//  4. Caller does its file writes
+//  5. Caller asks Chrome to relaunch via open(1)
+//  6. Caller polls until Chrome's user-data-dir is in a stable state
+//     (its Local State file is being written, indicating Chrome boot
+//     finished initial setup)
 //
 // Both polling steps are deadline-bounded so a stuck Chrome process
 // surfaces as a typed error rather than a hang.

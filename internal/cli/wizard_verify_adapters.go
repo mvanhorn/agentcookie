@@ -110,8 +110,8 @@ func formatAdapterRow(r state.AdapterResult) (status, detail string) {
 // the table.
 func emitVerifyJSON(results []state.AdapterResult, statusCode string) error {
 	envelope := struct {
-		Status  string                 `json:"status"`
-		Results []state.AdapterResult  `json:"results,omitempty"`
+		Status  string                `json:"status"`
+		Results []state.AdapterResult `json:"results,omitempty"`
 	}{
 		Status:  statusCode,
 		Results: results,

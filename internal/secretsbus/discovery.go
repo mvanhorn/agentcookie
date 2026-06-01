@@ -27,12 +27,12 @@ const (
 // RegisteredProject is one row in the discovery registry. The Manifest
 // pointer may be in-memory (PP-derived) or parsed from disk (explicit).
 type RegisteredProject struct {
-	Name              string
-	Kind              SourceKind
-	SourcePath        string // where the manifest came from (file path)
-	ReadInPlacePath   string // expanded [secrets.file].path; empty for legacy-v1
-	Manifest          *ManifestV2
-	SkippedReason     string // populated only on SkippedEntry list
+	Name            string
+	Kind            SourceKind
+	SourcePath      string // where the manifest came from (file path)
+	ReadInPlacePath string // expanded [secrets.file].path; empty for legacy-v1
+	Manifest        *ManifestV2
+	SkippedReason   string // populated only on SkippedEntry list
 }
 
 // Registry holds the discovered projects keyed by slug, plus per-path
@@ -45,10 +45,10 @@ type Registry struct {
 // DiscoveryConfig customizes discovery for tests. Production callers pass
 // homeDir and accept defaults for the rest.
 type DiscoveryConfig struct {
-	HomeDir         string
-	ExtraPaths      []string // user-added paths via `agentcookie discover --add-path`
-	PPLibraryPath   string   // default ~/printing-press/library; settable for tests
-	SystemPath      string   // default /usr/local/share/agentcookie/manifests; settable for tests
+	HomeDir       string
+	ExtraPaths    []string // user-added paths via `agentcookie discover --add-path`
+	PPLibraryPath string   // default ~/printing-press/library; settable for tests
+	SystemPath    string   // default /usr/local/share/agentcookie/manifests; settable for tests
 }
 
 // Discover walks the well-known paths in priority order, parses every
@@ -228,10 +228,11 @@ func tryRegisterPP(reg *Registry, errs *[]error, ppJSONPath, homeDir string) {
 	}
 	finalName := m.Name
 	if existing, ok := reg.Projects[m.Name]; ok {
-		if existing.Kind == SourceKindExplicitManifest {
+		switch existing.Kind {
+		case SourceKindExplicitManifest:
 			// Explicit wins per 4.2; derived gets -pp suffix.
 			finalName = m.Name + "-pp"
-		} else if existing.Kind == SourceKindPPCLIDerived {
+		case SourceKindPPCLIDerived:
 			// Two derived collisions per 4.3: first-by-sort already won,
 			// this one gets a hash suffix.
 			sum := sha256.Sum256([]byte(ppJSONPath))

@@ -1,0 +1,51 @@
+version: "2"
+
+formatters:
+  enable:
+    - gofmt
+
+linters:
+  enable:
+    - govet
+    - errcheck
+    - ineffassign
+    - staticcheck
+    - unused
+    # Catches accumulated "Go has a newer way to do this" patterns:
+    # interface{} -> any, ad-hoc loops -> slices.Contains, range-over-int,
+    # min/max builtins, strings.Builder, CutPrefix/CutSuffix, etc.
+    - modernize
+  settings:
+    errcheck:
+      exclude-functions:
+        # CLI output -- failure means stdout is broken, nothing to recover.
+        - (io.Writer).Write
+        # Idiomatic deferred rollback in error paths (not covered by the
+        # std-error-handling preset below, which handles Close/Flush/Remove).
+        - (*database/sql.Tx).Rollback
+  exclusions:
+    # std-error-handling excludes the idiomatic unchecked Close/Flush/Remove/
+    # print/Setenv errors across all types -- the standard Go convention where
+    # the error has nowhere meaningful to go (deferred cleanup, CLI output).
+    presets:
+      - std-error-handling
+    rules:
+      # Test files get a lighter touch: unchecked errors and ineffectual
+      # assignments in setup/cleanup helpers are noise, not bugs.
+      - path: '_test\.go'
+        linters:
+          - errcheck
+          - ineffassign
+      # staticcheck cannot see that t.Fatal terminates the test, so it reports
+      # false-positive nil-deref warnings after a `if x == nil { t.Fatal }`
+      # guard. SA4006 likewise flags intentional size sanity checks in tests.
+      - path: '_test\.go'
+        text: 'SA5011'
+      - path: '_test\.go'
+        text: 'SA4006'
+      # omitempty on a nested struct field has no effect, but switching to
+      # omitzero would change config/wire serialization (config.go is the
+      # on-disk and wire format). Out of scope for a lint-gate change.
+      - text: 'omitzero'
+        linters:
+          - modernize

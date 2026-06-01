@@ -80,6 +80,11 @@ func (c Config) baselineTick() time.Duration {
 	return 30 * time.Second
 }
 
+// maxBackoff returns the effective backoff cap. NOTE: currently unwired -- the
+// run loop does not call this, so the documented cap is not enforced yet. Kept
+// (not deleted) to preserve that signal; wiring it in is tracked separately.
+//
+//nolint:unused // effective-cap helper not yet wired into the run loop
 func (c Config) maxBackoff() time.Duration {
 	if c.MaxBackoff > 0 {
 		return c.MaxBackoff

@@ -81,7 +81,7 @@ To silence the auto-detect, drop a manifest with sync.default = false:
   default = false
   EOF
 
-Then re-run ` + "`agentcookie discover`" + ` to confirm.
+Then re-run `+"`agentcookie discover`"+` to confirm.
 `, name, rp.SourcePath, home, name, name, name, rp.ReadInPlacePath)
 		return nil
 

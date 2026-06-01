@@ -12,9 +12,9 @@ import (
 
 func TestDefaults_AllProfiles(t *testing.T) {
 	cases := []struct {
-		profile         Profile
-		wantServerSide  bool
-		wantClientSide  bool
+		profile           Profile
+		wantServerSide    bool
+		wantClientSide    bool
 		wantMaxBodyAtMost int64
 	}{
 		{SinkSync, true, false, 256 * 1024 * 1024},

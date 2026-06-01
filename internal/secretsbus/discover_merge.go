@@ -2,6 +2,7 @@ package secretsbus
 
 import (
 	"fmt"
+	"maps"
 	"os"
 )
 
@@ -64,9 +65,7 @@ func LoadPayloadWithDiscovery(homeDir string) (*Payload, []error) {
 			for _, e := range carryErrs {
 				errs = append(errs, fmt.Errorf("discovered project %q: %w", slug, e))
 			}
-			for k, v := range carried {
-				filtered[k] = v
-			}
+			maps.Copy(filtered, carried)
 		}
 
 		if len(filtered) == 0 {

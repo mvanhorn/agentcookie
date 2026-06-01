@@ -8,7 +8,7 @@ import (
 
 func TestRateLimiter_BucketCap(t *testing.T) {
 	l := newRateLimiter()
-	for i := 0; i < AttemptLimit; i++ {
+	for i := range AttemptLimit {
 		if !l.allow("1.2.3.4") {
 			t.Fatalf("attempt %d should be allowed", i+1)
 		}
@@ -20,7 +20,7 @@ func TestRateLimiter_BucketCap(t *testing.T) {
 
 func TestRateLimiter_PerIPIsolation(t *testing.T) {
 	l := newRateLimiter()
-	for i := 0; i < AttemptLimit; i++ {
+	for i := range AttemptLimit {
 		if !l.allow("1.2.3.4") {
 			t.Fatalf("a attempt %d should be allowed", i+1)
 		}
@@ -37,7 +37,7 @@ func TestRateLimiter_Refills(t *testing.T) {
 	l := newRateLimiter()
 	l.now = func() time.Time { return now }
 
-	for i := 0; i < AttemptLimit; i++ {
+	for range AttemptLimit {
 		_ = l.allow("1.2.3.4")
 	}
 	if l.allow("1.2.3.4") {

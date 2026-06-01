@@ -11,13 +11,13 @@ import (
 // the fields we read, so unknown fields in the JSON are silently ignored by
 // encoding/json.
 type ppCLIMetadata struct {
-	SchemaVersion       int                       `json:"schema_version"`
-	APIName             string                    `json:"api_name"`
-	DisplayName         string                    `json:"display_name"`
-	CLIName             string                    `json:"cli_name"`
-	Description         string                    `json:"description"`
-	AuthEnvVars         []string                  `json:"auth_env_vars"`
-	AuthEnvVarSpecs     []ppCLIAuthEnvVarSpec     `json:"auth_env_var_specs"`
+	SchemaVersion   int                   `json:"schema_version"`
+	APIName         string                `json:"api_name"`
+	DisplayName     string                `json:"display_name"`
+	CLIName         string                `json:"cli_name"`
+	Description     string                `json:"description"`
+	AuthEnvVars     []string              `json:"auth_env_vars"`
+	AuthEnvVarSpecs []ppCLIAuthEnvVarSpec `json:"auth_env_var_specs"`
 }
 
 type ppCLIAuthEnvVarSpec struct {

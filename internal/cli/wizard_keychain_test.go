@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -236,12 +237,7 @@ func TestAnyApp_DefaultUnchanged(t *testing.T) {
 }
 
 func contains(args []string, want string) bool {
-	for _, a := range args {
-		if a == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(args, want)
 }
 
 func containsPair(args []string, flag, val string) bool {

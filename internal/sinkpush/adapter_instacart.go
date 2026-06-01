@@ -14,13 +14,13 @@ import (
 // InstacartAdapter pushes Instacart cookies into instacart-pp-cli's
 // session cache via the CLI's `auth paste` command. Strategy:
 //
-//   1. Filter cookies to instacart.com hosts (sink does this; adapter
-//      receives the filtered set).
-//   2. Format as a Cookie header value ("name=value; name=value; ...")
-//      mirroring the hack/dump-instacart reference flow that has been
-//      proven end-to-end on the Mac mini sink.
-//   3. exec `<cli> auth paste` with the header on stdin. instacart-pp-cli
-//      parses the header, writes its own session.json, and exits 0.
+//  1. Filter cookies to instacart.com hosts (sink does this; adapter
+//     receives the filtered set).
+//  2. Format as a Cookie header value ("name=value; name=value; ...")
+//     mirroring the hack/dump-instacart reference flow that has been
+//     proven end-to-end on the Mac mini sink.
+//  3. exec `<cli> auth paste` with the header on stdin. instacart-pp-cli
+//     parses the header, writes its own session.json, and exits 0.
 //
 // After Push completes, future invocations of instacart-pp-cli (over
 // SSH, via Hermes, anywhere) read from the freshly-written session.json

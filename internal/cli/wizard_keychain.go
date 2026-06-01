@@ -237,7 +237,7 @@ func convergeSafeStorageToOneItem(loginPassword string) (removed int, err error)
 	}
 
 	// Delete every matching item, then re-add exactly one with the SAME value.
-	for i := 0; i < n; i++ {
+	for range n {
 		if _, derr := execSecurityFunc("delete-generic-password",
 			"-s", "Chrome Safe Storage", "-a", "Chrome"); derr != nil {
 			break // nothing left to delete
@@ -457,7 +457,6 @@ func buildStrategies(extraBinaries []string, enableSealing bool, anyApp bool) []
 	}...)
 
 	for _, bin := range extraBinaries {
-		bin := bin
 		out = append(out, kcStrategy{
 			name: "trust-list:" + filepath.Base(bin),
 			apply: func() (string, error) {

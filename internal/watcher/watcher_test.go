@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,7 +14,6 @@ import (
 type fakePush struct {
 	count    atomic.Int64
 	pushed   atomic.Int64
-	mu       sync.Mutex
 	pushChan chan struct{}
 	failNext bool
 }
@@ -156,7 +154,7 @@ func TestWatcherDebouncesRapidWrites(t *testing.T) {
 	start := fp.count.Load()
 
 	// Hammer the file 10 times in 100ms.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		_ = os.WriteFile(cookies, []byte{byte(i)}, 0o600)
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -200,7 +198,7 @@ func TestWatcherIgnoresUnrelatedFiles(t *testing.T) {
 
 	// Touch an unrelated file in the same dir.
 	unrelated := filepath.Join(dir, "unrelated.txt")
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		_ = os.WriteFile(unrelated, []byte{byte(i)}, 0o600)
 		time.Sleep(10 * time.Millisecond)
 	}

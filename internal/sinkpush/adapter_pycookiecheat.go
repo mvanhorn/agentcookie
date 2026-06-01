@@ -19,8 +19,8 @@ import (
 // Discovered on 2026-05-17 from inspecting Matt's MBP after airbnb-pp-cli
 // and ebay-pp-cli auth flows ran successfully:
 //
-//   ~/.config/<cli>/config.toml   — TOML; access_token = '<cookie header>'
-//   ~/.config/<cli>/cookies.json  — JSON; {"cookies": "<cookie header>"}
+//	~/.config/<cli>/config.toml   — TOML; access_token = '<cookie header>'
+//	~/.config/<cli>/cookies.json  — JSON; {"cookies": "<cookie header>"}
 //
 // At least three PP CLIs share this exact format (airbnb-pp-cli,
 // ebay-pp-cli, pagliacci-pp-cli) -- they each shell out to

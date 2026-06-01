@@ -120,7 +120,7 @@ A = true
 func TestLoadPayload_OversizeFileSkipped(t *testing.T) {
 	home := t.TempDir()
 	cliDir := filepath.Join(SecretsRoot(home), "huge-cli")
-	huge := strings.Repeat("BIG_KEY=" + strings.Repeat("x", 100) + "\n", 3000)
+	huge := strings.Repeat("BIG_KEY="+strings.Repeat("x", 100)+"\n", 3000)
 	writeFile(t, filepath.Join(cliDir, "secrets.env"), huge)
 
 	p, errs := LoadPayload(home)
@@ -283,13 +283,13 @@ func TestValidCLIName(t *testing.T) {
 		{"foo123", true},
 		{"123foo", true},
 		{"", false},
-		{"Foo", false},      // uppercase
-		{"-foo", false},     // leading hyphen
-		{"foo-", false},     // trailing hyphen
-		{"foo.bar", false},  // dot
-		{"foo/bar", false},  // slash
-		{"foo_bar", false},  // underscore (per spec, only hyphen)
-		{"..", false},       // traversal
+		{"Foo", false},     // uppercase
+		{"-foo", false},    // leading hyphen
+		{"foo-", false},    // trailing hyphen
+		{"foo.bar", false}, // dot
+		{"foo/bar", false}, // slash
+		{"foo_bar", false}, // underscore (per spec, only hyphen)
+		{"..", false},      // traversal
 	}
 	for _, tc := range cases {
 		got := validCLIName(tc.in)
