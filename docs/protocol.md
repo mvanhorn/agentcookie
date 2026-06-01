@@ -56,6 +56,8 @@ domains:
 
 Patterns use SQLite LIKE semantics (`%` wildcard). Matching is case-insensitive and matches against Chrome's `host_key` column, which includes a leading dot for subdomain cookies. Prefer `agentcookie accounts off <domain>` for normal site toggles; it writes the exact host plus a subdomain-safe `%.` pattern.
 
+A missing `blocklist.yaml` still means sync-all; a present but unparseable blocklist intentionally halts sync instead of falling back to sync-all.
+
 ## Versioning
 
 - v1 is the current wire format. Source and sink must both speak it.
