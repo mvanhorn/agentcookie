@@ -36,23 +36,29 @@ func LoadPayloadWithDiscovery(homeDir string) (*Payload, []error) {
 		if rp.Kind == SourceKindLegacyV1 {
 			continue // already loaded via LoadPayload above
 		}
-		if rp.Manifest == nil || rp.ReadInPlacePath == "" {
+		if rp.Manifest == nil {
 			continue
 		}
-		kv, err := parseEnvFile(rp.ReadInPlacePath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				errs = append(errs, fmt.Errorf("discovered project %q: read-in-place file missing: %s", slug, rp.ReadInPlacePath))
-			} else {
-				errs = append(errs, fmt.Errorf("discovered project %q: read %s: %w", slug, rp.ReadInPlacePath, err))
-			}
-			continue
-		}
-		// Apply manifest sync policy: drop keys the manifest says no to.
 		filtered := map[string]string{}
-		for k, v := range kv {
-			if rp.Manifest.ShouldShipKey(k) {
-				filtered[k] = v
+		// Read-in-place env source, when the manifest declares one. A
+		// [[files]]-only manifest (no [secrets.file]) has an empty
+		// ReadInPlacePath and ships its secrets entirely via carried files
+		// below, so the env read is skipped rather than treated as missing.
+		if rp.ReadInPlacePath != "" {
+			kv, err := parseEnvFile(rp.ReadInPlacePath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					errs = append(errs, fmt.Errorf("discovered project %q: read-in-place file missing: %s", slug, rp.ReadInPlacePath))
+				} else {
+					errs = append(errs, fmt.Errorf("discovered project %q: read %s: %w", slug, rp.ReadInPlacePath, err))
+				}
+				continue
+			}
+			// Apply manifest sync policy: drop keys the manifest says no to.
+			for k, v := range kv {
+				if rp.Manifest.ShouldShipKey(k) {
+					filtered[k] = v
+				}
 			}
 		}
 
