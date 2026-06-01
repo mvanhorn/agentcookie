@@ -32,6 +32,19 @@ import (
 // target path for the carried payload under key K.
 const fileTargetKeyPrefix = "_FILE_"
 
+// fileEnvKeyPrefix is the reserved prefix for the optional companion key that
+// names an env var to set to the materialized ABSOLUTE path. _FILEENV_<K> holds
+// the env var name for the carried payload under key K, so the sink can emit
+// e.g. TESLA_CONFIG=/Users/x/.agentcookie/tesla-pp-cli/config.toml and point a
+// path-reading CLI at the carried file with no per-machine path hardcoding.
+const fileEnvKeyPrefix = "_FILEENV_"
+
+// CarryFileEnvKey returns the reserved companion key carrying the env-var name
+// for a carried-file payload key.
+func CarryFileEnvKey(payloadKey string) string {
+	return fileEnvKeyPrefix + payloadKey
+}
+
 // maxCarriedFileBytes caps a single carried file at 256 KB (decoded), matching
 // the v1 secrets.env size cap. Oversized payloads are refused, not written, so
 // a runaway file cannot swamp the sink.
@@ -100,6 +113,9 @@ func CarryFiles(files []ManifestV2File, enabled map[string]bool, homeDir string)
 		}
 		out[f.Key] = base64.StdEncoding.EncodeToString(data)
 		out[CarryFileKey(f.Key)] = f.Target
+		if f.Env != "" {
+			out[CarryFileEnvKey(f.Key)] = f.Env
+		}
 	}
 	return out, errs
 }
@@ -133,6 +149,11 @@ func LoadEnabledFileKeys(homeDir, cliName string) map[string]bool {
 type MaterializeResult struct {
 	// FilesWritten is the count of carried files materialized to 0600 files.
 	FilesWritten int
+	// EnvAdditions maps an env var name to the ABSOLUTE materialized path of a
+	// carried file that declared an `env` companion. The caller merges these
+	// into the CLI's secrets.env so `secret env` emits them, pointing a
+	// path-reading consumer CLI at the carried file.
+	EnvAdditions map[string]string
 }
 
 // MaterializeFiles scans a per-CLI env map for carried-file companion keys
@@ -210,6 +231,29 @@ func MaterializeFiles(homeDir string, cliName string, env map[string]string) (Ma
 		result.FilesWritten++
 		consumed[payloadKey] = true
 		consumed[k] = true
+
+		// Optional env companion: emit <ENV>=<abs materialized path> so a
+		// path-reading CLI is pointed at the carried file. The env var name is
+		// re-validated (the sink does not trust the wire).
+		if envName, ok := env[CarryFileEnvKey(payloadKey)]; ok {
+			consumed[CarryFileEnvKey(payloadKey)] = true
+			if validKeyName(envName) {
+				if result.EnvAdditions == nil {
+					result.EnvAdditions = map[string]string{}
+				}
+				result.EnvAdditions[envName] = dest
+			} else {
+				errs = append(errs, fmt.Errorf("%s: file %q env companion %q is not a valid env var name; ignored", cliName, payloadKey, envName))
+			}
+		}
+	}
+
+	// Strip any dangling _FILEENV_ companions (e.g. for a payload that failed to
+	// materialize) so they never leak into secrets.env as raw keys.
+	for k := range env {
+		if strings.HasPrefix(k, fileEnvKeyPrefix) {
+			consumed[k] = true
+		}
 	}
 
 	return result, consumed, errs

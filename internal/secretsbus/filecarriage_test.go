@@ -116,6 +116,58 @@ func TestMaterializeFiles_OverwriteIsAtomicAndValuePreserved(t *testing.T) {
 	}
 }
 
+func TestFileCarriage_EnvPointsConsumerAtMaterializedPath(t *testing.T) {
+	home := t.TempDir()
+	// Source file to carry.
+	srcDir := filepath.Join(home, ".config", "tesla-pp-cli")
+	if err := os.MkdirAll(srcDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(srcDir, "config.toml")
+	if err := os.WriteFile(src, []byte("access_token=abc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	files := []ManifestV2File{{
+		Source: "~/.config/tesla-pp-cli/config.toml",
+		Key:    "TESLA_CONFIG_TOML",
+		Target: "tesla-pp-cli/config.toml",
+		Env:    "TESLA_CONFIG",
+	}}
+	carried, errs := CarryFiles(files, nil, home)
+	if len(errs) != 0 {
+		t.Fatalf("carry errs: %v", errs)
+	}
+	// The env companion travels in the envelope.
+	if carried[CarryFileEnvKey("TESLA_CONFIG_TOML")] != "TESLA_CONFIG" {
+		t.Fatalf("env companion not carried: %v", carried)
+	}
+
+	res, consumed, merrs := MaterializeFiles(home, "tesla-pp-cli", carried)
+	if len(merrs) != 0 {
+		t.Fatalf("materialize errs: %v", merrs)
+	}
+	if res.FilesWritten != 1 {
+		t.Fatalf("FilesWritten = %d, want 1", res.FilesWritten)
+	}
+	wantPath := filepath.Join(home, ".agentcookie", "tesla-pp-cli", "config.toml")
+	if got := res.EnvAdditions["TESLA_CONFIG"]; got != wantPath {
+		t.Errorf("EnvAdditions[TESLA_CONFIG] = %q, want %q", got, wantPath)
+	}
+	// The materialized file exists at the pointed path, 0600.
+	info, err := os.Stat(wantPath)
+	if err != nil {
+		t.Fatalf("materialized file missing: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("materialized mode = %v, want 0600", info.Mode().Perm())
+	}
+	// The env companion is consumed so it never leaks as a raw secrets.env key.
+	if !consumed[CarryFileEnvKey("TESLA_CONFIG_TOML")] {
+		t.Errorf("env companion should be consumed/stripped")
+	}
+}
+
 func TestMaterializeFiles_RefusesTargetEscapingRoot(t *testing.T) {
 	home := t.TempDir()
 	cases := map[string]string{
