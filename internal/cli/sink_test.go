@@ -1,14 +1,25 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
+	"github.com/mvanhorn/agentcookie/internal/config"
+	"github.com/mvanhorn/agentcookie/internal/protocol"
+	"github.com/mvanhorn/agentcookie/internal/state"
+	"github.com/mvanhorn/agentcookie/internal/transport"
+	"github.com/mvanhorn/agentcookie/pkg/sidecar"
 )
 
 // TestValidateListenAddr_PolicyMatrix exercises the v0.12 S1 binding
@@ -192,6 +203,131 @@ func TestApplySidecarOnlyToSink_EmptyCookies(t *testing.T) {
 	}
 }
 
+func TestSinkSyncMalformedBlocklistReturns500AndWritesNothing(t *testing.T) {
+	fx := newSinkHandlerFixture(t, false)
+	writeCLIFile(t, filepath.Join(fx.configDir, "blocklist.yaml"), `
+version: 1
+domains: []
+unexpected: true
+`)
+
+	rec := fx.postSync(1, []chrome.Cookie{
+		{HostKey: ".blocked.com", Name: "blocked", Value: "b", Path: "/"},
+		{HostKey: ".allowed.com", Name: "allowed", Value: "a", Path: "/"},
+	})
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "load blocklist") {
+		t.Errorf("response should name blocklist load failure, got %q", rec.Body.String())
+	}
+	if _, err := os.Stat(fx.sidecarPath()); !os.IsNotExist(err) {
+		t.Fatalf("sidecar should be untouched on malformed blocklist, stat err=%v", err)
+	}
+	if fx.sinkState.TotalRejects != 1 {
+		t.Errorf("TotalRejects = %d, want 1", fx.sinkState.TotalRejects)
+	}
+	if got := fx.seqTracker.Last("source-test"); got != 0 {
+		t.Errorf("malformed blocklist should not accept sequence, got %d", got)
+	}
+}
+
+func TestSinkSyncWellFormedBlocklistFiltersBeforeWrite(t *testing.T) {
+	fx := newSinkHandlerFixture(t, false)
+	writeCLIFile(t, filepath.Join(fx.configDir, "blocklist.yaml"), `
+version: 1
+domains:
+  - pattern: "%.blocked.com"
+`)
+
+	rec := fx.postSync(1, []chrome.Cookie{
+		{HostKey: ".blocked.com", Name: "blocked", Value: "b", Path: "/"},
+		{HostKey: ".allowed.com", Name: "allowed", Value: "a", Path: "/"},
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "dropped 1 blocklisted cookies") {
+		t.Errorf("response should report dropped cookie, got %q", rec.Body.String())
+	}
+	if got := fx.sidecarHosts(); !reflect.DeepEqual(got, []string{".allowed.com"}) {
+		t.Fatalf("sidecar hosts = %v, want only allowed", got)
+	}
+}
+
+func TestSinkSyncMissingBlocklistSyncsAll(t *testing.T) {
+	fx := newSinkHandlerFixture(t, false)
+
+	rec := fx.postSync(1, []chrome.Cookie{
+		{HostKey: ".one.com", Name: "one", Value: "1", Path: "/"},
+		{HostKey: ".two.com", Name: "two", Value: "2", Path: "/"},
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%q", rec.Code, rec.Body.String())
+	}
+	if got := fx.sidecarHosts(); !reflect.DeepEqual(got, []string{".one.com", ".two.com"}) {
+		t.Fatalf("sidecar hosts = %v, want sync-all", got)
+	}
+}
+
+func TestSinkSyncReloadsBlocklistBetweenRequests(t *testing.T) {
+	fx := newSinkHandlerFixture(t, false)
+	cookies := []chrome.Cookie{
+		{HostKey: ".blocked.com", Name: "blocked", Value: "b", Path: "/"},
+		{HostKey: ".allowed.com", Name: "allowed", Value: "a", Path: "/"},
+	}
+
+	rec := fx.postSync(1, cookies)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want 200; body=%q", rec.Code, rec.Body.String())
+	}
+	if got := fx.sidecarHosts(); !reflect.DeepEqual(got, []string{".allowed.com", ".blocked.com"}) {
+		t.Fatalf("first sidecar hosts = %v", got)
+	}
+
+	writeCLIFile(t, filepath.Join(fx.configDir, "blocklist.yaml"), `
+version: 1
+domains:
+  - pattern: "%.blocked.com"
+`)
+	rec = fx.postSync(2, cookies)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second status = %d, want 200; body=%q", rec.Code, rec.Body.String())
+	}
+	if got := fx.sidecarHosts(); !reflect.DeepEqual(got, []string{".allowed.com"}) {
+		t.Fatalf("second sidecar hosts = %v, want newly blocked host dropped", got)
+	}
+}
+
+func TestSinkSyncDryRunMalformedBlocklistRefuses(t *testing.T) {
+	fx := newSinkHandlerFixture(t, true)
+	writeCLIFile(t, filepath.Join(fx.configDir, "blocklist.yaml"), `
+version: 1
+domains:
+  - pattern: "%.blocked.com
+`)
+
+	rec := fx.postSync(1, []chrome.Cookie{
+		{HostKey: ".allowed.com", Name: "allowed", Value: "a", Path: "/"},
+	})
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%q", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "accepted") {
+		t.Errorf("dry-run malformed blocklist should not report accepted cookies, got %q", rec.Body.String())
+	}
+	if fx.sinkState.TotalWrites != 0 {
+		t.Errorf("TotalWrites = %d, want 0", fx.sinkState.TotalWrites)
+	}
+	if _, err := os.Stat(fx.sidecarPath()); !os.IsNotExist(err) {
+		t.Fatalf("dry-run malformed blocklist should not create sidecar, stat err=%v", err)
+	}
+}
+
 // TestSetCDPInjectorForTesting confirms the test seam restores the
 // production injector. Used by other tests that need to stub
 // cdpInject.
@@ -256,4 +392,84 @@ func TestCDPInjector_FailureDoesNotPropagate(t *testing.T) {
 	if !strings.Contains(err.Error(), "simulated chromedp launch failure") {
 		t.Errorf("unexpected error: %v", err)
 	}
+}
+
+type sinkHandlerFixture struct {
+	configDir  string
+	home       string
+	mux        *http.ServeMux
+	secret     string
+	seqTracker *protocol.SequenceTracker
+	sinkState  *state.SinkState
+}
+
+func newSinkHandlerFixture(t *testing.T, dryRun bool) *sinkHandlerFixture {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	configDir := t.TempDir()
+	withConfigDir(t, configDir)
+
+	oldDryRun := sinkDryRun
+	sinkDryRun = dryRun
+	t.Cleanup(func() { sinkDryRun = oldDryRun })
+
+	cfg := &config.SinkConfig{
+		Listen:           config.ListenRef{Addr: "127.0.0.1:9999"},
+		SkipChromeSQLite: true,
+	}
+	secret := "sink-handler-test-secret"
+	seqTracker := protocol.NewSequenceTracker()
+	sinkState := &state.SinkState{Role: "sink", ListenAddr: cfg.Listen.Addr}
+	stateWriter := state.NewWriter(filepath.Join(t.TempDir(), "sink-state.json"))
+	mux := newSinkMux(cfg, secret, []byte("0123456789abcdef"), seqTracker, stateWriter, sinkState)
+
+	return &sinkHandlerFixture{
+		configDir:  configDir,
+		home:       home,
+		mux:        mux,
+		secret:     secret,
+		seqTracker: seqTracker,
+		sinkState:  sinkState,
+	}
+}
+
+func (f *sinkHandlerFixture) postSync(seq int64, cookies []chrome.Cookie) *httptest.ResponseRecorder {
+	envelope := protocol.SyncEnvelope{
+		ProtocolVersion: protocol.Version,
+		SourceHostname:  "source-test",
+		Sequence:        seq,
+		Cookies:         cookies,
+	}
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		panic(err)
+	}
+	sealed, err := transport.SealWithSecret(payload, f.secret)
+	if err != nil {
+		panic(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/sync", bytes.NewReader(sealed))
+	rec := httptest.NewRecorder()
+	f.mux.ServeHTTP(rec, req)
+	return rec
+}
+
+func (f *sinkHandlerFixture) sidecarPath() string {
+	return filepath.Join(f.home, ".agentcookie", "cookies-plain.db")
+}
+
+func (f *sinkHandlerFixture) sidecarHosts() []string {
+	cookies, err := sidecar.ReadSidecar(f.sidecarPath())
+	if err != nil {
+		panic(err)
+	}
+	hosts := make([]string, 0, len(cookies))
+	for _, c := range cookies {
+		hosts = append(hosts, c.HostKey)
+	}
+	sort.Strings(hosts)
+	return hosts
 }
