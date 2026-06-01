@@ -33,7 +33,7 @@ Logging in twice. Once on your laptop, once again on the Mac your agent lives on
 
 Tools that ship cookies between machines today assume a human is going to click "merge" or unlock a vault or open the destination browser. They were built for switching accounts between two laptops the same person uses. They weren't built for "the agent on the headless Mac mini needs my session in 30 seconds and there's nobody home."
 
-agentcookie is the second pattern. One-way, continuous, unattended replication from the machine you live in to the machine your agents act from. Pairing-derived per-peer keys, allowlist + blocklist on both sides, AES-256-GCM over the Tailscale tailnet's WireGuard channel. The hard parts (macOS Keychain protections, Chrome's App-Bound Encryption, per-CLI auth conventions) are handled.
+agentcookie is the second pattern. One-way, continuous, unattended replication from the machine you live in to the machine your agents act from. Pairing-derived per-peer keys, blocklist filters on both sides, AES-256-GCM over the Tailscale tailnet's WireGuard channel. The hard parts (macOS Keychain protections, Chrome's App-Bound Encryption, per-CLI auth conventions) are handled.
 
 ## How it works
 
@@ -111,6 +111,14 @@ agentcookie wizard verify-adapters           # per-adapter results from the last
 agentcookie wizard verify-adapters --json    # same, structured for SSH agents
 ```
 
+Turn cookie sync off or back on for a site without editing YAML:
+
+~~~bash
+agentcookie accounts off x.com          # add x.com + subdomains to blocklist.yaml
+agentcookie accounts on x.com           # remove those blocklist entries
+agentcookie accounts list               # show disabled domains and custom patterns
+~~~
+
 Healthy output:
 
 ```
@@ -131,7 +139,7 @@ macOS only on both ends today. The source side reads Chrome on macOS via the Key
 
 Working:
 
-- Continuous laptop to second-Mac sync via fsnotify on Chrome's Cookies file, debounced, allowlist + blocklist filtered, AES-256-GCM over Tailscale.
+- Continuous laptop to second-Mac sync via fsnotify on Chrome's Cookies file, debounced, blocklist filtered, AES-256-GCM over Tailscale.
 - Three cookie delivery surfaces on the sink (Chrome SQLite, plaintext sidecar, per-CLI adapter session files).
 - Works with Printing Press CLIs like Stripe, Linear, Notion, Granola, Slack, Kalshi, ElevenLabs, Mercury, and dozens more: anything with a bearer token or API key reads the secrets bus, anything that reads cookies reads the plaintext sidecar. Five PP CLIs (instacart, airbnb, ebay, pagliacci, table-reservation-goat with OpenTable + Tock) additionally get a bespoke zero-config cookie adapter.
 - Per-CLI secrets bus: bearer tokens, API keys, and `KEY=VALUE` auth blobs ride the same encrypted push and land at `~/.agentcookie/secrets/<cli>/secrets.env` (mode 0600) with an optional sealed twin.

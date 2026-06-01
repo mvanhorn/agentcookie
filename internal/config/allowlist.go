@@ -7,7 +7,7 @@ import (
 )
 
 // BlocklistEntry is one explicitly opted-OUT cookie domain. Pattern follows
-// SQLite LIKE syntax (use '%' as wildcard, e.g. "%chase.com"). Cookies whose
+// SQLite LIKE syntax (use '%' as wildcard, e.g. "%.chase.com"). Cookies whose
 // host_key matches any pattern are NOT synced.
 type BlocklistEntry struct {
 	Pattern     string `yaml:"pattern" json:"pattern"`

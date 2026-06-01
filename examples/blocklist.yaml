@@ -11,6 +11,9 @@
 # insensitive and matches against Chrome's host_key (which includes a
 # leading dot for subdomain cookies).
 #
+# Prefer `agentcookie accounts off <domain>` for normal site toggles. It writes
+# both the exact host and subdomain-safe pattern without matching sibling domains.
+#
 # Both source and sink read this file independently. The sink owner has the
 # final say on what state lands on their machine.
 
@@ -18,22 +21,35 @@ version: 1
 
 domains:
   # Banking / brokerage / personal finance:
-  # - pattern: "%chase.com"
+  # - pattern: "chase.com"
   #   description: Chase bank
-  # - pattern: "%vanguard.com"
-  # - pattern: "%fidelity.com"
-  # - pattern: "%schwab.com"
-  # - pattern: "%bankofamerica.com"
+  # - pattern: "%.chase.com"
+  #   description: Chase bank
+  # - pattern: "vanguard.com"
+  # - pattern: "%.vanguard.com"
+  # - pattern: "fidelity.com"
+  # - pattern: "%.fidelity.com"
+  # - pattern: "schwab.com"
+  # - pattern: "%.schwab.com"
+  # - pattern: "bankofamerica.com"
+  # - pattern: "%.bankofamerica.com"
 
   # Password managers (almost certainly do not want synced):
-  # - pattern: "%1password.com"
-  # - pattern: "%bitwarden.com"
-  # - pattern: "%lastpass.com"
+  # - pattern: "1password.com"
+  # - pattern: "%.1password.com"
+  # - pattern: "bitwarden.com"
+  # - pattern: "%.bitwarden.com"
+  # - pattern: "lastpass.com"
+  # - pattern: "%.lastpass.com"
 
   # Tax / IRS:
-  # - pattern: "%irs.gov"
-  # - pattern: "%turbotax.intuit.com"
+  # - pattern: "irs.gov"
+  # - pattern: "%.irs.gov"
+  # - pattern: "turbotax.intuit.com"
+  # - pattern: "%.turbotax.intuit.com"
 
   # Health / insurance:
-  # - pattern: "%kaiserpermanente.org"
-  # - pattern: "%bcbs.com"
+  # - pattern: "kaiserpermanente.org"
+  # - pattern: "%.kaiserpermanente.org"
+  # - pattern: "bcbs.com"
+  # - pattern: "%.bcbs.com"

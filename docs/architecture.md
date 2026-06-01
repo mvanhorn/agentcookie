@@ -12,8 +12,8 @@
    |  agentcookie source       |                    |  agentcookie sink (launchd) |
    |    - read SQLite (RO)     |                    |    - listen :9999/sync      |
    |    - decrypt w/ local key |     AES-GCM        |    - decrypt seal           |
-   |    - filter by allowlist  |    over HTTP       |    - check proto + seq      |
-   |    - wrap in envelope     | ================>  |    - filter by allowlist    |
+   |    - filter by blocklist  |    over HTTP       |    - check proto + seq      |
+   |    - wrap in envelope     | ================>  |    - filter by blocklist    |
    |    - seal w/ peer key     |    on tailnet      |    - write Chrome SQLite    |
    |                           |    (WireGuard)     |    - write sealed sidecar   |
    +---------------------------+                    +-----------------------------+
@@ -32,20 +32,20 @@
 | `internal/cli` | Subcommand implementations: `source`, `sink`, `pair`, `status`, `version`. |
 | `internal/chrome` | Read + decrypt Chrome cookies on macOS via Keychain Safe Storage + SQLite. Schema-aware INSERT for the write path. |
 | `internal/transport` | AES-GCM seal/open with key = SHA-256(secret). |
-| `internal/config` | YAML loaders for `source.yaml`, `sink.yaml`, `allowlist.yaml`. Tilde expansion, defaults, validation. |
+| `internal/config` | YAML loaders for `source.yaml`, `sink.yaml`, `blocklist.yaml`. Tilde expansion, defaults, validation. |
 | `internal/pairing` | X25519 + HKDF handshake. Source listens for pairing; sink connects with the printed code. Both sides derive identical 32-byte keys. |
 | `internal/keystore` | Per-peer key files at `~/.config/agentcookie/keys/<peer>.json` mode 0600. |
-| `internal/protocol` | `SyncEnvelope` (versioned), `SequenceTracker` (in-memory replay defense), `AllowlistMatcher` (SQLite-LIKE patterns, case-insensitive). |
+| `internal/protocol` | `SyncEnvelope` (versioned), `SequenceTracker` (in-memory replay defense), `BlocklistMatcher` (SQLite-LIKE patterns, case-insensitive). |
 | `internal/cdp` | Tiny Chrome DevTools Protocol client: `Probe` + `Dial` + `Call`. One method we care about: `Storage.setCookies`. |
 
 ## Lifecycle: one sync
 
 1. `agentcookie source --once` runs on the laptop.
 2. Reads `~/.config/agentcookie/source.yaml` for sink URL and `peer.hostname`.
-3. Reads `~/.config/agentcookie/allowlist.yaml` for domain patterns.
+3. Reads `~/.config/agentcookie/blocklist.yaml` for opt-out domain patterns.
 4. Loads the paired key for `peer.hostname` from `~/.config/agentcookie/keys/`.
 5. Calls `security find-generic-password` to get Chrome Safe Storage; derives the per-machine AES key.
-6. Opens Chrome's Cookies SQLite read-only with `immutable=1`. Selects rows matching each allowlist pattern.
+6. Opens Chrome's Cookies SQLite read-only with `immutable=1`. Drops rows matching each blocklist pattern.
 7. Decrypts each `encrypted_value` (v10 prefix, AES-128-CBC, IV = 16 spaces, PKCS#7).
 8. Wraps the cookies in a `SyncEnvelope` with version, hostname, monotonic Sequence.
 9. AES-GCM-seals the envelope with the paired key.
@@ -58,7 +58,7 @@ On the sink, in the `/sync` handler:
 3. JSON-unmarshals the `SyncEnvelope`.
 4. Checks `ProtocolVersion == 1`. Mismatch -> 400.
 5. Checks `Sequence` against the in-memory `SequenceTracker`. Replay -> 409.
-6. Filters cookies against the sink's own `allowlist.yaml`. Dropped hosts are counted for logging.
+6. Filters cookies against the sink's own `blocklist.yaml`. Dropped hosts are counted for logging.
 7. If `cdp.enabled`, probes `http://<host>:<port>/json/version`, dials the browser-level WebSocket, sends `Storage.setCookies`. On any failure, falls back to step 8.
 8. Otherwise opens the sink's Cookies SQLite read-write, re-encrypts each value with the SINK's Chrome Safe Storage key, upserts rows via a schema-aware INSERT ... ON CONFLICT (handles Chrome's `top_frame_site_key`, `source_type`, `has_cross_site_ancestor` columns dynamically).
 
@@ -78,7 +78,7 @@ On the sink, in the `/sync` handler:
 | Cookie value at rest | Chrome Safe Storage per-machine AES key + Keychain access prompt |
 | Cookie value in transit | AES-GCM with paired key + Tailscale WireGuard channel |
 | Pairing authenticity | Pairing code mixed into HKDF salt; MITM derives different key |
-| Sink-side opt-in | `allowlist.yaml` on sink; cookies for non-allowlisted hosts are dropped before writing |
+| Sink-side opt-out | `blocklist.yaml` on sink; cookies for blocklisted hosts are dropped before writing |
 | Replay defense | `SequenceTracker` in sink memory; rejects equal-or-lower Sequence |
 | Protocol stability | `ProtocolVersion` int in every envelope; breaking changes bump the number |
 

@@ -96,7 +96,7 @@ func init() {
 	wizardInstallCmd.Flags().StringVar(&wizardCode, "code", "", "[sink] pairing code (from source's wizard output)")
 	wizardInstallCmd.Flags().StringVar(&wizardPairURL, "pair-url", "", "[sink] source's pairing URL")
 	wizardInstallCmd.Flags().BoolVar(&wizardRepair, "repair", false, "force a fresh pairing handshake even if a key already exists")
-	wizardInstallCmd.Flags().BoolVar(&wizardForce, "force", false, "overwrite existing source.yaml / sink.yaml / allowlist.yaml")
+	wizardInstallCmd.Flags().BoolVar(&wizardForce, "force", false, "overwrite existing source.yaml / sink.yaml / blocklist.yaml")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipDaemon, "skip-daemon", false, "skip installing the LaunchAgent (configs + pairing only)")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipExitNode, "skip-exit-node-hint", false, "do not detect Tailscale or print the sudo commands that route the sink's outbound traffic through the source machine")
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipKeychainPrompt, "skip-keychain-prompt", false, "[sink] do not trigger the Chrome Safe Storage Keychain prompt during install; the sink daemon will prompt on first sync instead")
@@ -146,7 +146,7 @@ func wizardInstallSource(ctx context.Context, binPath, logDir string) error {
 		return err
 	}
 
-	// Step 1: drop source.yaml + allowlist.yaml if missing or force.
+	// Step 1: drop source.yaml + blocklist.yaml if missing or force.
 	// v0.12.0-beta.2: if source.yaml already exists with a peer.hostname
 	// that differs from --peer, fail loud rather than silently keeping the
 	// stale value (per friction log #14, 2026-05-19 dry-run). A future
@@ -907,25 +907,38 @@ func validateListenAddr(addr string) error {
 
 func starterBlocklistYAML() string {
 	return `# blocklist.yaml: domains to KEEP on this machine (NOT synced to the peer).
-# Empty file = sync everything. Uncomment any pattern below to opt out.
+# Empty file = sync everything. Prefer agentcookie accounts off <domain>
+# for normal site toggles; it writes exact + subdomain-safe patterns.
 version: 1
 domains:
   # Banking / brokerage / personal finance:
-  # - pattern: "%chase.com"
-  # - pattern: "%vanguard.com"
-  # - pattern: "%fidelity.com"
-  # - pattern: "%schwab.com"
-  # - pattern: "%bankofamerica.com"
+  # - pattern: "chase.com"
+  # - pattern: "%.chase.com"
+  # - pattern: "vanguard.com"
+  # - pattern: "%.vanguard.com"
+  # - pattern: "fidelity.com"
+  # - pattern: "%.fidelity.com"
+  # - pattern: "schwab.com"
+  # - pattern: "%.schwab.com"
+  # - pattern: "bankofamerica.com"
+  # - pattern: "%.bankofamerica.com"
   # Password managers (probably never want these on a second machine):
-  # - pattern: "%1password.com"
-  # - pattern: "%bitwarden.com"
-  # - pattern: "%lastpass.com"
+  # - pattern: "1password.com"
+  # - pattern: "%.1password.com"
+  # - pattern: "bitwarden.com"
+  # - pattern: "%.bitwarden.com"
+  # - pattern: "lastpass.com"
+  # - pattern: "%.lastpass.com"
   # Tax / IRS:
-  # - pattern: "%irs.gov"
-  # - pattern: "%turbotax.intuit.com"
+  # - pattern: "irs.gov"
+  # - pattern: "%.irs.gov"
+  # - pattern: "turbotax.intuit.com"
+  # - pattern: "%.turbotax.intuit.com"
   # Health / insurance:
-  # - pattern: "%kaiserpermanente.org"
-  # - pattern: "%bcbs.com"
+  # - pattern: "kaiserpermanente.org"
+  # - pattern: "%.kaiserpermanente.org"
+  # - pattern: "bcbs.com"
+  # - pattern: "%.bcbs.com"
 `
 }
 

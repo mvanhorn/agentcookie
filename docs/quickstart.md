@@ -23,20 +23,20 @@ On the **source** (laptop):
 ```
 cd $(mktemp -d) && git clone https://github.com/mvanhorn/agentcookie.git
 cp agentcookie/examples/source.yaml ~/.config/agentcookie/source.yaml
-cp agentcookie/examples/allowlist.yaml ~/.config/agentcookie/allowlist.yaml
+cp agentcookie/examples/blocklist.yaml ~/.config/agentcookie/blocklist.yaml
 ```
 
 Edit `source.yaml`:
 - `sink.url`: the sink's tailnet URL, e.g. `http://my-mac-mini.tailnet.ts.net:9999/sync`
 - `peer.hostname`: the sink's tailnet hostname
 
-Edit `allowlist.yaml`: keep only the domains you want to sync. Comment out the rest.
+Edit `blocklist.yaml` or run `agentcookie accounts off <domain>` for sites you do not want to sync. Empty blocklist means sync everything.
 
 On the **sink** (Mac mini):
 
 ```
 cp agentcookie/examples/sink.yaml ~/.config/agentcookie/sink.yaml
-cp agentcookie/examples/allowlist.yaml ~/.config/agentcookie/allowlist.yaml
+cp agentcookie/examples/blocklist.yaml ~/.config/agentcookie/blocklist.yaml
 ```
 
 Edit `sink.yaml`:
@@ -110,7 +110,7 @@ Expected output:
 ```
 agentcookie source: %instacart.com -> 12 cookies
 agentcookie source: %granola.so -> 3 cookies
-agentcookie source: posted 15 cookies, sink replied: ok: wrote 15 cookies via cdp; dropped 0 non-allowlisted
+agentcookie source: posted 15 cookies, sink replied: ok: wrote 15 cookies via cdp; dropped 0 blocklisted cookies
 ```
 
 Check on the sink: open Chrome (or use the running one), visit a synced site, you should be logged in.

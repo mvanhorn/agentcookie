@@ -44,7 +44,7 @@ type dbscSummary struct {
 
 var sourceCmd = &cobra.Command{
 	Use:   "source",
-	Short: "Read allowlisted cookies from local Chrome and push to the configured sink",
+	Short: "Read local Chrome cookies, apply the blocklist, and push to the configured sink",
 	Long: `Two modes:
 
   agentcookie source --once   one read+push cycle, then exit. Useful for cron

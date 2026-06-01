@@ -24,7 +24,7 @@ No. The source reads cookies with `immutable=1` (Chrome's recommended read-only 
 
 ## My agent gets logged out on a particular site after syncing - what happened?
 
-Two causes. First, a few sites bind a session to a device fingerprint (canvas, screen size, accept-language, sometimes TLS JA3); replicating the cookie alone is not enough and the site invalidates the session because the fingerprint differs. Second, the site may use Chrome's Device Bound Session Credentials (DBSC), which ties session refresh to a private key in the source Mac's Secure Enclave. In both cases the sink cannot reproduce the missing factor, so the session drops. Workarounds: remove the site from your allowlist and re-auth in the sink's Chrome directly, or use the pair-agent style remote-browser pattern for those sites. See the next entry for DBSC specifics.
+Two causes. First, a few sites bind a session to a device fingerprint (canvas, screen size, accept-language, sometimes TLS JA3); replicating the cookie alone is not enough and the site invalidates the session because the fingerprint differs. Second, the site may use Chrome's Device Bound Session Credentials (DBSC), which ties session refresh to a private key in the source Mac's Secure Enclave. In both cases the sink cannot reproduce the missing factor, so the session drops. Workarounds: run `agentcookie accounts off <domain>` and re-auth in the sink's Chrome directly, or use the pair-agent style remote-browser pattern for those sites. See the next entry for DBSC specifics.
 
 ## Does Chrome's device-bound cookie protection (DBSC) break agentcookie?
 
@@ -45,9 +45,9 @@ Not in v0.1. One-to-many fan-out is a planned v0.2 feature. The protocol envelop
 
 `~/.config/agentcookie/keys/<peer>.json` is a small JSON file at mode 0600 containing the 32-byte paired key (base64), the peer hostname, paired_at timestamp, key fingerprint, and protocol version. macOS Keychain storage is a v0.2 hardening item; today the file mode + your OS user separation is the protection.
 
-## Why is the sink's allowlist independent from the source's?
+## Why is the sink's blocklist independent from the source's?
 
-Defense in depth. The source filters cookies before sending (bandwidth + privacy optimization), but the sink owner ultimately controls what state lands in their Chrome. If the source machine is fully compromised and an attacker tries to push cookies for new domains, the sink-side allowlist drops them. Keep both allowlists in sync if you want the simplest behavior; let them diverge if you want the sink to be more conservative than the source.
+Defense in depth. The source filters cookies before sending (bandwidth + privacy optimization), but the sink owner ultimately controls what state lands in their Chrome. If the source machine is fully compromised and an attacker tries to push cookies for a blocked domain, the sink-side blocklist drops them. Keep both blocklists in sync if you want the simplest behavior; let them diverge if you want the sink to be more conservative than the source.
 
 ## What about durable replay defense?
 

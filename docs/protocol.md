@@ -32,31 +32,32 @@ Field-by-field:
 2. JSON-unmarshal the envelope. Reject `400 Bad Request` on failure.
 3. Check `protocol_version == 1`. Reject `400` with a clear message otherwise.
 4. Check `sequence` against the in-memory tracker for `source_hostname`. Reject `409 Conflict` if not strictly greater than the last seen value.
-5. Filter `cookies` against the sink's local `allowlist.yaml`. Cookies whose `host_key` matches no pattern are silently dropped; the sink logs the dropped host counts and reports them to the source via the response body.
+5. Filter `cookies` against the sink's local `blocklist.yaml`. Cookies whose `host_key` matches a pattern are silently dropped; the sink logs the dropped host counts and reports them to the source via the response body.
 6. Write the remaining cookies. CDP path first if `cdp.enabled` and Chrome reachable; otherwise SQLite path.
 
 ## Replay defense (v0.1 limits)
 
 The sequence tracker is in-memory only. Restarting the sink clears it; a captured payload could be replayed once after a restart. Durable replay defense is a v0.2 follow-up; the envelope is shaped so it can absorb a timestamp window or a server-issued nonce without breaking the version.
 
-## Allowlist (sink side, defense in depth)
+## Blocklist (sink side, defense in depth)
 
-The sink reads `~/.config/agentcookie/allowlist.yaml` independently of the source. If the source pushes a cookie for a host the sink has not allowlisted, the sink drops it. This means the sink owner has the final say on what state may land in their Chrome, even if the paired source is fully compromised. The source-side allowlist still runs first as a bandwidth and privacy optimization (no point sealing cookies that will be dropped).
+The sink reads `~/.config/agentcookie/blocklist.yaml` independently of the source. If the source pushes a cookie for a host the sink has blocked, the sink drops it. This means the sink owner has the final say on what state may land in their Chrome, even if the paired source is fully compromised. The source-side blocklist still runs first as a bandwidth and privacy optimization (no point sealing cookies that will be dropped).
 
-Allowlist schema:
+Blocklist schema:
 
 ```yaml
 version: 1
 domains:
-  - pattern: "%instacart.com"
-    description: ...
-  - pattern: "%granola.so"
+  - pattern: "instacart.com"
+    description: Instacart exact host
+  - pattern: "%.instacart.com"
+    description: Instacart subdomains
 ```
 
-Patterns use SQLite LIKE semantics (`%` wildcard). Matching is case-insensitive and matches against Chrome's `host_key` column, which includes a leading dot for subdomain cookies.
+Patterns use SQLite LIKE semantics (`%` wildcard). Matching is case-insensitive and matches against Chrome's `host_key` column, which includes a leading dot for subdomain cookies. Prefer `agentcookie accounts off <domain>` for normal site toggles; it writes the exact host plus a subdomain-safe `%.` pattern.
 
 ## Versioning
 
 - v1 is the current wire format. Source and sink must both speak it.
 - Future versions: bump `protocol_version` and update both source and sink. Sinks may carry compatibility shims for one prior version during transition windows.
-- Out-of-band fields (e.g. allowlist sync, signed bundles, cookie diffs) will arrive as additional optional envelope fields under v1 first, then potentially graduate to required in v2.
+- Out-of-band fields (e.g. filter sync, signed bundles, cookie diffs) will arrive as additional optional envelope fields under v1 first, then potentially graduate to required in v2.

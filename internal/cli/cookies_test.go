@@ -102,7 +102,7 @@ func TestCollectDomainCookies_Blocklist(t *testing.T) {
 		{".amazon.com", "x-main", "xm"},
 	})
 	matcher := protocol.NewBlocklistMatcher(&config.Blocklist{
-		Domains: []config.BlocklistEntry{{Pattern: "%amazon.com"}},
+		Domains: []config.BlocklistEntry{{Pattern: "amazon.com"}, {Pattern: "%.amazon.com"}},
 	})
 	got, err := collectDomainCookies(path, ".amazon.com", matcher)
 	if err != nil {

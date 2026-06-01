@@ -261,9 +261,9 @@ func TestLoadBlocklistHappyPath(t *testing.T) {
 	writeFile(t, dir, "blocklist.yaml", `
 version: 1
 domains:
-  - pattern: "%chase.com"
+  - pattern: "chase.com"
     description: Chase bank
-  - pattern: "%1password.com"
+  - pattern: "%.chase.com"
 `)
 	bl, err := LoadBlocklist(dir)
 	if err != nil {
@@ -272,7 +272,7 @@ domains:
 	if len(bl.Domains) != 2 {
 		t.Errorf("expected 2 domains, got %d", len(bl.Domains))
 	}
-	if bl.Domains[0].Pattern != "%chase.com" {
+	if bl.Domains[0].Pattern != "chase.com" {
 		t.Errorf("first pattern wrong: %q", bl.Domains[0].Pattern)
 	}
 }
@@ -318,7 +318,7 @@ func TestLoadBlocklistMigratesLegacyAllowlist(t *testing.T) {
 	writeFile(t, dir, "allowlist.yaml", `
 version: 1
 domains:
-  - pattern: "%instacart.com"
+  - pattern: "%.instacart.com"
 `)
 	bl, err := LoadBlocklist(dir)
 	if err != nil {

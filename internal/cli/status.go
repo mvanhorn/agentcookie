@@ -14,7 +14,7 @@ import (
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Print local config, allowlist, live daemon state, and any load errors",
+	Short: "Print local config, blocklist, live daemon state, and any load errors",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		home, _ := os.UserHomeDir()
 		st := struct {
@@ -22,7 +22,7 @@ var statusCmd = &cobra.Command{
 			ConfigDir    string               `json:"config_dir"`
 			SourceConfig *config.SourceConfig `json:"source_config,omitempty"`
 			SinkConfig   *config.SinkConfig   `json:"sink_config,omitempty"`
-			Allowlist    *config.Allowlist    `json:"allowlist,omitempty"`
+			Blocklist    *config.Blocklist    `json:"blocklist,omitempty"`
 			SourceState  *state.SourceState   `json:"source_state,omitempty"`
 			SinkState    *state.SinkState     `json:"sink_state,omitempty"`
 			Errors       []string             `json:"errors,omitempty"`
@@ -41,10 +41,10 @@ var statusCmd = &cobra.Command{
 		} else {
 			st.Errors = append(st.Errors, "sink.yaml: "+err.Error())
 		}
-		if a, err := config.LoadAllowlist(common.ConfigDir); err == nil {
-			st.Allowlist = a
+		if bl, err := config.LoadBlocklist(common.ConfigDir); err == nil {
+			st.Blocklist = bl
 		} else {
-			st.Errors = append(st.Errors, "allowlist.yaml: "+err.Error())
+			st.Errors = append(st.Errors, "blocklist.yaml: "+err.Error())
 		}
 		if ss, err := state.LoadSource(state.SourcePath(home)); err == nil && ss != nil {
 			st.SourceState = ss
@@ -75,9 +75,9 @@ var statusCmd = &cobra.Command{
 		} else {
 			fmt.Println("  sink: not configured")
 		}
-		if st.Allowlist != nil {
-			fmt.Printf("  allowlist v%d: %d domains\n", st.Allowlist.Version, len(st.Allowlist.Domains))
-			for _, d := range st.Allowlist.Domains {
+		if st.Blocklist != nil {
+			fmt.Printf("  blocklist v%d: %d patterns\n", st.Blocklist.Version, len(st.Blocklist.Domains))
+			for _, d := range st.Blocklist.Domains {
 				if d.Description != "" {
 					fmt.Printf("    - %s  (%s)\n", d.Pattern, d.Description)
 				} else {
@@ -85,7 +85,7 @@ var statusCmd = &cobra.Command{
 				}
 			}
 		} else {
-			fmt.Println("  allowlist: not configured")
+			fmt.Println("  blocklist: not configured")
 		}
 		if st.SourceState != nil {
 			ago := "never"

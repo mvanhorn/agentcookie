@@ -1,5 +1,5 @@
 // Package config loads agentcookie's on-disk configuration: source.yaml,
-// sink.yaml, and allowlist.yaml. Each file is independently optional so
+// sink.yaml, and blocklist.yaml. Each file is independently optional so
 // `agentcookie status` can report partial state.
 package config
 

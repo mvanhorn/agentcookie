@@ -4,7 +4,7 @@ This document captures what agentcookie does and does not protect against. Read 
 
 ## What agentcookie does
 
-Continuously replicates Chrome session cookies for a user-allowlisted set of domains from one macOS machine (the **source**, where the user logs in) to another (the **sink**, where AI agents run). The replication is one-way, opt-in per domain, and authenticated end-to-end with a pairing-derived symmetric key. Past v0.11, the sink also seals its on-disk cookie copies (sidecar SQLite and per-CLI session files) under a sink-local master key whose Keychain ACL pins the agentcookie binary plus each registered adapter binary.
+Continuously replicates Chrome session cookies from one macOS machine (the **source**, where the user logs in) to another (the **sink**, where AI agents run), with opt-out per-domain blocklists on both sides. The replication is one-way and authenticated end-to-end with a pairing-derived symmetric key. Past v0.11, the sink also seals its on-disk cookie copies (sidecar SQLite and per-CLI session files) under a sink-local master key whose Keychain ACL pins the agentcookie binary plus each registered adapter binary.
 
 ## Trust model
 
@@ -24,7 +24,7 @@ agentcookie trusts:
 - Online brute force of the pairing code. v0.12: 12 base32 characters (64 bits of entropy) and a per-IP token bucket capped at 5 attempts before a 429.
 - MITM during pairing. X25519 + HKDF salted with the pairing code means an attacker who intercepts the channel without knowing the code derives a different key, and the next AEAD message fails its tag check.
 - Replay of captured payloads across sink restarts. v0.12: the sequence tracker is persisted to `~/.agentcookie/sequence.json` and reloaded at sink boot.
-- Source pushing non-allowlisted cookies. The sink reads its own `allowlist.yaml` and drops cookies whose `host_key` matches no pattern, even if the source pushes them.
+- Source pushing blocklisted cookies. The sink reads its own `blocklist.yaml` and drops cookies whose `host_key` matches a blocked pattern, even if the source pushes them.
 - Source pushing cookies with control characters or path-traversal in name / value / host_key. v0.12 adds RFC 6265 token-character validation on name, control-char rejection on value, and a label-boundary suffix check that fixes the v0.11 unanchored match (e.g., `xopentable.com` no longer matched `opentable.com`).
 - Wrong-secret / unauthenticated requests. Both legacy `security.shared_secret` (now floored at 32 bytes) and paired keys gate every `/sync` call; AEAD tag mismatch returns 401.
 - DoS via slow-loris and oversize bodies on the sink and pair listeners. v0.12 sets ReadHeaderTimeout (5s), ReadTimeout (60s), WriteTimeout (60s), IdleTimeout (120s), and an `http.MaxBytesReader`-enforced body cap (256 MB for `/sync`, 16 KB for `/pair`).
@@ -38,10 +38,10 @@ agentcookie trusts:
 - Compromise of Chrome itself. A malicious extension on the source or sink, a NaCl exploit in Chrome, or a malicious .dylib injected into Chrome can already read cookie plaintext. agentcookie does not change that.
 - Compromise of the user's macOS account where the attacker can convince macOS that they ARE the agentcookie binary. The `-T` ACL pins the binary's Developer-ID-signed designated requirement, but a sufficiently sophisticated attacker with code-execution-as-user can re-sign their own binary with the same identity if they also stole the developer's signing identity. Out of scope; the bar is "stolen Developer ID Application certificate plus access to a private signing key".
 - Tailscale account takeover. Pairing-derived keys live below the Tailscale identity layer, so an attacker on the tailnet still cannot read or sign sync payloads. But they could exhaust ports, run their own sink, or hold the tailnet open for traffic analysis. Out of scope.
-- Device-fingerprint-bound sessions. Sites that bind a session to canvas fingerprint, accept-language, screen size, etc. will fail after replication. agentcookie does not (and likely cannot) sync fingerprint hints. Document affected sites in your allowlist comments and re-auth them in-browser on the sink.
+- Device-fingerprint-bound sessions. Sites that bind a session to canvas fingerprint, accept-language, screen size, etc. will fail after replication. agentcookie does not (and likely cannot) sync fingerprint hints. Document affected sites in your blocklist comments and re-auth them in-browser on the sink.
 - Device Bound Session Credentials (DBSC). Chrome's DBSC binds a session's refresh to a private key in the source Mac's Secure Enclave, which is non-exportable by design. For a site that has adopted DBSC, a replicated cookie works on the sink only until its short-lived window (minutes) lapses; the sink cannot sign the refresh challenge, so Chrome there logs the session out. agentcookie cannot defeat this and does not try. Scope of impact as of May 2026: DBSC is opt-in per site and the only broad adopter is Google's own account/Workspace cookies (GA on Chrome for Windows first, rolling out on macOS in the next release). Non-DBSC sites and the entire secrets bus (bearer tokens, API keys, OAuth refresh tokens) are unaffected. The source flags DBSC-suspect cookies in `agentcookie doctor` and ships them with a warning by default; `--skip-dbsc-suspect` drops them. For Google sessions, sign the sink's Chrome into the same account once instead of relying on copied cookies, and it establishes its own device-bound session locally.
 - Coercion of the user. If someone makes the user run `agentcookie pair --as sink` against a hostile source, the cookies will flow as designed.
-- Cookie value tampering by the source. The source is authoritative; if the source machine pushes cookies for an allowlisted domain, the sink writes them. There is no separate authorization layer per domain.
+- Cookie value tampering by the source. The source is authoritative; if the source machine pushes cookies for a non-blocklisted domain, the sink writes them. There is no separate authorization layer per domain.
 
 ## Cryptographic specifics
 

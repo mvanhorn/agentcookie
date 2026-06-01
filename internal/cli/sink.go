@@ -19,8 +19,8 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/cli/httpserver"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
-	"github.com/mvanhorn/agentcookie/internal/secretsbus"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
+	"github.com/mvanhorn/agentcookie/internal/secretsbus"
 	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 	"github.com/mvanhorn/agentcookie/internal/state"
 	"github.com/mvanhorn/agentcookie/internal/transport"
@@ -185,7 +185,7 @@ func runSink(cmd *cobra.Command, args []string) error {
 			sinkState.TotalWrites++
 			sinkState.TotalDropped += dropped
 			_ = stateWriter.Save(sinkState)
-			_, _ = fmt.Fprintf(w, "dry-run ok: accepted %d cookies; dropped %d non-allowlisted\n", len(cookies), dropped)
+			_, _ = fmt.Fprintf(w, "dry-run ok: accepted %d cookies; dropped %d blocklisted cookies\n", len(cookies), dropped)
 			return
 		}
 
@@ -214,7 +214,7 @@ func runSink(cmd *cobra.Command, args []string) error {
 			http.Error(w, fmt.Sprintf("apply envelope: %v", writeErr), http.StatusInternalServerError)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies (+ %d sidecar) + %d localStorage origins + %d indexedDB origins (mode=%s, dropped %d non-allowlisted cookies)\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, writeMode, dropped)
+		fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies (+ %d sidecar) + %d localStorage origins + %d indexedDB origins (mode=%s, dropped %d blocklisted cookies)\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, writeMode, dropped)
 		sinkState.LastWrite = time.Now().UTC()
 		// In skip_chrome_sqlite mode, result.Cookies is zero (we did not
 		// write Chrome SQLite); report the sidecar count so sink-state
@@ -278,7 +278,7 @@ func runSink(cmd *cobra.Command, args []string) error {
 		}
 
 		_ = stateWriter.Save(sinkState)
-		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies (%d sidecar), %d localStorage origins, %d indexedDB origins; dropped %d non-allowlisted cookies\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, dropped)
+		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies (%d sidecar), %d localStorage origins, %d indexedDB origins; dropped %d blocklisted cookies\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, dropped)
 	})
 
 	srv := httpserver.Configure(&http.Server{Addr: cfg.Listen.Addr, Handler: mux}, httpserver.SinkSync)
