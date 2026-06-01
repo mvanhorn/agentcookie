@@ -80,8 +80,8 @@ func runSource(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	// v0.3: sync-all by default. Blocklist is optional; missing file is fine.
-	blocklist, err := config.LoadBlocklist(common.ConfigDir)
-	if err != nil {
+	// Fail fast on a broken file at startup, then reload again for each push.
+	if _, err := loadFreshBlocklist(); err != nil {
 		return err
 	}
 
@@ -108,21 +108,7 @@ func runSource(cmd *cobra.Command, args []string) error {
 	skipDBSC := sourceSkipDBSC || os.Getenv("AGENTCOOKIE_SKIP_DBSC_SUSPECT") == "1"
 
 	push := func(ctx context.Context) (int, error) {
-		n, dbsc, err := pushOnce(ctx, cfg, blocklist, key, secret, sourceDryRun, sourceVerbose, skipDBSC)
-		if err != nil {
-			srcState.TotalFailures++
-			srcState.LastError = err.Error()
-			srcState.LastErrorAt = time.Now().UTC()
-		} else {
-			srcState.TotalPushes++
-			srcState.LastPushCount = n
-			srcState.LastPush = time.Now().UTC()
-		}
-		srcState.LastDBSCWarned = dbsc.warned
-		srcState.LastDBSCSkipped = dbsc.skipped
-		srcState.LastDBSCSample = dbsc.sample
-		_ = stateWriter.Save(srcState)
-		return n, err
+		return pushWithFreshBlocklist(ctx, cfg, key, secret, sourceDryRun, sourceVerbose, skipDBSC, srcState, stateWriter)
 	}
 
 	if sourceOnce {
@@ -191,6 +177,55 @@ func runSource(cmd *cobra.Command, args []string) error {
 	}()
 
 	return w.Run(cmd.Context())
+}
+
+func pushWithFreshBlocklist(
+	ctx context.Context,
+	cfg *config.SourceConfig,
+	key []byte,
+	secret string,
+	dryRun bool,
+	verbose bool,
+	skipDBSC bool,
+	srcState *state.SourceState,
+	stateWriter *state.Writer,
+) (int, error) {
+	blocklist, err := loadFreshBlocklist()
+	var dbsc dbscSummary
+	if err != nil {
+		recordSourcePushResult(srcState, stateWriter, 0, dbsc, err)
+		return 0, err
+	}
+	n, dbsc, err := pushOnce(ctx, cfg, blocklist, key, secret, dryRun, verbose, skipDBSC)
+	recordSourcePushResult(srcState, stateWriter, n, dbsc, err)
+	return n, err
+}
+
+func recordSourcePushResult(
+	srcState *state.SourceState,
+	stateWriter *state.Writer,
+	n int,
+	dbsc dbscSummary,
+	err error,
+) {
+	if srcState == nil {
+		return
+	}
+	if err != nil {
+		srcState.TotalFailures++
+		srcState.LastError = err.Error()
+		srcState.LastErrorAt = time.Now().UTC()
+	} else {
+		srcState.TotalPushes++
+		srcState.LastPushCount = n
+		srcState.LastPush = time.Now().UTC()
+	}
+	srcState.LastDBSCWarned = dbsc.warned
+	srcState.LastDBSCSkipped = dbsc.skipped
+	srcState.LastDBSCSample = dbsc.sample
+	if stateWriter != nil {
+		_ = stateWriter.Save(srcState)
+	}
 }
 
 // pushOnce performs one read+filter+push cycle. Returns the number of cookies
