@@ -39,6 +39,47 @@ type ManifestV2 struct {
 	// `secret env` applies these live on every call (tracking refreshes), and
 	// an explicit local `secret alias` still overrides a manifest alias.
 	Aliases map[string]string `toml:"aliases,omitempty"`
+
+	// Files declares carried-file items: arbitrary files (a multiline PEM,
+	// a TOML config) that the bus carries from source to sink sealed and
+	// materializes on the sink as a 0600 file under ~/.agentcookie/. Because
+	// the wire envelope is a flat map[string]map[string]string, each file
+	// rides as a SINGLE key whose value is the base64 encoding of the file
+	// bytes (single-line, dotenv-safe). This is a NEW manifest construct that
+	// COEXISTS with the single [secrets.*] block (it is not a second
+	// [secrets.*] block). See spec section 5.4.
+	Files []ManifestV2File `toml:"files,omitempty"`
+}
+
+// ManifestV2File is one carried-file item declared as a [[files]] array entry.
+//
+// Example:
+//
+//	[[files]]
+//	source = "~/.config/tesla-pp-cli/config.toml"
+//	key = "TESLA_CONFIG_TOML"
+//	target = "tesla-pp-cli/config.toml"
+//	optional = false
+//
+// The source file at Source is read and base64-encoded into the wire key Key.
+// On the sink, the decoded bytes are written 0600 to Target, resolved relative
+// to ~/.agentcookie/. Target must stay inside ~/.agentcookie/ (no traversal,
+// no absolute paths). When Optional is true the item is opt-in: discovery does
+// NOT carry it unless the user enables it (see CarryFiles' enabled set).
+type ManifestV2File struct {
+	// Source is the path to the file to read and base64 into the bus. May
+	// start with ~/ (expanded against the user's home). Required.
+	Source string `toml:"source"`
+	// Key is the wire envelope key the base64 payload rides under. Must be a
+	// valid env-var-shaped key. Required.
+	Key string `toml:"key"`
+	// Target is the materialization path on the sink, relative to
+	// ~/.agentcookie/. Required. Must not contain ".." and must not be
+	// absolute; the sink refuses to write outside ~/.agentcookie/.
+	Target string `toml:"target"`
+	// Optional marks the item as opt-in. When true, discovery does not carry
+	// it unless the user explicitly enables it. Default false (carried).
+	Optional bool `toml:"optional,omitempty"`
 }
 
 // ManifestV2Secrets carries exactly one of File / Command / Keychain.
@@ -234,6 +275,56 @@ func validateManifestV2(m *ManifestV2, sourcePath string) error {
 		}
 	}
 
+	seenFileKeys := map[string]bool{}
+	for i := range m.Files {
+		f := &m.Files[i]
+		if f.Source == "" {
+			return fmt.Errorf("[[files]] item %d: source is required", i)
+		}
+		if strings.Contains(f.Source, "..") {
+			return fmt.Errorf("[[files]] item %d: source %q contains path-traversal segment", i, f.Source)
+		}
+		if f.Key == "" {
+			return fmt.Errorf("[[files]] item %d: key is required", i)
+		}
+		if !validEnvKey(f.Key) {
+			return fmt.Errorf("[[files]] item %d: key %q is not a valid env var name (A-Z, 0-9, underscore; not starting with a digit)", i, f.Key)
+		}
+		if seenFileKeys[f.Key] {
+			return fmt.Errorf("[[files]] duplicate key %q", f.Key)
+		}
+		seenFileKeys[f.Key] = true
+		if err := validateMaterializeTarget(f.Target); err != nil {
+			return fmt.Errorf("[[files]] item %d (key %q): %w", i, f.Key, err)
+		}
+	}
+
+	return nil
+}
+
+// validateMaterializeTarget enforces that a carried-file target is a relative
+// path that stays inside ~/.agentcookie/ after cleaning: non-empty, not
+// absolute, no ".." traversal segment, and no parent escape. This mirrors the
+// defense-in-depth posture of the [secrets.file].path validator and is the
+// authoritative check the sink also re-applies before writing.
+func validateMaterializeTarget(target string) error {
+	if target == "" {
+		return errors.New("target is required")
+	}
+	if filepath.IsAbs(target) {
+		return fmt.Errorf("target %q must be relative to ~/.agentcookie/, not absolute", target)
+	}
+	if strings.Contains(target, "..") {
+		return fmt.Errorf("target %q contains path-traversal segment", target)
+	}
+	// Defense in depth: after cleaning, the path must not escape the root.
+	clean := filepath.Clean(target)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("target %q escapes ~/.agentcookie/", target)
+	}
+	if filepath.IsAbs(clean) {
+		return fmt.Errorf("target %q resolves to an absolute path", target)
+	}
 	return nil
 }
 

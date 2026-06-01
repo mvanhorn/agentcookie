@@ -273,8 +273,8 @@ func runSink(cmd *cobra.Command, args []string) error {
 			for _, e := range secErrs {
 				fmt.Fprintf(os.Stderr, "agentcookie sink: secrets-bus: %v\n", e)
 			}
-			fmt.Fprintf(os.Stderr, "agentcookie sink: secrets-bus wrote %d cli(s), %d key(s), %d sealed\n",
-				secResult.CLIsWritten, secResult.KeysWritten, secResult.SealedWritten)
+			fmt.Fprintf(os.Stderr, "agentcookie sink: secrets-bus wrote %d cli(s), %d key(s), %d sealed, %d file(s) materialized\n",
+				secResult.CLIsWritten, secResult.KeysWritten, secResult.SealedWritten, secResult.FilesMaterialized)
 		}
 
 		_ = stateWriter.Save(sinkState)

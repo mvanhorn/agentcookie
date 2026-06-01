@@ -54,6 +54,21 @@ func LoadPayloadWithDiscovery(homeDir string) (*Payload, []error) {
 				filtered[k] = v
 			}
 		}
+
+		// Carry any declared [[files]] items: read each enabled file, base64
+		// it into its declared key, and add the companion target so the sink
+		// materializes it. Optional items are carried only when opted in.
+		if len(rp.Manifest.Files) > 0 {
+			enabled := LoadEnabledFileKeys(homeDir, slug)
+			carried, carryErrs := CarryFiles(rp.Manifest.Files, enabled, homeDir)
+			for _, e := range carryErrs {
+				errs = append(errs, fmt.Errorf("discovered project %q: %w", slug, e))
+			}
+			for k, v := range carried {
+				filtered[k] = v
+			}
+		}
+
 		if len(filtered) == 0 {
 			continue
 		}

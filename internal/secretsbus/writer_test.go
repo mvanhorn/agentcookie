@@ -1,6 +1,7 @@
 package secretsbus
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,72 @@ func TestWritePayload_HappyPath(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "KEY1=value1") || !strings.Contains(string(content), "KEY2=value2") {
 		t.Errorf("content mismatch: %s", string(content))
+	}
+}
+
+func TestWritePayload_MaterializesCarriedFileAndStripsKeys(t *testing.T) {
+	home := t.TempDir()
+	pem := "-----BEGIN EC PRIVATE KEY-----\nMHc...\n-----END EC PRIVATE KEY-----\n"
+	payload := map[string]map[string]string{
+		"tesla-pp-cli": {
+			"TESLA_AUTH_TOKEN":            base64.StdEncoding.EncodeToString([]byte("bearer")), // ordinary env key (not a file)
+			"FLEET_KEY_PEM":               base64.StdEncoding.EncodeToString([]byte(pem)),
+			CarryFileKey("FLEET_KEY_PEM"): "tesla-pp-cli/fleet-key.pem",
+		},
+	}
+	result, errs := WritePayload(home, payload, false)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if result.FilesMaterialized != 1 {
+		t.Errorf("FilesMaterialized = %d, want 1", result.FilesMaterialized)
+	}
+	// Materialized 0600 under ~/.agentcookie/.
+	dest := filepath.Join(home, ".agentcookie", "tesla-pp-cli", "fleet-key.pem")
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatalf("materialized file missing: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("materialized mode = %v, want 0600", info.Mode().Perm())
+	}
+	got, _ := os.ReadFile(dest)
+	if string(got) != pem {
+		t.Errorf("materialized content mismatch")
+	}
+	// The carried payload + companion are stripped from secrets.env; the
+	// ordinary env key remains.
+	envPath := filepath.Join(SecretsRoot(home), "tesla-pp-cli", "secrets.env")
+	content, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read secrets.env: %v", err)
+	}
+	if strings.Contains(string(content), "FLEET_KEY_PEM") {
+		t.Errorf("carried file key leaked into secrets.env: %s", content)
+	}
+	if !strings.Contains(string(content), "TESLA_AUTH_TOKEN=") {
+		t.Errorf("ordinary env key missing from secrets.env: %s", content)
+	}
+}
+
+func TestWritePayload_NoFileKeysNoRegression(t *testing.T) {
+	home := t.TempDir()
+	payload := map[string]map[string]string{
+		"demo-cli": {"KEY1": "value1"},
+	}
+	result, errs := WritePayload(home, payload, false)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if result.FilesMaterialized != 0 {
+		t.Errorf("FilesMaterialized = %d, want 0", result.FilesMaterialized)
+	}
+	if result.CLIsWritten != 1 || result.KeysWritten != 1 {
+		t.Errorf("regression in non-file payload: %+v", result)
+	}
+	// No ~/.agentcookie sub-file beyond the secrets dir.
+	if _, err := os.Stat(filepath.Join(home, ".agentcookie", "demo-cli")); err == nil {
+		t.Error("unexpected materialized dir for non-file payload")
 	}
 }
 

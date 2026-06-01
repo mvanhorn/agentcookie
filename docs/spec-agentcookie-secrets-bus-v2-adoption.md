@@ -80,6 +80,15 @@ FROM_BROWSER = false
 # wired automatically, with no per-user `agentcookie secret alias` command.
 [aliases]
 TESLA_AUTH_TOKEN = "OAUTH_BEARER"             # CLI reads TESLA_AUTH_TOKEN; bus stores it as OAUTH_BEARER
+
+# Optional. Carry arbitrary files (a multiline PEM, a TOML config) sealed, and
+# materialize them on the sink as 0600 files under ~/.agentcookie/. Coexists
+# with the single [secrets.*] block; not a second [secrets.*] block. See 5.4.
+[[files]]
+source = "~/.config/tesla-pp-cli/config.toml" # file to read + base64 into the bus
+key = "TESLA_CONFIG_TOML"                      # wire key the base64 payload rides under
+target = "tesla-pp-cli/config.toml"            # materialization path, relative, under ~/.agentcookie/
+optional = false                              # true = opt-in (not carried unless enabled)
 ```
 
 ### 2.3.1 Aliases
@@ -168,6 +177,49 @@ Reserved schema slot. v2.0 parsers reject with "exec source not yet supported."
 
 Reserved schema slot. v2.0 parsers reject with "keychain source not yet supported."
 
+### 5.4 `[[files]]` carried-file items
+
+The `[secrets.*]` block carries `KEY=VALUE` env pairs. Some secrets are not env-shaped: a multiline EC private-key PEM or a TOML `config.toml` cannot ride as a single `KEY=VALUE` value. The `[[files]]` array carries arbitrary files from source to sink, sealed in transit and at rest, and materializes them on the sink as mode-0600 files under `~/.agentcookie/`.
+
+`[[files]]` is a NEW construct that COEXISTS with the single `[secrets.*]` block. It is not a second `[secrets.*]` block, so the "exactly one `[secrets.*]`" rule (section 5) is unaffected. A manifest may declare zero or more `[[files]]` items alongside its one `[secrets.*]` block.
+
+```toml
+[[files]]
+source = "~/.config/tesla-pp-cli/config.toml"   # required; file to read + base64 into the bus. ~/ expands.
+key = "TESLA_CONFIG_TOML"                        # required; the wire key the base64 payload rides under.
+target = "tesla-pp-cli/config.toml"              # required; materialization path, RELATIVE, under ~/.agentcookie/.
+optional = false                                 # optional; default false. true = opt-in (see below).
+
+[[files]]
+source = "~/.tesla/fleet-private.pem"
+key = "TESLA_FLEET_KEY_PEM"
+target = "tesla-pp-cli/fleet-key.pem"
+optional = true                                  # opt-in: NOT carried unless the user enables it.
+```
+
+#### Carriage mechanism
+
+Because the wire envelope is a flat `map[string]map[string]string` (per-CLI -> key -> value), a carried file rides as a SINGLE key whose value is the **base64** encoding of the file bytes (single-line, dotenv-safe). Multiline values are never put on the wire. Each item adds two keys to its CLI's env map:
+
+- `key` -> the base64 payload of the file bytes.
+- `_FILE_<key>` -> the relative `target`. This reserved companion key (underscore-prefixed, per the v1 dotenv grammar) is the materialization instruction, so the sink needs no copy of the manifest.
+
+On the sink, the secrets writer decodes each `_FILE_<key>`/`key` pair, writes the decoded bytes 0600 to `target` under `~/.agentcookie/`, and strips both keys from the per-CLI `secrets.env` (a carried file does not also leak as an env var).
+
+#### Validation
+
+- `source` is required and MUST NOT contain `..`. `~/` expands to the user's home.
+- `key` is required and MUST be a valid environment variable name (initial letter or underscore, then letters/digits/underscores). Duplicate `key` across items is a hard error.
+- `target` is required, MUST be relative (not absolute), MUST NOT contain `..`, and MUST resolve to a path strictly inside `~/.agentcookie/`. The sink re-validates the target and refuses to write (rather than write insecurely) if it escapes the root, the base64 is malformed, or the decoded payload exceeds 256 KB.
+
+#### Opt-in (`optional = true`)
+
+An item with `optional = true` is opt-in: discovery does NOT carry it unless the user enables it. Enabled item keys live one-per-line in `~/.agentcookie/file-optin/<name>.keys` (blank lines and `#` comments ignored). A default item (`optional = false`) is always carried. This gates deliberate exposures (e.g. a command-signing key landing on a headless sink) behind explicit per-user consent.
+
+#### Security posture ("sealed")
+
+Carried files are encrypted in transit over the tailnet AND at rest in the bus (the existing v0.12 sealed-envelope path). The materialized file on the sink is a 0600 plaintext file owned by the sink user: on-sink protection is file permissions. Files are written only under `~/.agentcookie/`, never world/group-readable, never outside that directory.
+
 ## 6. Sync policy
 
 Identical semantics to v1 `[sync]` table.
@@ -241,7 +293,9 @@ This is the user's window into auto-discovery.
 
 ## 9. Wire envelope
 
-No changes. The v1 `Secrets map[string]map[string]string` field carries the merged payload (v1 bus + read-in-place discovery results). Sinks running v0.13 accept v0.14 source pushes transparently.
+No envelope-shape changes. The v1 `Secrets map[string]map[string]string` field carries the merged payload (v1 bus + read-in-place discovery results). Sinks running v0.13 accept v0.14 source pushes transparently.
+
+Carried files (section 5.4) ride inside this same flat map as ordinary keys: the base64 payload under `key` and the relative target under the reserved companion `_FILE_<key>`. No new envelope field is introduced; a sink that does not understand `_FILE_*` companions simply persists them as env keys (forward-degradation), while a current sink materializes and strips them.
 
 ## 10. Read-in-place vs copy-to-bus
 

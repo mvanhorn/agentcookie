@@ -24,6 +24,9 @@ type WriteResult struct {
 	SealedWritten int
 	// PlaintextWritten is the number of `secrets.env` files written.
 	PlaintextWritten int
+	// FilesMaterialized is the number of carried files written to 0600 files
+	// under ~/.agentcookie/ (the base64 file-carriage path).
+	FilesMaterialized int
 }
 
 // WritePayload persists the source-shipped secrets to disk under
@@ -82,7 +85,23 @@ func WritePayload(homeDir string, payload map[string]map[string]string, sealingE
 			}
 			safe[k] = v
 		}
+		// Carried-file materialization: decode any _FILE_<K>/K pairs to 0600
+		// files under ~/.agentcookie/ and strip those keys so a carried file
+		// never also leaks into the plaintext secrets.env. The sink does NOT
+		// trust the wire payload; MaterializeFiles re-validates every target.
+		matRes, consumed, matErrs := MaterializeFiles(homeDir, cliName, safe)
+		errs = append(errs, matErrs...)
+		result.FilesMaterialized += matRes.FilesWritten
+		for k := range consumed {
+			delete(safe, k)
+		}
+
 		if len(safe) == 0 {
+			if matRes.FilesWritten > 0 {
+				// Carried files only: count this CLI as written even though
+				// no env keys remain for secrets.env.
+				result.CLIsWritten++
+			}
 			continue
 		}
 

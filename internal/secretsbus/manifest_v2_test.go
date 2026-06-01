@@ -147,6 +147,202 @@ path = "~/.config/demo/.env"
 	}
 }
 
+func TestParseManifestV2_ParsesFiles(t *testing.T) {
+	body := `
+schema_version = 2
+name = "tesla-pp-cli"
+display_name = "Tesla"
+
+[secrets.file]
+path = "~/.config/tesla-pp-cli/config.toml"
+
+[[files]]
+source = "~/.config/tesla-pp-cli/config.toml"
+key = "TESLA_CONFIG_TOML"
+target = "tesla-pp-cli/config.toml"
+
+[[files]]
+source = "~/.tesla/fleet-private.pem"
+key = "TESLA_FLEET_KEY_PEM"
+target = "tesla-pp-cli/fleet-key.pem"
+optional = true
+`
+	m, warnings, err := parseManifestV2Bytes([]byte(body), "test.toml")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, w := range warnings {
+		if strings.Contains(w.Message, "files") {
+			t.Errorf("files should not warn as unknown: %v", w)
+		}
+	}
+	if len(m.Files) != 2 {
+		t.Fatalf("len(Files) = %d, want 2", len(m.Files))
+	}
+	if m.Files[0].Key != "TESLA_CONFIG_TOML" || m.Files[0].Optional {
+		t.Errorf("file[0] = %#v", m.Files[0])
+	}
+	if m.Files[1].Key != "TESLA_FLEET_KEY_PEM" || !m.Files[1].Optional {
+		t.Errorf("file[1] = %#v", m.Files[1])
+	}
+	// [[files]] coexists with the single [secrets.file] block (not a second
+	// [secrets.*] block), so the exactly-one rule is not tripped.
+	if m.Secrets.File == nil {
+		t.Error("[secrets.file] should still be present alongside [[files]]")
+	}
+}
+
+func TestParseManifestV2_RejectsFileTargetTraversal(t *testing.T) {
+	body := `
+schema_version = 2
+name = "demo"
+display_name = "Demo"
+
+[secrets.file]
+path = "~/x"
+
+[[files]]
+source = "~/a.pem"
+key = "K"
+target = "../../etc/passwd"
+`
+	_, _, err := parseManifestV2Bytes([]byte(body), "test.toml")
+	if err == nil {
+		t.Fatal("expected error on file target traversal")
+	}
+	if !strings.Contains(err.Error(), "files") {
+		t.Errorf("error should reference files: %v", err)
+	}
+}
+
+func TestParseManifestV2_RejectsFileTargetAbsolute(t *testing.T) {
+	body := `
+schema_version = 2
+name = "demo"
+display_name = "Demo"
+
+[secrets.file]
+path = "~/x"
+
+[[files]]
+source = "~/a.pem"
+key = "K"
+target = "/etc/evil"
+`
+	_, _, err := parseManifestV2Bytes([]byte(body), "test.toml")
+	if err == nil {
+		t.Fatal("expected error on absolute file target")
+	}
+}
+
+func TestParseManifestV2_RejectsFileSourceTraversal(t *testing.T) {
+	body := `
+schema_version = 2
+name = "demo"
+display_name = "Demo"
+
+[secrets.file]
+path = "~/x"
+
+[[files]]
+source = "~/../../../etc/shadow"
+key = "K"
+target = "demo/k"
+`
+	_, _, err := parseManifestV2Bytes([]byte(body), "test.toml")
+	if err == nil {
+		t.Fatal("expected error on file source traversal")
+	}
+}
+
+func TestParseManifestV2_RejectsFileMissingSource(t *testing.T) {
+	body := `
+schema_version = 2
+name = "demo"
+display_name = "Demo"
+
+[secrets.file]
+path = "~/x"
+
+[[files]]
+key = "K"
+target = "demo/k"
+`
+	_, _, err := parseManifestV2Bytes([]byte(body), "test.toml")
+	if err == nil {
+		t.Fatal("expected error on missing file source")
+	}
+	if !strings.Contains(err.Error(), "source is required") {
+		t.Errorf("error should mention missing source: %v", err)
+	}
+}
+
+func TestParseManifestV2_RejectsFileInvalidKey(t *testing.T) {
+	body := `
+schema_version = 2
+name = "demo"
+display_name = "Demo"
+
+[secrets.file]
+path = "~/x"
+
+[[files]]
+source = "~/a.pem"
+key = "not a valid key"
+target = "demo/k"
+`
+	_, _, err := parseManifestV2Bytes([]byte(body), "test.toml")
+	if err == nil {
+		t.Fatal("expected error on invalid file key")
+	}
+}
+
+func TestParseManifestV2_RejectsDuplicateFileKey(t *testing.T) {
+	body := `
+schema_version = 2
+name = "demo"
+display_name = "Demo"
+
+[secrets.file]
+path = "~/x"
+
+[[files]]
+source = "~/a.pem"
+key = "K"
+target = "demo/a"
+
+[[files]]
+source = "~/b.pem"
+key = "K"
+target = "demo/b"
+`
+	_, _, err := parseManifestV2Bytes([]byte(body), "test.toml")
+	if err == nil {
+		t.Fatal("expected error on duplicate file key")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("error should mention duplicate: %v", err)
+	}
+}
+
+func TestParseManifestV2_NoFilesNoRegression(t *testing.T) {
+	body := `
+schema_version = 2
+name = "demo"
+display_name = "Demo"
+
+[secrets.file]
+path = "~/.config/demo/.env"
+`
+	m, _, err := parseManifestV2Bytes([]byte(body), "test.toml")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(m.Files) != 0 {
+		t.Errorf("manifest without [[files]] should have no Files; got %#v", m.Files)
+	}
+}
+
 func TestParseManifestV2_RejectsV1Schema(t *testing.T) {
 	body := `
 schema_version = 1
