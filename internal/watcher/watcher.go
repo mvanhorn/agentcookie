@@ -1,7 +1,8 @@
 // Package watcher runs the source-side fsnotify loop. It watches the parent
 // directory of Chrome's Cookies SQLite (watching the file directly misses
 // Chrome's rename-on-write pattern), debounces rapid writes, rate-caps push
-// frequency, and tolerates push failures with exponential backoff.
+// frequency, and tolerates push failures by logging them and retrying on the
+// next event or baseline tick (the rate cap bounds retry frequency).
 package watcher
 
 import (
@@ -51,10 +52,6 @@ type Config struct {
 	// BaselineTick: even with no fs events, run a push every BaselineTick.
 	// Defends against fsnotify event loss on macOS. Defaults to 30s.
 	BaselineTick time.Duration
-
-	// MaxBackoff: cap on exponential backoff after a push failure. Defaults to
-	// 60s.
-	MaxBackoff time.Duration
 }
 
 func (c Config) debounce() time.Duration {
@@ -78,18 +75,6 @@ func (c Config) baselineTick() time.Duration {
 		return c.BaselineTick
 	}
 	return 30 * time.Second
-}
-
-// maxBackoff returns the effective backoff cap. NOTE: currently unwired -- the
-// run loop does not call this, so the documented cap is not enforced yet. Kept
-// (not deleted) to preserve that signal; wiring it in is tracked separately.
-//
-//nolint:unused // effective-cap helper not yet wired into the run loop
-func (c Config) maxBackoff() time.Duration {
-	if c.MaxBackoff > 0 {
-		return c.MaxBackoff
-	}
-	return 60 * time.Second
 }
 
 // Watcher runs the watch loop. Construct via New, then call Run.
