@@ -249,11 +249,11 @@ func validateManifestV2(m *ManifestV2, sourcePath string) error {
 	if m.Secrets.Keychain != nil {
 		srcCount++
 	}
-	if srcCount == 0 {
-		return errors.New("exactly one [secrets.*] block required; none found")
+	if srcCount == 0 && len(m.Files) == 0 {
+		return errors.New("a secret source is required: one [secrets.*] block or at least one [[files]] item")
 	}
 	if srcCount > 1 {
-		return fmt.Errorf("exactly one [secrets.*] block required; %d found", srcCount)
+		return fmt.Errorf("at most one [secrets.*] block allowed; %d found", srcCount)
 	}
 
 	if m.Secrets.Command != nil {
