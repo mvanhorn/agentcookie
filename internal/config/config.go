@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -20,6 +21,7 @@ import (
 type SourceConfig struct {
 	Sink     SinkRef     `yaml:"sink" json:"sink"`
 	Chrome   ChromeRef   `yaml:"chrome" json:"chrome"`
+	Browser  BrowserRef  `yaml:"browser,omitempty" json:"browser,omitempty"`
 	Peer     PeerRef     `yaml:"peer,omitempty" json:"peer,omitempty"`
 	Security SecurityRef `yaml:"security,omitempty" json:"security,omitempty"`
 }
@@ -80,6 +82,25 @@ type ChromeRef struct {
 	DBPath string `yaml:"db_path" json:"db_path"`
 }
 
+type BrowserRef struct {
+	Name    string `yaml:"name" json:"name"`
+	Profile string `yaml:"profile" json:"profile"`
+}
+
+type browserPathRef struct {
+	SupportDir []string
+}
+
+const (
+	defaultBrowserName    = "chrome"
+	defaultBrowserProfile = "Default"
+)
+
+var sourceBrowserPaths = map[string]browserPathRef{
+	defaultBrowserName: {SupportDir: []string{"Google", "Chrome"}},
+	"atlas":            {SupportDir: []string{"OpenAI", "Atlas"}},
+}
+
 // SecurityRef holds transport credentials. SharedSecret is the pre-pairing
 // stopgap; U5 replaces it with a pairing-derived per-peer key persisted in the
 // OS keychain.
@@ -104,8 +125,21 @@ func LoadSource(dir string) (*SourceConfig, error) {
 	if err := validateSharedSecret(path, cfg.Security.SharedSecret); err != nil {
 		return nil, err
 	}
+	if cfg.Browser.Name != "" {
+		if _, err := lookupSourceBrowserPath(cfg.Browser.Name); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
 	if cfg.Chrome.DBPath == "" {
-		cfg.Chrome.DBPath = DefaultChromeCookiesPath()
+		if cfg.Browser.Name != "" || cfg.Browser.Profile != "" {
+			dbPath, err := SourceBrowserCookiesPath(cfg.Browser.Name, cfg.Browser.Profile)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", path, err)
+			}
+			cfg.Chrome.DBPath = dbPath
+		} else {
+			cfg.Chrome.DBPath = DefaultChromeCookiesPath()
+		}
 	}
 	return &cfg, nil
 }
@@ -190,9 +224,50 @@ func ExpandTilde(p string) string {
 // macOS. Kept here so config can populate omitted db_path fields without
 // importing chrome (which pulls CGO sqlite).
 func DefaultChromeCookiesPath() string {
+	path, _ := SourceBrowserCookiesPath(defaultBrowserName, defaultBrowserProfile)
+	return path
+}
+
+// SourceBrowserCookiesPath returns the Cookies SQLite path for the configured
+// source browser. Empty name/profile default to Chrome/Default.
+func SourceBrowserCookiesPath(name, profile string) (string, error) {
+	ref, err := lookupSourceBrowserPath(name)
+	if err != nil {
+		return "", err
+	}
+	if profile == "" {
+		profile = defaultBrowserProfile
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return filepath.Join(home, "Library", "Application Support", "Google", "Chrome", "Default", "Cookies")
+	parts := []string{home, "Library", "Application Support"}
+	parts = append(parts, ref.SupportDir...)
+	parts = append(parts, profile, "Cookies")
+	return filepath.Join(parts...), nil
+}
+
+func lookupSourceBrowserPath(name string) (browserPathRef, error) {
+	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "" {
+		key = defaultBrowserName
+	}
+	ref, ok := sourceBrowserPaths[key]
+	if !ok {
+		return browserPathRef{}, fmt.Errorf("unsupported browser %q (supported: %s)", name, strings.Join(SupportedBrowserNames(), ", "))
+	}
+	ref.SupportDir = append([]string(nil), ref.SupportDir...)
+	return ref, nil
+}
+
+// SupportedBrowserNames returns the source-browser adapter names accepted by
+// source.yaml.
+func SupportedBrowserNames() []string {
+	names := make([]string, 0, len(sourceBrowserPaths))
+	for name := range sourceBrowserPaths {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

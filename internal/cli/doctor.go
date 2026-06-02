@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -68,6 +69,10 @@ type doctorDeps struct {
 	LoadSourceState func() (*state.SourceState, error)
 	LoadSinkState   func() (*state.SinkState, error)
 	MasterKeyExists func() bool
+
+	SourceAdapterCookiesExists func(path string) error
+	SourceAdapterPassword      func(chrome.Browser) (string, error)
+	SourceAdapterDecrypt       func(path string, key []byte) error
 }
 
 var doctorCmd = &cobra.Command{
@@ -104,6 +109,12 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 			return state.LoadSink(state.SinkPath(home))
 		},
 		MasterKeyExists: keystore.MasterKeyExists,
+		SourceAdapterCookiesExists: func(path string) error {
+			_, err := os.Stat(path)
+			return err
+		},
+		SourceAdapterPassword: chrome.SafeStoragePasswordFor,
+		SourceAdapterDecrypt:  sourceAdapterDecryptSmoke,
 	}
 
 	report := buildReport(deps)
@@ -181,9 +192,15 @@ func buildReport(d doctorDeps) DoctorReport {
 		st, err := d.LoadSourceState()
 		checks = append(checks, checkSourceStateFrom(st, err))
 		checks = append(checks, checkDBSCFrom(st))
+		checks = append(checks, checkSourceAdapter(srcCfg, d.SourceAdapterCookiesExists, d.SourceAdapterPassword, d.SourceAdapterDecrypt))
 	} else {
 		checks = append(checks, Check{
 			Name:     "Source state",
+			Severity: SeveritySkipped,
+			Detail:   "sink-only install",
+		})
+		checks = append(checks, Check{
+			Name:     "Source adapter",
 			Severity: SeveritySkipped,
 			Detail:   "sink-only install",
 		})
@@ -516,6 +533,105 @@ func checkConfigLoaded(configDir string) (Check, *config.SourceConfig, *config.S
 		Severity: SeverityOK,
 		Detail:   strings.Join(parts, " + ") + " present, parses OK",
 	}, srcCfg, sinkCfg
+}
+
+var errSourceAdapterNoEncryptedCookies = errors.New("no encrypted cookies found")
+
+// checkSourceAdapter validates the browser-specific source surfaces: Cookies
+// SQLite path, Safe Storage keychain entry, and a one-cookie decrypt smoke.
+func checkSourceAdapter(
+	srcCfg *config.SourceConfig,
+	cookiesExists func(path string) error,
+	passwordFor func(chrome.Browser) (string, error),
+	decryptSmoke func(path string, key []byte) error,
+) Check {
+	if srcCfg == nil {
+		return Check{
+			Name:     "Source adapter",
+			Severity: SeveritySkipped,
+			Detail:   "sink-only install",
+		}
+	}
+	if cookiesExists == nil {
+		cookiesExists = func(path string) error {
+			_, err := os.Stat(path)
+			return err
+		}
+	}
+	if passwordFor == nil {
+		passwordFor = chrome.SafeStoragePasswordFor
+	}
+	if decryptSmoke == nil {
+		decryptSmoke = sourceAdapterDecryptSmoke
+	}
+
+	b, err := chrome.LookupBrowser(srcCfg.Browser.Name)
+	if err != nil {
+		return Check{
+			Name:        "Source adapter",
+			Severity:    SeverityFail,
+			Detail:      err.Error(),
+			Remediation: "set source.yaml browser.name to one of: " + strings.Join(chrome.SupportedBrowserNames(), ", "),
+		}
+	}
+	if err := cookiesExists(srcCfg.Chrome.DBPath); err != nil {
+		return Check{
+			Name:        "Source adapter",
+			Severity:    SeverityFail,
+			Detail:      fmt.Sprintf("adapter: %s - cookies SQLite missing at %s", b.Name, srcCfg.Chrome.DBPath),
+			Remediation: "open the configured browser/profile once, or set chrome.db_path to the correct Cookies file",
+		}
+	}
+	pw, err := passwordFor(b)
+	if err != nil {
+		return Check{
+			Name:        "Source adapter",
+			Severity:    SeverityFail,
+			Detail:      fmt.Sprintf("adapter: %s - Safe Storage keychain entry unreadable: %v", b.Name, err),
+			Remediation: fmt.Sprintf("confirm the %q Keychain item exists and grant agentcookie access", b.KeychainService),
+		}
+	}
+	key, err := chrome.DeriveAESKey(pw)
+	if err != nil {
+		return Check{
+			Name:        "Source adapter",
+			Severity:    SeverityFail,
+			Detail:      fmt.Sprintf("adapter: %s - derive cookie key failed: %v", b.Name, err),
+			Remediation: "confirm the Safe Storage keychain value is readable",
+		}
+	}
+	if err := decryptSmoke(srcCfg.Chrome.DBPath, key); err != nil {
+		if errors.Is(err, errSourceAdapterNoEncryptedCookies) {
+			return Check{
+				Name:        "Source adapter",
+				Severity:    SeverityWarn,
+				Detail:      fmt.Sprintf("adapter: %s - decryption: no encrypted cookies available to test", b.Name),
+				Remediation: "log into at least one site in the configured browser/profile, then re-run doctor",
+			}
+		}
+		return Check{
+			Name:        "Source adapter",
+			Severity:    SeverityFail,
+			Detail:      fmt.Sprintf("adapter: %s - decryption: unsupported on this build", b.Name),
+			Remediation: fmt.Sprintf("verify %s uses Chromium v10 cookie encryption and the configured Cookies path/keychain entry are correct (cause: %v)", b.Name, err),
+		}
+	}
+	return Check{
+		Name:     "Source adapter",
+		Severity: SeverityOK,
+		Detail:   fmt.Sprintf("adapter: %s - cookies: present, keychain: readable, decryption: ok", b.Name),
+	}
+}
+
+func sourceAdapterDecryptSmoke(path string, key []byte) error {
+	result, err := chrome.ProbeCookiesFile(path, key, 1)
+	if err != nil {
+		return err
+	}
+	if result.RowsChecked == 0 {
+		return errSourceAdapterNoEncryptedCookies
+	}
+	return nil
 }
 
 // checkKeystore validates that every configured peer hostname has a

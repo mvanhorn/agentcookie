@@ -40,6 +40,93 @@ security:
 	}
 }
 
+func TestLoadSourceBrowserBlockParsesAndDerivesPath(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "source.yaml", `
+sink:
+  url: http://example.test:9999/sync
+browser:
+  name: atlas
+  profile: Profile 1
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+	cfg, err := LoadSource(dir)
+	if err != nil {
+		t.Fatalf("LoadSource: %v", err)
+	}
+	if cfg.Browser.Name != "atlas" || cfg.Browser.Profile != "Profile 1" {
+		t.Errorf("browser ref: got %+v", cfg.Browser)
+	}
+	home, _ := os.UserHomeDir()
+	want := filepath.Join(home, "Library", "Application Support", "OpenAI", "Atlas", "Profile 1", "Cookies")
+	if cfg.Chrome.DBPath != want {
+		t.Errorf("derived DBPath: got %q, want %q", cfg.Chrome.DBPath, want)
+	}
+}
+
+func TestLoadSourceDBPathOverridesBrowserDerivedPath(t *testing.T) {
+	dir := t.TempDir()
+	explicit := filepath.Join(dir, "Custom", "Cookies")
+	writeFile(t, dir, "source.yaml", `
+sink:
+  url: http://example.test:9999/sync
+chrome:
+  db_path: `+explicit+`
+browser:
+  name: atlas
+  profile: Profile 1
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+	cfg, err := LoadSource(dir)
+	if err != nil {
+		t.Fatalf("LoadSource: %v", err)
+	}
+	if cfg.Chrome.DBPath != explicit {
+		t.Errorf("explicit db_path should win: got %q, want %q", cfg.Chrome.DBPath, explicit)
+	}
+	if cfg.Browser.Name != "atlas" {
+		t.Errorf("browser name should remain available for keychain selection, got %q", cfg.Browser.Name)
+	}
+}
+
+func TestLoadSourceWithoutBrowserDefaultsChrome(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "source.yaml", `
+sink:
+  url: http://example.test:9999/sync
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+	cfg, err := LoadSource(dir)
+	if err != nil {
+		t.Fatalf("LoadSource: %v", err)
+	}
+	if cfg.Chrome.DBPath != DefaultChromeCookiesPath() {
+		t.Errorf("default DBPath: got %q, want %q", cfg.Chrome.DBPath, DefaultChromeCookiesPath())
+	}
+}
+
+func TestLoadSourceUnknownBrowserFailsWithSupportedNames(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "source.yaml", `
+sink:
+  url: http://example.test:9999/sync
+browser:
+  name: dia
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+	_, err := LoadSource(dir)
+	if err == nil {
+		t.Fatal("expected unsupported browser error")
+	}
+	if !strings.Contains(err.Error(), "supported: atlas, chrome") {
+		t.Errorf("error should list supported browsers, got %v", err)
+	}
+}
+
 func TestLoadSourceMissingSinkURL(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "source.yaml", `

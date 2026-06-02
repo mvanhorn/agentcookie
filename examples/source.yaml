@@ -10,6 +10,12 @@ chrome:
   # if omitted. Set explicitly to read from a non-default profile.
   db_path: ~/Library/Application Support/Google/Chrome/Default/Cookies
 
+# Optional source browser adapter. Omit for Google Chrome. Set name/profile
+# when reading cookies from another Chromium-family source browser.
+# browser:
+#   name: chrome # chrome or atlas
+#   profile: Default
+
 peer:
   # Hostname of the sink machine. After `agentcookie pair --as source`
   # finishes, this is the filename under ~/.config/agentcookie/keys/.

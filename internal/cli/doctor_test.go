@@ -463,6 +463,100 @@ func TestCheckCookieDelivery(t *testing.T) {
 	})
 }
 
+func TestCheckSourceAdapter(t *testing.T) {
+	exists := func(string) error { return nil }
+	password := func(chrome.Browser) (string, error) { return "safe-storage-password", nil }
+	decryptOK := func(string, []byte) error { return nil }
+
+	t.Run("sink-only skipped", func(t *testing.T) {
+		c := checkSourceAdapter(nil, exists, password, decryptOK)
+		if c.Severity != SeveritySkipped {
+			t.Fatalf("got %q, want SKIPPED", c.Severity)
+		}
+	})
+
+	t.Run("ok reports adapter", func(t *testing.T) {
+		cfg := &config.SourceConfig{
+			Chrome:  config.ChromeRef{DBPath: "/tmp/Cookies"},
+			Browser: config.BrowserRef{Name: "atlas"},
+		}
+		c := checkSourceAdapter(cfg, exists, password, decryptOK)
+		if c.Severity != SeverityOK {
+			t.Fatalf("got %q (%q), want OK", c.Severity, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "adapter: atlas") {
+			t.Errorf("detail should name atlas adapter: %q", c.Detail)
+		}
+	})
+
+	t.Run("missing cookies path fails loud", func(t *testing.T) {
+		cfg := &config.SourceConfig{Chrome: config.ChromeRef{DBPath: "/tmp/missing"}}
+		c := checkSourceAdapter(cfg, func(string) error { return os.ErrNotExist }, password, decryptOK)
+		if c.Severity != SeverityFail {
+			t.Fatalf("got %q (%q), want FAIL", c.Severity, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "cookies SQLite missing") {
+			t.Errorf("detail: %q", c.Detail)
+		}
+	})
+
+	t.Run("keychain unreadable fails loud", func(t *testing.T) {
+		cfg := &config.SourceConfig{Chrome: config.ChromeRef{DBPath: "/tmp/Cookies"}}
+		c := checkSourceAdapter(cfg, exists, func(chrome.Browser) (string, error) {
+			return "", errors.New("not allowed")
+		}, decryptOK)
+		if c.Severity != SeverityFail {
+			t.Fatalf("got %q (%q), want FAIL", c.Severity, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "Safe Storage keychain entry unreadable") {
+			t.Errorf("detail: %q", c.Detail)
+		}
+	})
+
+	t.Run("decrypt failure uses requested unsupported shape", func(t *testing.T) {
+		cfg := &config.SourceConfig{
+			Chrome:  config.ChromeRef{DBPath: "/tmp/Cookies"},
+			Browser: config.BrowserRef{Name: "atlas"},
+		}
+		c := checkSourceAdapter(cfg, exists, password, func(string, []byte) error {
+			return errors.New("bad prefix")
+		})
+		if c.Severity != SeverityFail {
+			t.Fatalf("got %q (%q), want FAIL", c.Severity, c.Detail)
+		}
+		if c.Detail != "adapter: atlas - decryption: unsupported on this build" {
+			t.Errorf("detail: got %q", c.Detail)
+		}
+	})
+
+	t.Run("no encrypted cookies warns", func(t *testing.T) {
+		cfg := &config.SourceConfig{Chrome: config.ChromeRef{DBPath: "/tmp/Cookies"}}
+		c := checkSourceAdapter(cfg, exists, password, func(string, []byte) error {
+			return errSourceAdapterNoEncryptedCookies
+		})
+		if c.Severity != SeverityWarn {
+			t.Fatalf("got %q (%q), want WARN", c.Severity, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "no encrypted cookies") {
+			t.Errorf("detail: %q", c.Detail)
+		}
+	})
+
+	t.Run("unknown browser lists supported names", func(t *testing.T) {
+		cfg := &config.SourceConfig{
+			Chrome:  config.ChromeRef{DBPath: "/tmp/Cookies"},
+			Browser: config.BrowserRef{Name: "dia"},
+		}
+		c := checkSourceAdapter(cfg, exists, password, decryptOK)
+		if c.Severity != SeverityFail {
+			t.Fatalf("got %q (%q), want FAIL", c.Severity, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "supported: atlas, chrome") {
+			t.Errorf("detail should list supported names: %q", c.Detail)
+		}
+	})
+}
+
 // TestHostMatchesAnyAdapter covers the substring fallback used by the
 // adapter coverage check.
 func TestHostMatchesAnyAdapter(t *testing.T) {
@@ -512,17 +606,21 @@ peer:
 		LoadSourceState: func() (*state.SourceState, error) {
 			return &state.SourceState{LastPush: time.Now().Add(-30 * time.Second)}, nil
 		},
-		LoadSinkState:   func() (*state.SinkState, error) { return nil, nil },
-		MasterKeyExists: func() bool { return false },
+		LoadSinkState:              func() (*state.SinkState, error) { return nil, nil },
+		MasterKeyExists:            func() bool { return false },
+		SourceAdapterCookiesExists: func(string) error { return nil },
+		SourceAdapterPassword:      func(chrome.Browser) (string, error) { return "safe-storage-password", nil },
+		SourceAdapterDecrypt:       func(string, []byte) error { return nil },
 	})
 
 	// v0.12.0-beta.3 added two checks: Adapter coverage + CDP injector.
 	// v0.13 added the Secrets bus check. DBSC resilience added the DBSC
 	// check (source role only; present here since this fixture is source).
 	// The consumption bridge added the Secret coverage + Binary install checks.
-	// Universal cookie delivery added the Cookie delivery check.
-	if got := len(report.Checks); got != 15 {
-		t.Fatalf("got %d checks, want 15", got)
+	// Universal cookie delivery added the Cookie delivery check. Source browser
+	// adapters added the Source adapter check.
+	if got := len(report.Checks); got != 16 {
+		t.Fatalf("got %d checks, want 16", got)
 	}
 
 	// Serialize the envelope and confirm it round-trips.
@@ -544,6 +642,7 @@ peer:
 		"Sink state":      SeveritySkipped,
 		"Sealing":         SeveritySkipped,
 		"Cookie delivery": SeveritySkipped,
+		"Source adapter":  SeverityOK,
 	}
 	for _, c := range report.Checks {
 		if w, ok := want[c.Name]; ok && c.Severity != w {

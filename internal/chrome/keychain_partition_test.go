@@ -162,3 +162,27 @@ func TestSafeStorageRemediation_PointsToOnePasswordNotGUI(t *testing.T) {
 		t.Errorf("remediation must not send a headless sink to a GUI prompt: %q", SafeStorageRemediation)
 	}
 }
+
+func TestSafeStorageRemediationForChromeUsesWizard(t *testing.T) {
+	b, err := LookupBrowser("chrome")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := safeStorageRemediationFor(b); got != SafeStorageRemediation {
+		t.Errorf("chrome remediation = %q, want %q", got, SafeStorageRemediation)
+	}
+}
+
+func TestSafeStorageRemediationForNonChromeAvoidsChromeWizard(t *testing.T) {
+	b, err := LookupBrowser("atlas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := safeStorageRemediationFor(b)
+	if !strings.Contains(got, `grant agentcookie read access to the "Atlas Safe Storage" Keychain item`) {
+		t.Errorf("atlas remediation should name the Atlas Keychain item: %q", got)
+	}
+	if strings.Contains(got, "AGENTCOOKIE_LOGIN_PASSWORD") {
+		t.Errorf("atlas remediation must not point at Chrome wizard env flow: %q", got)
+	}
+}

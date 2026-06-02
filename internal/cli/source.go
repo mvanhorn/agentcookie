@@ -15,7 +15,6 @@ import (
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/chromedirsync"
-	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/cli/httpserver"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/pairing"
@@ -85,9 +84,13 @@ func runSource(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	password, err := chrome.SafeStoragePassword()
+	sourceBrowser, err := chrome.LookupBrowser(cfg.Browser.Name)
 	if err != nil {
-		return fmt.Errorf("read Chrome Safe Storage from Keychain: %w", err)
+		return err
+	}
+	password, err := chrome.SafeStoragePasswordFor(sourceBrowser)
+	if err != nil {
+		return fmt.Errorf("read %s from Keychain: %w", sourceBrowser.KeychainService, err)
 	}
 	key, err := chrome.DeriveAESKey(password)
 	if err != nil {
@@ -128,8 +131,8 @@ func runSource(cmd *cobra.Command, args []string) error {
 	// window: a write to any surface coalesces into one full envelope push.
 	w, err := watcher.New(watcher.Config{
 		CookiesPath:     cfg.Chrome.DBPath,
-		LocalStorageDir: chromepaths.LocalStorageLevelDB(),
-		IndexedDBDir:    chromepaths.IndexedDBDir(),
+		LocalStorageDir: sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile),
+		IndexedDBDir:    sourceBrowser.IndexedDBDir(cfg.Browser.Profile),
 		Push:            push,
 		OnEvent: func(ev watcher.Event) {
 			if sourceVerbose {
@@ -140,7 +143,7 @@ func runSource(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("init watcher: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "agentcookie source --watch: watching %s, sink=%s\n", cfg.Chrome.DBPath, cfg.Sink.URL)
+	fmt.Fprintf(os.Stderr, "agentcookie source --watch: adapter=%s watching %s, sink=%s\n", sourceBrowser.Name, cfg.Chrome.DBPath, cfg.Sink.URL)
 
 	// v0.13: also watch ~/.agentcookie/secrets/ so a write to a per-CLI
 	// secrets.env triggers the same push pipeline as a Chrome cookie
@@ -323,15 +326,18 @@ func pushOnce(
 		return 0, dbsc, nil
 	}
 
-	// v0.7: pack Local Storage and IndexedDB alongside cookies. Both are
-	// directories of LevelDB files in Chrome's Default profile; we tar
-	// them, the envelope carries the bytes, the sink unpacks into its
-	// real Chrome profile. Errors fetching either are non-fatal so the
-	// source still pushes whatever it could read.
+	// v0.7: pack Local Storage and IndexedDB alongside cookies from the
+	// configured source browser/profile. The envelope carries the bytes, the
+	// sink unpacks into its real Chrome profile. Errors fetching either are
+	// non-fatal so the source still pushes whatever it could read.
+	sourceBrowser, err := chrome.LookupBrowser(cfg.Browser.Name)
+	if err != nil {
+		sourceBrowser, _ = chrome.LookupBrowser("")
+	}
 	var lsTarball []byte
 	var idbTarball []byte
 	var idbSkipped []string
-	if lt, _, err := chromedirsync.Pack(chromepaths.LocalStorageLevelDB(), 0); err == nil {
+	if lt, _, err := chromedirsync.Pack(sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile), 0); err == nil {
 		lsTarball = lt
 	} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
 		fmt.Fprintf(os.Stderr, "agentcookie source: localStorage pack failed (%v); continuing without it\n", err)
@@ -342,7 +348,7 @@ func pushOnce(
 	// or cookies; IndexedDB is rarely an auth-state surface in practice.
 	// Set AGENTCOOKIE_SYNC_INDEXEDDB=1 to opt in.
 	if os.Getenv("AGENTCOOKIE_SYNC_INDEXEDDB") == "1" {
-		if it, sk, err := chromedirsync.Pack(chromepaths.IndexedDBDir(), 5*1024*1024); err == nil {
+		if it, sk, err := chromedirsync.Pack(sourceBrowser.IndexedDBDir(cfg.Browser.Profile), 5*1024*1024); err == nil {
 			idbTarball = it
 			idbSkipped = sk
 		} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {

@@ -41,14 +41,14 @@ var ErrKeybaseTimedOut = errors.New("keybase keychain GetGenericPassword timed o
 // each rebuild invalidates the cdhash that the per-app trust list
 // pinned, so subsequent SecItem calls hit a prompt that no one will
 // answer.
-func safeStoragePasswordViaKeybase() (string, error) {
+func safeStoragePasswordViaKeybaseFor(service, account string) (string, error) {
 	type result struct {
 		pw  []byte
 		err error
 	}
 	ch := make(chan result, 1)
 	go func() {
-		password, err := keychain.GetGenericPassword(keychainService, keychainAccount, "", "")
+		password, err := keychain.GetGenericPassword(service, account, "", "")
 		ch <- result{pw: password, err: err}
 	}()
 
