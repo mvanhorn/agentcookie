@@ -90,7 +90,9 @@ func runSource(cmd *cobra.Command, args []string) error {
 	}
 	password, err := chrome.SafeStoragePasswordFor(sourceBrowser)
 	if err != nil {
-		return fmt.Errorf("read %s from Keychain: %w", sourceBrowser.KeychainService, err)
+		// SafeStoragePasswordFor already prefixes its error with
+		// "read <service> from Keychain ..."; don't double the prefix.
+		return err
 	}
 	key, err := chrome.DeriveAESKey(password)
 	if err != nil {
@@ -330,9 +332,14 @@ func pushOnce(
 	// configured source browser/profile. The envelope carries the bytes, the
 	// sink unpacks into its real Chrome profile. Errors fetching either are
 	// non-fatal so the source still pushes whatever it could read.
+	// Resolve the same adapter the watcher uses. cfg.Browser.Name was already
+	// validated in LoadSource, so a failure here means the config changed
+	// underneath us; fail loud rather than silently packing Chrome's profile
+	// (which would mismatch the cookies/localStorage/IndexedDB the watcher and
+	// the rest of this push are reading from the configured browser).
 	sourceBrowser, err := chrome.LookupBrowser(cfg.Browser.Name)
 	if err != nil {
-		sourceBrowser, _ = chrome.LookupBrowser("")
+		return 0, dbsc, err
 	}
 	var lsTarball []byte
 	var idbTarball []byte
