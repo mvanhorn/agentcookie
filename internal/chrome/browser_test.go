@@ -67,16 +67,16 @@ func TestBrowserCookiesPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := atlasBrowser.CookiesPath("Profile 1"), filepath.Join(home, "Library", "Application Support", "OpenAI", "Atlas", "Profile 1", "Cookies"); got != want {
+	if got, want := atlasBrowser.CookiesPath("Profile 1"), filepath.Join(home, "Library", "Application Support", "com.openai.atlas", "browser-data", "host", "Profile 1", "Cookies"); got != want {
 		t.Errorf("atlas profile path: got %q, want %q", got, want)
 	}
-	if got, want := atlasBrowser.ProfileDir("Profile 1"), filepath.Join(home, "Library", "Application Support", "OpenAI", "Atlas", "Profile 1"); got != want {
+	if got, want := atlasBrowser.ProfileDir("Profile 1"), filepath.Join(home, "Library", "Application Support", "com.openai.atlas", "browser-data", "host", "Profile 1"); got != want {
 		t.Errorf("atlas profile dir: got %q, want %q", got, want)
 	}
-	if got, want := atlasBrowser.LocalStorageLevelDB("Profile 1"), filepath.Join(home, "Library", "Application Support", "OpenAI", "Atlas", "Profile 1", "Local Storage", "leveldb"); got != want {
+	if got, want := atlasBrowser.LocalStorageLevelDB("Profile 1"), filepath.Join(home, "Library", "Application Support", "com.openai.atlas", "browser-data", "host", "Profile 1", "Local Storage", "leveldb"); got != want {
 		t.Errorf("atlas local storage path: got %q, want %q", got, want)
 	}
-	if got, want := atlasBrowser.IndexedDBDir("Profile 1"), filepath.Join(home, "Library", "Application Support", "OpenAI", "Atlas", "Profile 1", "IndexedDB"); got != want {
+	if got, want := atlasBrowser.IndexedDBDir("Profile 1"), filepath.Join(home, "Library", "Application Support", "com.openai.atlas", "browser-data", "host", "Profile 1", "IndexedDB"); got != want {
 		t.Errorf("atlas indexeddb path: got %q, want %q", got, want)
 	}
 }

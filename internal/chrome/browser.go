@@ -30,14 +30,27 @@ var browserRegistry = map[string]Browser{
 		KeychainService: keychainService,
 	},
 	"atlas": {
-		Name:       "atlas",
-		SupportDir: []string{"OpenAI", "Atlas"},
-		// UNVERIFIED: Atlas paths/keychain strings are best-known from
-		// Chromium-fork conventions (Brave="Brave Safe Storage", Edge=
-		// "Microsoft Edge Safe Storage"). Confirm against a real Atlas
-		// install before relying on the atlas adapter. The doctor check
-		// surfaces a wrong path/keychain as a loud failure rather than a
-		// silent miss.
+		Name: "atlas",
+		// VERIFIED against ChatGPT Atlas 149.0.7827.29 (bundle com.openai.atlas)
+		// on 2026-06-02. Atlas is Chromium underneath but does NOT follow the
+		// standard profile layout: the profile root is
+		// ~/Library/Application Support/com.openai.atlas/browser-data/host/,
+		// and profiles are UUID-scoped ("user-<uuid>", plus an empty "Default"
+		// and a "login-staging-<uuid>"). The live session lives in the
+		// user-<uuid> profile, so callers must set browser.profile to that dir
+		// explicitly -- the "Default" default resolves to an empty Cookies DB.
+		SupportDir: []string{"com.openai.atlas", "browser-data", "host"},
+		// DECRYPTION IS NOT YET SUPPORTED for Atlas. Cookies are tagged v10
+		// (standard Chromium AES-128-GCM shape), but on the inspected build
+		// Atlas ships NO "<App> Safe Storage" keychain item (in either the
+		// login or System keychain), carries no os_crypt key in Local State,
+		// and its v10 ciphertext does not decrypt with the Chrome Safe Storage
+		// key or Chromium's "peanuts" fallback. Atlas appears to use a custom
+		// key provider whose key is not externally recoverable without further
+		// work. These keychain fields are therefore placeholders: with no
+		// matching item, SafeStoragePasswordFor fails and the doctor source-
+		// adapter check reports the decryption gap loudly rather than silently
+		// shipping undecryptable cookies. See issue #80.
 		KeychainAccount: "Atlas",
 		KeychainService: "Atlas Safe Storage",
 	},

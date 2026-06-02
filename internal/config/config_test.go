@@ -59,7 +59,7 @@ security:
 		t.Errorf("browser ref: got %+v", cfg.Browser)
 	}
 	home, _ := os.UserHomeDir()
-	want := filepath.Join(home, "Library", "Application Support", "OpenAI", "Atlas", "Profile 1", "Cookies")
+	want := filepath.Join(home, "Library", "Application Support", "com.openai.atlas", "browser-data", "host", "Profile 1", "Cookies")
 	if cfg.Chrome.DBPath != want {
 		t.Errorf("derived DBPath: got %q, want %q", cfg.Chrome.DBPath, want)
 	}

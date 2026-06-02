@@ -98,7 +98,7 @@ const (
 
 var sourceBrowserPaths = map[string]browserPathRef{
 	defaultBrowserName: {SupportDir: []string{"Google", "Chrome"}},
-	"atlas":            {SupportDir: []string{"OpenAI", "Atlas"}},
+	"atlas":            {SupportDir: []string{"com.openai.atlas", "browser-data", "host"}},
 }
 
 // SecurityRef holds transport credentials. SharedSecret is the pre-pairing
