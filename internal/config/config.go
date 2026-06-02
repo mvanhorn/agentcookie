@@ -96,9 +96,16 @@ const (
 	defaultBrowserProfile = "Default"
 )
 
+// Mirror of internal/chrome's browser registry (path side only). Kept in
+// sync by the guard tests in internal/cli; config stays free of the chrome
+// package's CGO sqlite dependency. See internal/chrome/browser.go for the
+// keychain strings and per-browser notes.
 var sourceBrowserPaths = map[string]browserPathRef{
 	defaultBrowserName: {SupportDir: []string{"Google", "Chrome"}},
 	"atlas":            {SupportDir: []string{"com.openai.atlas", "browser-data", "host"}},
+	"brave":            {SupportDir: []string{"BraveSoftware", "Brave-Browser"}},
+	"edge":             {SupportDir: []string{"Microsoft Edge"}},
+	"arc":              {SupportDir: []string{"Arc", "User Data"}},
 }
 
 // SecurityRef holds transport credentials. SharedSecret is the pre-pairing

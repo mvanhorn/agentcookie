@@ -122,7 +122,7 @@ security:
 	if err == nil {
 		t.Fatal("expected unsupported browser error")
 	}
-	if !strings.Contains(err.Error(), "supported: atlas, chrome") {
+	if !strings.Contains(err.Error(), "supported:") || !strings.Contains(err.Error(), "chrome") {
 		t.Errorf("error should list supported browsers, got %v", err)
 	}
 }

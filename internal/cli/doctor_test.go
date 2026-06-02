@@ -551,7 +551,7 @@ func TestCheckSourceAdapter(t *testing.T) {
 		if c.Severity != SeverityFail {
 			t.Fatalf("got %q (%q), want FAIL", c.Severity, c.Detail)
 		}
-		if !strings.Contains(c.Detail, "supported: atlas, chrome") {
+		if !strings.Contains(c.Detail, "supported:") || !strings.Contains(c.Detail, "chrome") {
 			t.Errorf("detail should list supported names: %q", c.Detail)
 		}
 	})

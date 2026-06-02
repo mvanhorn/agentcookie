@@ -38,8 +38,36 @@ func TestLookupBrowserUnknownListsSupportedNames(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unsupported browser error")
 	}
-	if !strings.Contains(err.Error(), "supported: atlas, chrome") {
+	if !strings.Contains(err.Error(), "supported:") || !strings.Contains(err.Error(), "chrome") {
 		t.Errorf("error should list supported names, got %v", err)
+	}
+}
+
+func TestLookupBrowserStandardForks(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	cases := []struct {
+		name       string
+		cookiesDir []string // path segments under Application Support, before profile
+		account    string
+		service    string
+	}{
+		{"brave", []string{"BraveSoftware", "Brave-Browser"}, "Brave", "Brave Safe Storage"},
+		{"edge", []string{"Microsoft Edge"}, "Microsoft Edge", "Microsoft Edge Safe Storage"},
+		{"arc", []string{"Arc", "User Data"}, "Arc", "Arc Safe Storage"},
+	}
+	for _, tc := range cases {
+		b, err := LookupBrowser(tc.name)
+		if err != nil {
+			t.Fatalf("LookupBrowser(%s): %v", tc.name, err)
+		}
+		if b.KeychainAccount != tc.account || b.KeychainService != tc.service {
+			t.Errorf("%s keychain: got account=%q service=%q", tc.name, b.KeychainAccount, b.KeychainService)
+		}
+		base := append([]string{home, "Library", "Application Support"}, tc.cookiesDir...)
+		wantCookies := filepath.Join(append(append([]string{}, base...), "Default", "Cookies")...)
+		if got := b.CookiesPath(""); got != wantCookies {
+			t.Errorf("%s cookies path: got %q, want %q", tc.name, got, wantCookies)
+		}
 	}
 }
 

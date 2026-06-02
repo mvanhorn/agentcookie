@@ -68,6 +68,34 @@ var browserRegistry = map[string]Browser{
 		KeychainAccount: "Atlas",
 		KeychainService: "Atlas Safe Storage",
 	},
+	// Brave / Edge / Arc use the standard file-based "<App> Safe Storage"
+	// keychain model that Chrome uses (unlike Atlas), so the path + keychain
+	// adapter applies directly. Profile paths verified on disk on 2026-06-02;
+	// keychain account/service follow the well-established macOS convention
+	// (browser_cookie3 / kooky / pycookiecheat use the same strings). Cookie
+	// decryption was not exercised on the build machine (none were logged in,
+	// so no Safe Storage item existed yet); the doctor source-adapter check
+	// verifies decryption at runtime. Default profile is "Default" for all.
+	"brave": {
+		Name:            "brave",
+		SupportDir:      []string{"BraveSoftware", "Brave-Browser"},
+		KeychainAccount: "Brave",
+		KeychainService: "Brave Safe Storage",
+	},
+	"edge": {
+		Name:            "edge",
+		SupportDir:      []string{"Microsoft Edge"},
+		KeychainAccount: "Microsoft Edge",
+		KeychainService: "Microsoft Edge Safe Storage",
+	},
+	"arc": {
+		Name: "arc",
+		// Arc inserts a "User Data" layer between the support dir and the
+		// profile: ~/Library/Application Support/Arc/User Data/<profile>/.
+		SupportDir:      []string{"Arc", "User Data"},
+		KeychainAccount: "Arc",
+		KeychainService: "Arc Safe Storage",
+	},
 }
 
 // LookupBrowser returns the browser descriptor for name. Empty name defaults
