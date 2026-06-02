@@ -40,17 +40,31 @@ var browserRegistry = map[string]Browser{
 		// user-<uuid> profile, so callers must set browser.profile to that dir
 		// explicitly -- the "Default" default resolves to an empty Cookies DB.
 		SupportDir: []string{"com.openai.atlas", "browser-data", "host"},
-		// DECRYPTION IS NOT YET SUPPORTED for Atlas. Cookies are tagged v10
-		// (standard Chromium AES-128-GCM shape), but on the inspected build
-		// Atlas ships NO "<App> Safe Storage" keychain item (in either the
-		// login or System keychain), carries no os_crypt key in Local State,
-		// and its v10 ciphertext does not decrypt with the Chrome Safe Storage
-		// key or Chromium's "peanuts" fallback. Atlas appears to use a custom
-		// key provider whose key is not externally recoverable without further
-		// work. These keychain fields are therefore placeholders: with no
-		// matching item, SafeStoragePasswordFor fails and the doctor source-
-		// adapter check reports the decryption gap loudly rather than silently
-		// shipping undecryptable cookies. See issue #80.
+		// DECRYPTION IS ARCHITECTURALLY UNSUPPORTED for Atlas via this adapter.
+		// Cookies are tagged v10 (standard Chromium AES-128-CBC shape on macOS),
+		// but Atlas does NOT use the legacy file-based "<App> Safe Storage"
+		// keychain item that Chrome uses (and that agentcookie reads). On the
+		// inspected build there is no such item in the login or System keychain,
+		// no os_crypt/encrypted_key in Local State, and the v10 ciphertext does
+		// not decrypt with the Chrome Safe Storage key or Chromium's "peanuts"
+		// fallback.
+		//
+		// Root cause: Atlas (signed by OpenAI OpCo, team 2DC432GLL2) declares
+		// keychain-access-groups ["2DC432GLL2.com.openai.shared"] and stores its
+		// cookie key in the macOS DATA-PROTECTION keychain under that access
+		// group. Data-protection keychain items are gated by code signature +
+		// access group, so only a binary signed by OpenAI's team with that group
+		// can read the key. No third-party tool (agentcookie included) can reach
+		// it from the SQLite-path side -- this is a deliberate hardening away
+		// from the world-readable Safe Storage model, not a missing-config bug.
+		//
+		// Path discovery still works (set browser.profile to your user-<uuid>
+		// dir), and the doctor source-adapter check reports the decryption gap
+		// loudly. A working Atlas integration would need a CDP/remote-debugging
+		// path (read cookies through a running Atlas), which is out of scope for
+		// this path-based adapter. These keychain fields are inert placeholders;
+		// with no matching file-keychain item SafeStoragePasswordFor fails by
+		// design. See issue #80.
 		KeychainAccount: "Atlas",
 		KeychainService: "Atlas Safe Storage",
 	},
