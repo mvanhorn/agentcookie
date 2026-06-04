@@ -66,7 +66,10 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--once and --watch are mutually exclusive")
 	}
 
-	cfg, err := config.LoadSource(common.ConfigDir)
+	// LoadSourceLocal, not LoadSource: the local loop has no push target,
+	// so it must not require sink.url or a peer/secret. A missing
+	// source.yaml is fine (defaults: default Chrome path, no blocklist).
+	cfg, err := config.LoadSourceLocal(common.ConfigDir)
 	if err != nil {
 		return err
 	}

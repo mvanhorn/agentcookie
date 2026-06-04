@@ -286,6 +286,55 @@ security:
 	})
 }
 
+func TestLoadSourceLocal(t *testing.T) {
+	t.Run("source.yaml without sink/peer loads for local loop", func(t *testing.T) {
+		// The pure local-loop case: no sink, no peer/secret. LoadSource
+		// would reject this; LoadSourceLocal must accept it.
+		dir := t.TempDir()
+		writeFile(t, dir, "source.yaml", `
+chrome:
+  db_path: ~/cookies/Cookies
+cmux:
+  enabled: true
+`)
+		cfg, err := LoadSourceLocal(dir)
+		if err != nil {
+			t.Fatalf("LoadSourceLocal: %v", err)
+		}
+		if !cfg.Cmux.Enabled {
+			t.Errorf("Cmux.Enabled: got false, want true")
+		}
+		if strings.HasPrefix(cfg.Chrome.DBPath, "~") {
+			t.Errorf("Chrome.DBPath should be tilde-expanded, got %q", cfg.Chrome.DBPath)
+		}
+	})
+
+	t.Run("missing source.yaml yields defaults, no error", func(t *testing.T) {
+		dir := t.TempDir() // empty
+		cfg, err := LoadSourceLocal(dir)
+		if err != nil {
+			t.Fatalf("LoadSourceLocal with no source.yaml: %v", err)
+		}
+		if cfg.Chrome.DBPath == "" {
+			t.Errorf("Chrome.DBPath should default, got empty")
+		}
+		if cfg.Cmux.Enabled {
+			t.Errorf("Cmux should default to disabled")
+		}
+	})
+
+	t.Run("LoadSource still requires sink (regression)", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "source.yaml", `
+chrome:
+  db_path: ~/cookies/Cookies
+`)
+		if _, err := LoadSource(dir); err == nil {
+			t.Fatal("LoadSource should still require sink.url")
+		}
+	})
+}
+
 func TestLoadSourceCmuxLoop(t *testing.T) {
 	t.Run("enabled cmux loop round-trips with tilde-expanded path", func(t *testing.T) {
 		dir := t.TempDir()

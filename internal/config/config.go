@@ -156,7 +156,6 @@ func LoadSource(dir string) (*SourceConfig, error) {
 	if err := loadYAML(path, &cfg); err != nil {
 		return nil, err
 	}
-	cfg.Chrome.DBPath = ExpandTilde(cfg.Chrome.DBPath)
 	if cfg.Sink.URL == "" {
 		return nil, fmt.Errorf("%s: sink.url is required", path)
 	}
@@ -166,16 +165,47 @@ func LoadSource(dir string) (*SourceConfig, error) {
 	if err := validateSharedSecret(path, cfg.Security.SharedSecret); err != nil {
 		return nil, err
 	}
+	if err := resolveSourcePaths(path, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// LoadSourceLocal loads source.yaml for local-only consumers like
+// `cmux-sync`, which read Chrome and act on this machine alone. Unlike
+// LoadSource it does NOT require sink.url or a peer/secret -- the local
+// loop has no push target, so demanding push config would break the
+// documented "no sink, no peer" use case. A missing source.yaml is fine:
+// it yields defaults (default Chrome path, no blocklist, cmux off).
+func LoadSourceLocal(dir string) (*SourceConfig, error) {
+	path := filepath.Join(dir, "source.yaml")
+	var cfg SourceConfig
+	if _, statErr := os.Stat(path); statErr == nil {
+		if err := loadYAML(path, &cfg); err != nil {
+			return nil, err
+		}
+	}
+	if err := resolveSourcePaths(path, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// resolveSourcePaths applies the browser/Chrome-path/cmux-path resolution
+// shared by LoadSource and LoadSourceLocal (everything except the
+// push-only sink/peer/secret validation).
+func resolveSourcePaths(path string, cfg *SourceConfig) error {
+	cfg.Chrome.DBPath = ExpandTilde(cfg.Chrome.DBPath)
 	if cfg.Browser.Name != "" {
 		if _, err := lookupSourceBrowserPath(cfg.Browser.Name); err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
+			return fmt.Errorf("%s: %w", path, err)
 		}
 	}
 	if cfg.Chrome.DBPath == "" {
 		if cfg.Browser.Name != "" || cfg.Browser.Profile != "" {
 			dbPath, err := SourceBrowserCookiesPath(cfg.Browser.Name, cfg.Browser.Profile)
 			if err != nil {
-				return nil, fmt.Errorf("%s: %w", path, err)
+				return fmt.Errorf("%s: %w", path, err)
 			}
 			cfg.Chrome.DBPath = dbPath
 		} else {
@@ -185,7 +215,7 @@ func LoadSource(dir string) (*SourceConfig, error) {
 	if cfg.Cmux.CmuxPath != "" {
 		cfg.Cmux.CmuxPath = ExpandTilde(cfg.Cmux.CmuxPath)
 	}
-	return &cfg, nil
+	return nil
 }
 
 // LoadSink reads sink.yaml from dir.
