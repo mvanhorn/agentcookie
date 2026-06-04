@@ -115,6 +115,30 @@ Then fully restart cmux (Quit and reopen). The mode is read only at app launch; 
 
 Caveats: the surface delivers cookies only, so sites whose session also lives in localStorage/IndexedDB or is device-bound (DBSC, e.g. Google/Workspace) may still need a one-time sign-in inside the cmux pane; WebKit's ITP can also drop some cross-site cookies. The surface is best-effort and non-fatal: if cmux is not running or still gated, the sync and the other three surfaces are unaffected.
 
+### Local loop (one machine, no sink)
+
+The sink surface above is for the two-machine model. If you just want *this* Mac's Chrome logins to flow into *this* Mac's cmux browser, use the local loop instead. No second machine, no Tailscale, no pairing.
+
+```bash
+# one-shot: read Chrome now, inject into cmux
+agentcookie cmux-sync --once
+
+# continuous: re-inject whenever Chrome cookies change (fsnotify)
+agentcookie cmux-sync --watch
+
+# narrow to specific sites
+agentcookie cmux-sync --watch --domain "%github.com" --domain "%amazon%"
+```
+
+It reuses `source.yaml`'s Chrome path and blocklist (so your block rules still apply) and the same decrypt + DBSC filtering as `source`. Configure defaults under a `cmux:` block in `source.yaml` (same shape as the sink block above); flags override.
+
+Run model and the `cmuxOnly` gate:
+
+- **From inside cmux (recommended):** run `cmux-sync` in a cmux terminal. The process is a cmux child, so it passes the default `cmuxOnly` gate with no cmux change at all.
+- **Unattended (launchd):** a LaunchAgent is not a cmux child, so it needs `socketControlMode` set to `allowAll`/`password` and a cmux restart (same as the sink, above). `agentcookie doctor` reports the local loop's state and prints the fix.
+
+Keychain note: run the **installed, signed `agentcookie`** binary. Reading Chrome's Safe Storage key is a one-time Keychain grant for that signed binary (set up at `wizard install`), so it does not prompt. Running via `go run` or an unsigned/rebuilt binary will pop the macOS Keychain password prompt on every run, because the grant is scoped per binary.
+
 ## Install
 
 Prereqs: Tailscale running on both Macs, Chrome installed, Go 1.22+ (or a pre-built release).

@@ -253,6 +253,21 @@ func TestNewCmux_DefaultBinaryFallback(t *testing.T) {
 	}
 }
 
+func TestFilterByHostPatterns(t *testing.T) {
+	cookies := []chrome.Cookie{
+		{HostKey: ".github.com", Name: "a"},
+		{HostKey: ".openai.com", Name: "b"},
+		{HostKey: "www.example.com", Name: "c"},
+	}
+	if got := FilterByHostPatterns(cookies, nil); len(got) != 3 {
+		t.Errorf("nil patterns should pass all, got %d", len(got))
+	}
+	got := FilterByHostPatterns(cookies, []string{"%github.com"})
+	if len(got) != 1 || got[0].HostKey != ".github.com" {
+		t.Errorf("expected only github, got %+v", got)
+	}
+}
+
 func countOpens(calls [][]string) int {
 	n := 0
 	for _, c := range calls {

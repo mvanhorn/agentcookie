@@ -102,6 +102,16 @@ func (r Result) OK() bool {
 	return r.Err == nil
 }
 
+// FilterByHostPatterns applies the same SQLite-LIKE host filtering that
+// RunAll applies before an adapter's Push. Exported for callers that
+// invoke an adapter's Push directly (e.g. the cmux-sync local loop)
+// rather than through RunAll, so they honor the adapter's
+// CookieHostPatterns identically. An empty patterns slice returns the
+// full set.
+func FilterByHostPatterns(cookies []chrome.Cookie, patterns []string) []chrome.Cookie {
+	return filterByHostPatterns(cookies, patterns)
+}
+
 // filterByHostPatterns returns the subset of cookies whose host_key
 // matches at least one of the patterns. Pattern matching follows
 // SQLite LIKE semantics: '%' matches any sequence; bare hostnames

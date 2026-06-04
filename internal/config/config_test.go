@@ -286,6 +286,53 @@ security:
 	})
 }
 
+func TestLoadSourceCmuxLoop(t *testing.T) {
+	t.Run("enabled cmux loop round-trips with tilde-expanded path", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "source.yaml", `
+sink:
+  url: https://100.80.229.80:9999
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+cmux:
+  enabled: true
+  cmux_path: ~/bin/cmux
+  domain_filter:
+    - "%github.com"
+`)
+		cfg, err := LoadSource(dir)
+		if err != nil {
+			t.Fatalf("LoadSource: %v", err)
+		}
+		if !cfg.Cmux.Enabled {
+			t.Errorf("Cmux.Enabled: got false, want true")
+		}
+		if strings.HasPrefix(cfg.Cmux.CmuxPath, "~") {
+			t.Errorf("Cmux.CmuxPath should be tilde-expanded, got %q", cfg.Cmux.CmuxPath)
+		}
+		if len(cfg.Cmux.DomainFilter) != 1 || cfg.Cmux.DomainFilter[0] != "%github.com" {
+			t.Errorf("Cmux.DomainFilter: got %v", cfg.Cmux.DomainFilter)
+		}
+	})
+
+	t.Run("absent cmux block defaults to disabled", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "source.yaml", `
+sink:
+  url: https://100.80.229.80:9999
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+		cfg, err := LoadSource(dir)
+		if err != nil {
+			t.Fatalf("LoadSource: %v", err)
+		}
+		if cfg.Cmux.Enabled {
+			t.Errorf("Cmux.Enabled: got true, want false (legacy default)")
+		}
+	})
+}
+
 func TestLoadSinkCmuxSurface(t *testing.T) {
 	t.Run("enabled cmux block round-trips with filter and tilde-expanded path", func(t *testing.T) {
 		dir := t.TempDir()

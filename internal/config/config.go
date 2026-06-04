@@ -24,6 +24,11 @@ type SourceConfig struct {
 	Browser  BrowserRef  `yaml:"browser,omitempty" json:"browser,omitempty"`
 	Peer     PeerRef     `yaml:"peer,omitempty" json:"peer,omitempty"`
 	Security SecurityRef `yaml:"security,omitempty" json:"security,omitempty"`
+	// Cmux configures the same-machine local loop: `agentcookie cmux-sync`
+	// reads this machine's Chrome and injects into this machine's cmux
+	// browser. Independent of the sink/peer push path; absent = loop off.
+	// Reuses the CmuxRef shape (see SinkConfig.Cmux).
+	Cmux CmuxRef `yaml:"cmux,omitempty" json:"cmux,omitempty"`
 }
 
 // SinkConfig captures the sink machine's settings.
@@ -176,6 +181,9 @@ func LoadSource(dir string) (*SourceConfig, error) {
 		} else {
 			cfg.Chrome.DBPath = DefaultChromeCookiesPath()
 		}
+	}
+	if cfg.Cmux.CmuxPath != "" {
+		cfg.Cmux.CmuxPath = ExpandTilde(cfg.Cmux.CmuxPath)
 	}
 	return &cfg, nil
 }

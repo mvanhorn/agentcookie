@@ -329,7 +329,7 @@ func TestCheckCmuxDelivery(t *testing.T) {
 
 	t.Run("disabled is skipped", func(t *testing.T) {
 		cfg := &config.SinkConfig{Cmux: config.CmuxRef{Enabled: false}}
-		c := checkCmuxDeliveryWith(cfg, okProbe)
+		c := checkCmuxDeliveryWith(cfg.Cmux, "cmux delivery", okProbe)
 		if c.Severity != SeveritySkipped {
 			t.Fatalf("got %q, want SKIPPED", c.Severity)
 		}
@@ -338,7 +338,7 @@ func TestCheckCmuxDelivery(t *testing.T) {
 	t.Run("enabled but cmux binary missing warns", func(t *testing.T) {
 		missing := filepath.Join(t.TempDir(), "no-cmux")
 		cfg := &config.SinkConfig{Cmux: config.CmuxRef{Enabled: true, CmuxPath: missing}}
-		c := checkCmuxDeliveryWith(cfg, okProbe)
+		c := checkCmuxDeliveryWith(cfg.Cmux, "cmux delivery", okProbe)
 		if c.Severity != SeverityWarn {
 			t.Fatalf("got %q (%q), want WARN", c.Severity, c.Detail)
 		}
@@ -350,7 +350,7 @@ func TestCheckCmuxDelivery(t *testing.T) {
 	t.Run("cmuxOnly mode warns with restart remediation", func(t *testing.T) {
 		bin := writeExecutable(t)
 		cfg := &config.SinkConfig{Cmux: config.CmuxRef{Enabled: true, CmuxPath: bin}}
-		c := checkCmuxDeliveryWith(cfg, cmuxOnlyProbe)
+		c := checkCmuxDeliveryWith(cfg.Cmux, "cmux delivery", cmuxOnlyProbe)
 		if c.Severity != SeverityWarn {
 			t.Fatalf("got %q, want WARN", c.Severity)
 		}
@@ -365,7 +365,7 @@ func TestCheckCmuxDelivery(t *testing.T) {
 	t.Run("unreachable socket warns", func(t *testing.T) {
 		bin := writeExecutable(t)
 		cfg := &config.SinkConfig{Cmux: config.CmuxRef{Enabled: true, CmuxPath: bin}}
-		c := checkCmuxDeliveryWith(cfg, errProbe)
+		c := checkCmuxDeliveryWith(cfg.Cmux, "cmux delivery", errProbe)
 		if c.Severity != SeverityWarn {
 			t.Fatalf("got %q, want WARN", c.Severity)
 		}
@@ -374,7 +374,7 @@ func TestCheckCmuxDelivery(t *testing.T) {
 	t.Run("reachable non-cmuxOnly mode is OK", func(t *testing.T) {
 		bin := writeExecutable(t)
 		cfg := &config.SinkConfig{Cmux: config.CmuxRef{Enabled: true, CmuxPath: bin}}
-		c := checkCmuxDeliveryWith(cfg, okProbe)
+		c := checkCmuxDeliveryWith(cfg.Cmux, "cmux delivery", okProbe)
 		if c.Severity != SeverityOK {
 			t.Fatalf("got %q (%q), want OK", c.Severity, c.Detail)
 		}
@@ -691,8 +691,8 @@ peer:
 	// Universal cookie delivery added the Cookie delivery check. Source browser
 	// adapters added the Source adapter check. The cmux delivery surface added
 	// the cmux delivery check.
-	if got := len(report.Checks); got != 17 {
-		t.Fatalf("got %d checks, want 17", got)
+	if got := len(report.Checks); got != 18 {
+		t.Fatalf("got %d checks, want 18", got)
 	}
 
 	// Serialize the envelope and confirm it round-trips.

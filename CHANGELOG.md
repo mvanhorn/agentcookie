@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### cmux local loop: `agentcookie cmux-sync`
+
+Same-machine loop so this Mac's Chrome logins flow into this Mac's cmux
+browser, with no sink, no peer, and no Tailscale hop. `cmux-sync --once`
+does one read+inject cycle; `--watch` re-injects on every Chrome cookie
+change (fsnotify, the same watcher `source --watch` uses). It reuses
+`source.yaml`'s Chrome path and blocklist plus the shared decrypt + DBSC
+read pipeline, and the cmux injection adapter from the sink surface.
+
+Configure under a `cmux:` block in `source.yaml` (same shape as the sink
+block); `--domain`, `--cmux-path`, `--browser` flags override. Run it from
+inside cmux and it passes the default `cmuxOnly` socket gate with no cmux
+change; the launchd path needs the socketControlMode change, which
+`agentcookie doctor` now reports for the source-side loop as well as the
+sink surface. Run the installed signed binary so reading Chrome's Safe
+Storage key does not prompt (the grant is per-binary; `go run` prompts).
+
 ### cmux cookie-delivery surface (opt-in)
 
 A fourth sink delivery surface that injects the synced session into

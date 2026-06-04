@@ -251,31 +251,22 @@ func pushOnce(
 ) (int, dbscSummary, error) {
 	var dbsc dbscSummary
 
-	all, err := chrome.ReadCookiesForHost(cfg.Chrome.DBPath, "%", key)
+	// Shared read pipeline (decrypt -> blocklist -> DBSC). See
+	// readFilteredCookies in cookie_pipeline.go; `source` and `cmux-sync`
+	// both use it so they filter identically.
+	all, st, err := readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
 	if err != nil {
-		return 0, dbsc, fmt.Errorf("read cookies: %w", err)
+		return 0, dbsc, err
 	}
-	totalRead := len(all)
-
-	blockMatcher := protocol.NewBlocklistMatcher(blocklist)
-	all, droppedHosts := blockMatcher.Filter(all)
-	totalDropped := 0
-	for _, n := range droppedHosts {
-		totalDropped += n
-	}
+	totalRead := st.totalRead
+	totalDropped := st.totalDropped
+	droppedHosts := st.droppedHosts
+	dbsc = st.dbsc
 	if verbose {
 		fmt.Fprintf(os.Stderr, "agentcookie source: read %d cookies, blocked %d on %d hosts, passing %d\n",
 			totalRead, totalDropped, len(droppedHosts), len(all))
 	}
 
-	// DBSC-suspect pass: flag (and optionally drop) cookies that look
-	// device-bound and would die on the sink. Warn mode (default) is
-	// non-destructive; skip mode drops them. See internal/chrome/dbsc.go.
-	dbscRes := chrome.ClassifyCookies(all, time.Now().UTC(), skipDBSC)
-	all = dbscRes.Shipped
-	dbsc.warned = len(dbscRes.Warned)
-	dbsc.skipped = len(dbscRes.Skipped)
-	dbsc.sample = dbscSampleReasons(dbscRes)
 	// Only print the DBSC detail block under --verbose: in --watch mode this
 	// fires on every cookie change and would flood the LaunchAgent log for
 	// any user with a persistent Google cookie. The durable signal lives in
