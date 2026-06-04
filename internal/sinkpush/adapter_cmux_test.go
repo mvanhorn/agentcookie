@@ -71,17 +71,7 @@ func TestCmuxCookieJSON_FieldMapping(t *testing.T) {
 		SameSite:   2,                 // strict
 		ExpiresUTC: 13390000000000000, // micros since 1601
 	}
-	raw, err := cmuxCookieJSON("surface:9", c)
-	if err != nil {
-		t.Fatalf("cmuxCookieJSON: %v", err)
-	}
-	var m map[string]any
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if m["surface_id"] != "surface:9" {
-		t.Errorf("surface_id: got %v", m["surface_id"])
-	}
+	m := cmuxCookieParam(c)
 	if m["domain"] != ".github.com" {
 		t.Errorf("domain should be verbatim with leading dot, got %v", m["domain"])
 	}
@@ -100,13 +90,27 @@ func TestCmuxCookieJSON_FieldMapping(t *testing.T) {
 	if _, ok := m["expires"]; !ok {
 		t.Errorf("expires should be present for a persistent cookie")
 	}
+
+	// The batch envelope wraps per-cookie params with the surface id.
+	raw, err := cmuxCookiesJSON("surface:9", []chrome.Cookie{c, c})
+	if err != nil {
+		t.Fatalf("cmuxCookiesJSON: %v", err)
+	}
+	var env struct {
+		SurfaceID string           `json:"surface_id"`
+		Cookies   []map[string]any `json:"cookies"`
+	}
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.SurfaceID != "surface:9" || len(env.Cookies) != 2 {
+		t.Errorf("envelope: surface_id=%q cookies=%d, want surface:9 / 2", env.SurfaceID, len(env.Cookies))
+	}
 }
 
-func TestCmuxCookieJSON_SessionCookieOmitsExpires(t *testing.T) {
+func TestCmuxCookieParam_SessionCookieOmitsExpires(t *testing.T) {
 	c := chrome.Cookie{HostKey: "example.com", Name: "s", Value: "v", ExpiresUTC: 0}
-	raw, _ := cmuxCookieJSON("surface:1", c)
-	var m map[string]any
-	_ = json.Unmarshal([]byte(raw), &m)
+	m := cmuxCookieParam(c)
 	if _, ok := m["expires"]; ok {
 		t.Errorf("session cookie (ExpiresUTC==0) must omit expires, got %v", m["expires"])
 	}
@@ -115,16 +119,14 @@ func TestCmuxCookieJSON_SessionCookieOmitsExpires(t *testing.T) {
 	}
 }
 
-func TestCmuxCookieJSON_ValuePassthroughNoSecondStrip(t *testing.T) {
+func TestCmuxCookieParam_ValuePassthroughNoSecondStrip(t *testing.T) {
 	// Regression guard: the App-Bound prefix is stripped once on the
 	// source side. A second strip here lopped 32 bytes off every cookie
 	// longer than the prefix (the v0.12.0-beta.3 64% drop). The value
 	// must arrive byte-identical.
 	val := strings.Repeat("A", 32) + "REAL_SESSION_PAYLOAD"
 	c := chrome.Cookie{HostKey: ".x.com", Name: "k", Value: val}
-	raw, _ := cmuxCookieJSON("surface:1", c)
-	var m map[string]any
-	_ = json.Unmarshal([]byte(raw), &m)
+	m := cmuxCookieParam(c)
 	if m["value"] != val {
 		t.Errorf("value was altered.\n got: %q\nwant: %q", m["value"], val)
 	}
@@ -156,7 +158,7 @@ func TestChromeMicrosToUnixSec(t *testing.T) {
 	}
 }
 
-func TestCmuxPush_OpensSurfaceThenSetsEach(t *testing.T) {
+func TestCmuxPush_OpensSurfaceThenBatchSets(t *testing.T) {
 	f := &fakeCmux{}
 	a := newTestCmux(f, nil)
 	cookies := []chrome.Cookie{
@@ -166,12 +168,12 @@ func TestCmuxPush_OpensSurfaceThenSetsEach(t *testing.T) {
 	if err := a.Push(cookies); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
-	// One open, two sets.
+	// One open, and both cookies in a single batched set call.
 	if f.calls[0][0] != "browser" || f.calls[0][1] != "open" {
 		t.Errorf("first call should open a surface, got %v", f.calls[0])
 	}
-	if f.setCalls != 2 {
-		t.Errorf("expected 2 cookies.set calls, got %d", f.setCalls)
+	if f.setCalls != 1 {
+		t.Errorf("expected 1 batched cookies.set call for 2 cookies, got %d", f.setCalls)
 	}
 	// Surface is cached: a second Push reuses it (no new open).
 	opensBefore := countOpens(f.calls)
@@ -180,6 +182,70 @@ func TestCmuxPush_OpensSurfaceThenSetsEach(t *testing.T) {
 	}
 	if countOpens(f.calls) != opensBefore {
 		t.Errorf("second Push should reuse cached surface, opened again")
+	}
+}
+
+func TestCmuxPush_ChunksLargeSets(t *testing.T) {
+	f := &fakeCmux{}
+	a := newTestCmux(f, nil)
+	n := cmuxCookieBatch*2 + 5 // spans 3 chunks
+	cookies := make([]chrome.Cookie, n)
+	for i := range cookies {
+		cookies[i] = chrome.Cookie{HostKey: ".x.com", Name: "c", Value: "v"}
+	}
+	if err := a.Push(cookies); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if f.setCalls != 3 {
+		t.Errorf("expected 3 batched set calls for %d cookies (batch=%d), got %d", n, cmuxCookieBatch, f.setCalls)
+	}
+}
+
+func TestCmuxPush_BatchRejectFallsBackPerCookie(t *testing.T) {
+	// The batch call rejects with a payload error (one bad cookie in the
+	// chunk); the per-cookie fallback then lands the good one and skips the
+	// reject. Push succeeds best-effort.
+	f := &fakeCmux{setErrs: []error{
+		errors.New("invalid_params: Invalid cookie payload"), // batch call
+		nil, // cookie a, per-cookie
+		errors.New("invalid_params: Invalid cookie payload"), // cookie b rejected -> skipped
+	}}
+	a := newTestCmux(f, nil)
+	cookies := []chrome.Cookie{
+		{HostKey: ".x.com", Name: "a", Value: "1"},
+		{HostKey: ".x.com", Name: "b", Value: "2"},
+	}
+	if err := a.Push(cookies); err != nil {
+		t.Fatalf("Push should be best-effort (skip rejected cookie), got %v", err)
+	}
+	if f.setCalls != 3 { // 1 batch + 2 per-cookie
+		t.Errorf("expected 3 set calls (batch + per-cookie fallback), got %d", f.setCalls)
+	}
+}
+
+func TestCmuxPush_HardFailsWhenCmuxUnavailable(t *testing.T) {
+	f := &fakeCmux{setErrs: []error{errors.New("broken pipe, errno 32")}}
+	a := newTestCmux(f, nil)
+	err := a.Push([]chrome.Cookie{{HostKey: ".x.com", Name: "a", Value: "1"}})
+	if err == nil || !strings.Contains(err.Error(), "broken pipe") {
+		t.Fatalf("cmux-unavailable must hard-fail (not silently skip), got %v", err)
+	}
+}
+
+func TestCmuxPush_DropsInvalidCookies(t *testing.T) {
+	// An RFC-invalid cookie (control char in value) is dropped before any
+	// RPC, so it can't poison a batch. A valid one still lands.
+	f := &fakeCmux{}
+	a := newTestCmux(f, nil)
+	cookies := []chrome.Cookie{
+		{HostKey: ".x.com", Name: "ok", Value: "good"},
+		{HostKey: ".x.com", Name: "bad", Value: "has\x00null"},
+	}
+	if err := a.Push(cookies); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if f.setCalls != 1 {
+		t.Errorf("expected 1 batch call, got %d", f.setCalls)
 	}
 }
 
@@ -276,4 +342,31 @@ func countOpens(calls [][]string) int {
 		}
 	}
 	return n
+}
+
+func TestCmuxPush_SurfaceErrorAfterReopenHardFails(t *testing.T) {
+	// Greptile P1: a reopen happens but the retry still hits a surface error.
+	// That must hard-fail, not fall into per-cookie fallback and silently drop
+	// the whole chunk.
+	f := &fakeCmux{setErrs: []error{
+		errors.New("invalid_params: Surface is not a browser"), // batch
+		errors.New("invalid_params: Surface is not a browser"), // retry after reopen
+	}}
+	a := newTestCmux(f, nil)
+	a.surfaceID = "surface:stale"
+	err := a.Push([]chrome.Cookie{{HostKey: ".x.com", Name: "a", Value: "1"}})
+	if err == nil || !strings.Contains(err.Error(), "not a browser") {
+		t.Fatalf("a persistent surface error must hard-fail (no silent chunk loss), got %v", err)
+	}
+}
+
+func TestCmuxPush_PermissionDeniedHardFails(t *testing.T) {
+	// Greptile P2: EACCES ("permission denied") means cmux is unusable; it must
+	// hard-fail, not be mistaken for a per-cookie reject and silently skipped.
+	f := &fakeCmux{setErrs: []error{errors.New("fork/exec /x/cmux: permission denied")}}
+	a := newTestCmux(f, nil)
+	err := a.Push([]chrome.Cookie{{HostKey: ".x.com", Name: "a", Value: "1"}})
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("permission denied must hard-fail, got %v", err)
+	}
 }
