@@ -228,10 +228,13 @@ func isSurfaceError(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
+	// Match only stale/invalid-surface signatures. Deliberately NOT
+	// "not found": Go's exec.LookPath error ("executable file not found
+	// in $PATH") and unrelated OS errors contain that phrase, and would
+	// wrongly trigger the one-time reopen on a genuinely missing cmux.
 	return strings.Contains(msg, "surface") ||
 		strings.Contains(msg, "invalid_params") ||
-		strings.Contains(msg, "not a browser") ||
-		strings.Contains(msg, "not found")
+		strings.Contains(msg, "not a browser")
 }
 
 // execCmux runs a cmux subcommand, returning stdout. A non-zero exit
