@@ -110,7 +110,10 @@ func enableCmuxLoop(cmuxPath string, quiet bool) error {
 		return err
 	}
 	binPath, _ = filepath.Abs(binPath)
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("locate home dir: %w", err)
+	}
 	logDir := filepath.Join(home, ".agentcookie", "logs")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return err

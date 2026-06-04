@@ -145,3 +145,16 @@ func TestSetSocketControlMode_MissingFile(t *testing.T) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
+
+func TestSetSocketControlMode_PasswordWithDollarSign(t *testing.T) {
+	// Greptile: a `$` in the password must not be read as a regexp group ref.
+	p := writeCfg(t, "{\n  \"schemaVersion\": 1\n}\n")
+	pw := `a$1b$$c`
+	if _, err := SetSocketControlMode(p, "password", pw, fixedTime); err != nil {
+		t.Fatalf("SetSocketControlMode: %v", err)
+	}
+	out := read(t, p)
+	if !regexp.MustCompile(`"socketPassword"\s*:\s*"a\$1b\$\$c"`).MatchString(out) {
+		t.Errorf("password with $ was corrupted:\n%s", out)
+	}
+}

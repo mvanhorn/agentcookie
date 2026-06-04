@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -74,7 +75,11 @@ func SetSocketControlMode(path, mode, password string, now time.Time) (backupPat
 // uncommented key, an existing uncommented automation block, or no
 // automation block at all.
 func applyMode(src, mode, password string) string {
-	modeQ := strconv.Quote(mode)
+	// strconv.Quote-d values can contain `$`, which regexp ReplaceAllString
+	// would interpret as a capture-group reference and corrupt the value
+	// (Greptile finding). escapeRepl doubles `$` so the value is inserted
+	// literally; group refs like ${1} are added separately and stay live.
+	modeQ := escapeRepl(strconv.Quote(mode))
 
 	// Case 1: an uncommented socketControlMode already exists -> replace it.
 	if scmRE.MatchString(src) {
@@ -85,20 +90,25 @@ func applyMode(src, mode, password string) string {
 		return src
 	}
 
-	keys := `    "socketControlMode": ` + modeQ
+	// keys is inserted via string concatenation (case 3) or ReplaceAllString
+	// (case 2); escape it for the ReplaceAllString path. Concatenation in
+	// case 3 is unaffected by escaping a `$$` because... it is NOT -- so build
+	// two forms: a literal (for case 3) and an escaped (for case 2).
+	keysLiteral := `    "socketControlMode": ` + strconv.Quote(mode)
 	if password != "" {
-		keys += ",\n    \"socketPassword\": " + strconv.Quote(password)
+		keysLiteral += ",\n    \"socketPassword\": " + strconv.Quote(password)
 	}
 
 	// Case 2: an uncommented automation block exists -> inject keys after `{`.
 	if autoRE.MatchString(src) {
-		return autoRE.ReplaceAllString(src, "${1}\n"+keys+",")
+		return autoRE.ReplaceAllString(src, "${1}\n"+escapeRepl(keysLiteral)+",")
 	}
 
 	// Case 3: no automation block -> insert one after the root opening brace.
+	// Plain string concatenation here, so no regexp escaping needed.
 	block := "\n  // Added by agentcookie: lets the launchd cmux-sync agent reach\n" +
 		"  // cmux's control socket. Restart cmux to apply.\n" +
-		"  \"automation\": {\n" + keys + "\n  },\n"
+		"  \"automation\": {\n" + keysLiteral + "\n  },\n"
 	if i := indexOfFirstBrace(src); i >= 0 {
 		return src[:i+1] + block + src[i+1:]
 	}
@@ -108,13 +118,19 @@ func applyMode(src, mode, password string) string {
 // setPasswordInExisting sets socketPassword when an automation block with a
 // socketControlMode already exists. Replaces an existing socketPassword, or
 // injects one on the line after socketControlMode (matching the cmux.json
-// 4-space inner indent).
+// 4-space inner indent). The password value is escaped for ReplaceAllString.
 func setPasswordInExisting(src, password string) string {
-	pwQ := strconv.Quote(password)
+	pwQ := escapeRepl(strconv.Quote(password))
 	if spRE.MatchString(src) {
 		return spRE.ReplaceAllString(src, "${1}"+pwQ)
 	}
 	return scmRE.ReplaceAllString(src, "${0},\n    \"socketPassword\": "+pwQ)
+}
+
+// escapeRepl doubles `$` so a value used as a regexp.ReplaceAllString
+// replacement is inserted literally rather than read as a $-group ref.
+func escapeRepl(s string) string {
+	return strings.ReplaceAll(s, "$", "$$")
 }
 
 func indexOfFirstBrace(s string) int {

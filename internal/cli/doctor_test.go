@@ -808,3 +808,18 @@ func TestCheckCmuxLocalLoop(t *testing.T) {
 		}
 	})
 }
+
+func TestCheckCmuxLocalLoop_ConfigEnabledButAgentDown(t *testing.T) {
+	// Greptile: cmux.enabled in config but the launch agent is not running
+	// means the loop is not actually syncing -> WARN, not OK.
+	agentDown := func(launchd.Spec) bool { return false }
+	okProbe := func(string) (string, error) { return "allowAll", nil }
+	cfg := config.CmuxRef{Enabled: true, CmuxPath: writeExecutable(t)}
+	c := checkCmuxLocalLoopWith(cfg, agentDown, okProbe)
+	if c.Severity != SeverityWarn {
+		t.Fatalf("config-enabled + agent down should WARN, got %q (%q)", c.Severity, c.Detail)
+	}
+	if !strings.Contains(c.Remediation, "enable") {
+		t.Errorf("remediation should point at enable: %q", c.Remediation)
+	}
+}

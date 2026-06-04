@@ -1055,11 +1055,22 @@ func checkCmuxLocalLoopWith(cmux config.CmuxRef, agentInstalled func(launchd.Spe
 			Remediation: "RESTART cmux once (socketControlMode is read only at app launch; `cmux reload-config` does not apply it)",
 		}
 	}
-	detail := "config-enabled; socketControlMode=" + mode
-	if agentUp {
-		detail = "launch agent loaded; socketControlMode=" + mode + "; loop active"
+	if !agentUp {
+		// Reached here via cmux.Enabled in config, but the launch agent that
+		// actually runs the loop is not loaded -- so nothing is syncing. Not
+		// OK (Greptile finding: avoid a false-positive "live").
+		return Check{
+			Name:        name,
+			Severity:    SeverityWarn,
+			Detail:      "cmux.enabled is set but the cmux-sync launch agent is not running; the loop is not active",
+			Remediation: "run `agentcookie cmux-sync enable` to install and start the agent",
+		}
 	}
-	return Check{Name: name, Severity: SeverityOK, Detail: detail}
+	return Check{
+		Name:     name,
+		Severity: SeverityOK,
+		Detail:   "launch agent loaded; socketControlMode=" + mode + "; loop active",
+	}
 }
 
 // probeCmuxAccessMode runs `cmux capabilities` and returns the server's
