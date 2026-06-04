@@ -6,8 +6,6 @@ import (
 	"crypto/cipher"
 	"database/sql"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -34,8 +32,8 @@ type Cookie struct {
 
 // DefaultCookiesPath returns the default Chrome cookies SQLite path on macOS.
 func DefaultCookiesPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "Library", "Application Support", "Google", "Chrome", "Default", "Cookies")
+	b, _ := LookupBrowser(defaultBrowserName)
+	return b.CookiesPath(defaultBrowserProfile)
 }
 
 // ReadCookiesForHost opens the given SQLite path read-only and returns all

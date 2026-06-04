@@ -54,27 +54,42 @@ const (
 // Plan 2026-05-17-004's wizard set-keychain-access step is what makes that
 // last condition true for new binaries.
 func SafeStoragePassword() (string, error) {
-	if pw, err := safeStoragePasswordViaKeybase(); err == nil {
+	b, _ := LookupBrowser(defaultBrowserName)
+	return SafeStoragePasswordFor(b)
+}
+
+// SafeStoragePasswordFor returns b's Safe Storage password from the macOS
+// Keychain using b's account/service pair.
+func SafeStoragePasswordFor(b Browser) (string, error) {
+	if pw, err := safeStoragePasswordViaKeybaseFor(b.KeychainService, b.KeychainAccount); err == nil {
 		return pw, nil
 	}
+	remediation := safeStorageRemediationFor(b)
 	// Fall back to `security` CLI shell-out, bounded by a timeout so a
 	// hung GUI Keychain prompt fails loud instead of blocking forever.
 	ctx, cancel := context.WithTimeout(context.Background(), safeStorageReadTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "security",
 		"find-generic-password",
-		"-a", keychainAccount,
-		"-s", keychainService,
+		"-a", b.KeychainAccount,
+		"-s", b.KeychainService,
 		"-w",
 	)
 	out, err := cmd.Output()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return "", fmt.Errorf("read Chrome Safe Storage from Keychain timed out after %s; this binary is not yet in the Safe Storage partition. %s", safeStorageReadTimeout, SafeStorageRemediation)
+		return "", fmt.Errorf("read %s from Keychain timed out after %s; this binary is not yet in the Safe Storage partition. %s", b.KeychainService, safeStorageReadTimeout, remediation)
 	}
 	if err != nil {
-		return "", fmt.Errorf("read Chrome Safe Storage from Keychain (did you grant access?): %w", err)
+		return "", fmt.Errorf("read %s from Keychain (did you grant access?): %w; %s", b.KeychainService, err, remediation)
 	}
 	return strings.TrimRight(string(out), "\n"), nil
+}
+
+func safeStorageRemediationFor(b Browser) string {
+	if b.Name == defaultBrowserName {
+		return SafeStorageRemediation
+	}
+	return fmt.Sprintf("grant agentcookie read access to the %q Keychain item (the set-keychain-access wizard currently targets Chrome only)", b.KeychainService)
 }
 
 // DeriveAESKey turns the Safe Storage password into the AES-128 key Chrome uses

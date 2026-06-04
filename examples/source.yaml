@@ -10,6 +10,15 @@ chrome:
   # if omitted. Set explicitly to read from a non-default profile.
   db_path: ~/Library/Application Support/Google/Chrome/Default/Cookies
 
+# Optional source browser adapter. Omit for Google Chrome. Set name/profile
+# when reading cookies from another Chromium-family source browser.
+# Supported: chrome, brave, edge, arc. (atlas is recognized but cannot be
+# decrypted by a third-party tool -- see issue #80; `agentcookie doctor`
+# reports the gap.)
+# browser:
+#   name: brave # chrome | brave | edge | arc
+#   profile: Default
+
 peer:
   # Hostname of the sink machine. After `agentcookie pair --as source`
   # finishes, this is the filename under ~/.config/agentcookie/keys/.

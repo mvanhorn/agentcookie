@@ -4,6 +4,6 @@ package chrome
 
 import "errors"
 
-func safeStoragePasswordViaKeybase() (string, error) {
+func safeStoragePasswordViaKeybaseFor(_, _ string) (string, error) {
 	return "", errors.New("safeStoragePasswordViaKeybase: requires darwin+cgo build")
 }
