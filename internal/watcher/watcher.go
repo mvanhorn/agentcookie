@@ -52,6 +52,18 @@ type Config struct {
 	// BaselineTick: even with no fs events, run a push every BaselineTick.
 	// Defends against fsnotify event loss on macOS. Defaults to 30s.
 	BaselineTick time.Duration
+
+	// LogLabel prefixes the watcher's stderr lines so they name the command
+	// that owns the loop. Defaults to "agentcookie source --watch". The
+	// cmux-sync local loop passes its own label so logs aren't mislabeled.
+	LogLabel string
+}
+
+func (c Config) logLabel() string {
+	if c.LogLabel != "" {
+		return c.LogLabel
+	}
+	return "agentcookie source --watch"
 }
 
 func (c Config) debounce() time.Duration {
@@ -120,14 +132,14 @@ func (w *Watcher) Run(ctx context.Context) error {
 	if w.cfg.LocalStorageDir != "" {
 		if _, err := os.Stat(w.cfg.LocalStorageDir); err == nil {
 			if err := fsw.Add(w.cfg.LocalStorageDir); err != nil {
-				fmt.Fprintf(os.Stderr, "agentcookie source --watch: localStorage watch failed (%v); continuing without it\n", err)
+				fmt.Fprintf(os.Stderr, w.cfg.logLabel()+": localStorage watch failed (%v); continuing without it\n", err)
 			}
 		}
 	}
 	if w.cfg.IndexedDBDir != "" {
 		if _, err := os.Stat(w.cfg.IndexedDBDir); err == nil {
 			if err := fsw.Add(w.cfg.IndexedDBDir); err != nil {
-				fmt.Fprintf(os.Stderr, "agentcookie source --watch: indexedDB watch failed (%v); continuing without it\n", err)
+				fmt.Fprintf(os.Stderr, w.cfg.logLabel()+": indexedDB watch failed (%v); continuing without it\n", err)
 			}
 		}
 	}
@@ -174,7 +186,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			fmt.Fprintf(os.Stderr, "agentcookie source --watch: fsnotify error: %v\n", err)
+			fmt.Fprintf(os.Stderr, w.cfg.logLabel()+": fsnotify error: %v\n", err)
 
 		case <-debounceTimer.C:
 			pendingEvent = false
@@ -237,12 +249,12 @@ func (w *Watcher) runOne(ctx context.Context, reason string) {
 	if err != nil {
 		w.lastErr = fmt.Errorf("%s: %w", reason, err)
 		w.errorCount++
-		fmt.Fprintf(os.Stderr, "agentcookie source --watch: push (%s) failed: %v\n", reason, err)
+		fmt.Fprintf(os.Stderr, w.cfg.logLabel()+": push (%s) failed: %v\n", reason, err)
 		return
 	}
 	w.pushCount++
 	if n > 0 {
-		fmt.Fprintf(os.Stderr, "agentcookie source --watch: pushed %d cookies (%s)\n", n, reason)
+		fmt.Fprintf(os.Stderr, w.cfg.logLabel()+": pushed %d cookies (%s)\n", n, reason)
 	}
 }
 

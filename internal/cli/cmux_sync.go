@@ -154,6 +154,7 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 	// change retries.
 	w, err := watcher.New(watcher.Config{
 		CookiesPath: cfg.Chrome.DBPath,
+		LogLabel:    "agentcookie cmux-sync --watch",
 		Push:        syncOnce,
 		OnEvent: func(ev watcher.Event) {
 			if cmuxSyncVerbose {

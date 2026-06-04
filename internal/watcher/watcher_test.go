@@ -209,6 +209,15 @@ func TestWatcherIgnoresUnrelatedFiles(t *testing.T) {
 	}
 }
 
+func TestConfigLogLabel(t *testing.T) {
+	if got := (Config{}).logLabel(); got != "agentcookie source --watch" {
+		t.Errorf("default logLabel = %q, want source --watch default", got)
+	}
+	if got := (Config{LogLabel: "agentcookie cmux-sync --watch"}).logLabel(); got != "agentcookie cmux-sync --watch" {
+		t.Errorf("override logLabel = %q", got)
+	}
+}
+
 func TestIsInterestingCoversWALCompanions(t *testing.T) {
 	w := &Watcher{cfg: Config{CookiesPath: "/tmp/Cookies"}}
 	cases := map[string]bool{
