@@ -111,6 +111,20 @@ func (a *CmuxAdapter) Push(cookies []chrome.Cookie) error {
 		return nil
 	}
 
+	// Drop RFC-invalid cookies up front (the same gate RunAll applies before
+	// an adapter's Push). cmux-sync calls Push directly, bypassing RunAll, so
+	// without this a malformed cookie would fail a whole batch.
+	valid := make([]chrome.Cookie, 0, len(cookies))
+	for _, c := range cookies {
+		if Validate(c) == nil {
+			valid = append(valid, c)
+		}
+	}
+	cookies = valid
+	if len(cookies) == 0 {
+		return nil
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -118,26 +132,53 @@ func (a *CmuxAdapter) Push(cookies []chrome.Cookie) error {
 		return fmt.Errorf("cmux: open browser surface: %w", err)
 	}
 
+	// Inject in batches: browser.cookies.set accepts a cookies array, so a
+	// full Chrome cookie set lands in a handful of RPC calls instead of one
+	// per cookie. Chunked because the JSON params ride a CLI arg bounded by
+	// ARG_MAX (~1MB); cmuxCookieBatch keeps each call well under that.
 	reopened := false
-	for i, c := range cookies {
-		err := a.setCookieLocked(c)
+	for start := 0; start < len(cookies); start += cmuxCookieBatch {
+		end := start + cmuxCookieBatch
+		if end > len(cookies) {
+			end = len(cookies)
+		}
+		chunk := cookies[start:end]
+		err := a.setCookiesLocked(chunk)
 		if err == nil {
 			continue
 		}
-		// The cached surface may have been closed by the user between
-		// syncs. Reopen once and retry this cookie before giving up.
+		// The cached surface may have been closed between syncs. Reopen
+		// once and retry this chunk before giving up.
 		if !reopened && isSurfaceError(err) {
 			reopened = true
 			a.surfaceID = ""
 			if _, oerr := a.ensureSurfaceLocked(); oerr != nil {
 				return fmt.Errorf("cmux: reopen surface after %v: %w", err, oerr)
 			}
-			if rerr := a.setCookieLocked(c); rerr != nil {
-				return fmt.Errorf("cmux: set cookie %q after reopen: %w", c.Name, rerr)
+			if rerr := a.setCookiesLocked(chunk); rerr == nil {
+				continue
+			} else {
+				err = rerr
 			}
-			continue
 		}
-		return fmt.Errorf("cmux: set cookie %q (%d/%d): %w", c.Name, i+1, len(cookies), err)
+		// cmux unreachable (down / cmuxOnly-gated) is a hard failure -- the
+		// whole loop can't deliver, so surface it.
+		if isCmuxUnavailable(err) {
+			return fmt.Errorf("cmux: set cookies [%d:%d] of %d: %w", start, end, len(cookies), err)
+		}
+		// Otherwise one cookie in the chunk is rejected by cmux (e.g. a
+		// payload WebKit won't accept). Fall back to per-cookie so the rest
+		// of the chunk still lands; skip the individual rejects. A
+		// cmux-unavailable error mid-fallback still hard-fails.
+		for _, c := range chunk {
+			if e := a.setCookiesLocked([]chrome.Cookie{c}); e != nil {
+				if isCmuxUnavailable(e) {
+					return fmt.Errorf("cmux: set cookie %q: %w", c.Name, e)
+				}
+				// individual reject: skip it, keep going
+			}
+		}
+		continue
 	}
 	return nil
 }
@@ -160,34 +201,55 @@ func (a *CmuxAdapter) ensureSurfaceLocked() (string, error) {
 	return sid, nil
 }
 
-// setCookieLocked sends one cookie to the cached surface. Caller must
-// hold a.mu and have a non-empty a.surfaceID.
-func (a *CmuxAdapter) setCookieLocked(c chrome.Cookie) error {
-	payload, err := cmuxCookieJSON(a.surfaceID, c)
+// cmuxCookieBatch caps how many cookies ride one browser.cookies.set
+// call. The params travel as a CLI arg bounded by ARG_MAX (~1MB on
+// macOS); at a few hundred bytes per cookie, 200 keeps each call well
+// under that with comfortable headroom.
+const cmuxCookieBatch = 200
+
+// setCookiesLocked sends a batch of cookies to the cached surface in one
+// browser.cookies.set call. Caller must hold a.mu and have a non-empty
+// a.surfaceID.
+func (a *CmuxAdapter) setCookiesLocked(cookies []chrome.Cookie) error {
+	payload, err := cmuxCookiesJSON(a.surfaceID, cookies)
 	if err != nil {
-		return fmt.Errorf("marshal cookie %q: %w", c.Name, err)
+		return fmt.Errorf("marshal %d cookies: %w", len(cookies), err)
 	}
 	_, err = a.run("rpc", "browser.cookies.set", payload)
 	return err
 }
 
-// cmuxCookieJSON builds the browser.cookies.set params for one cookie.
-// Value and domain pass through verbatim (see the CmuxAdapter doc on why
-// no App-Bound re-strip and no leading-dot strip). expires is omitted
-// for session cookies (ExpiresUTC == 0).
-func cmuxCookieJSON(surfaceID string, c chrome.Cookie) (string, error) {
+// cmuxCookiesJSON builds browser.cookies.set params for a batch of
+// cookies: {"surface_id":..., "cookies":[...]}.
+func cmuxCookiesJSON(surfaceID string, cookies []chrome.Cookie) (string, error) {
+	params := make([]map[string]any, 0, len(cookies))
+	for _, c := range cookies {
+		params = append(params, cmuxCookieParam(c))
+	}
+	m := map[string]any{
+		"surface_id": surfaceID,
+		"cookies":    params,
+	}
+	b, err := json.Marshal(m)
+	return string(b), err
+}
+
+// cmuxCookieParam builds one cookie's params. Value and domain pass
+// through verbatim (see the CmuxAdapter doc on why no App-Bound re-strip
+// and no leading-dot strip). expires is omitted for session cookies
+// (ExpiresUTC == 0).
+func cmuxCookieParam(c chrome.Cookie) map[string]any {
 	path := c.Path
 	if path == "" {
 		path = "/"
 	}
 	m := map[string]any{
-		"surface_id": surfaceID,
-		"name":       c.Name,
-		"value":      c.Value,   // verbatim -- already App-Bound-stripped on the source
-		"domain":     c.HostKey, // verbatim -- WebKit accepts the leading dot
-		"path":       path,
-		"secure":     c.IsSecure == 1,
-		"http_only":  c.IsHTTPOnly == 1,
+		"name":      c.Name,
+		"value":     c.Value,   // verbatim -- already App-Bound-stripped on the source
+		"domain":    c.HostKey, // verbatim -- WebKit accepts the leading dot
+		"path":      path,
+		"secure":    c.IsSecure == 1,
+		"http_only": c.IsHTTPOnly == 1,
 	}
 	if ss := cmuxSameSite(c.SameSite); ss != "" {
 		m["same_site"] = ss
@@ -195,8 +257,7 @@ func cmuxCookieJSON(surfaceID string, c chrome.Cookie) (string, error) {
 	if c.ExpiresUTC != 0 {
 		m["expires"] = chromeMicrosToUnixSec(c.ExpiresUTC)
 	}
-	b, err := json.Marshal(m)
-	return string(b), err
+	return m
 }
 
 // cmuxSameSite maps Chrome's numeric SameSite (cookies.samesite) to the
@@ -229,12 +290,27 @@ func isSurfaceError(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	// Match only stale/invalid-surface signatures. Deliberately NOT
-	// "not found": Go's exec.LookPath error ("executable file not found
-	// in $PATH") and unrelated OS errors contain that phrase, and would
-	// wrongly trigger the one-time reopen on a genuinely missing cmux.
+	// "invalid_params" (cmux returns "invalid_params: Invalid cookie
+	// payload" for a bad cookie, which is not a surface problem) and NOT
+	// "not found" (Go's exec.LookPath error contains it).
 	return strings.Contains(msg, "surface") ||
-		strings.Contains(msg, "invalid_params") ||
 		strings.Contains(msg, "not a browser")
+}
+
+// isCmuxUnavailable reports whether err means cmux itself can't be
+// reached (down, or socketControlMode gating a non-cmux-child caller) --
+// a hard failure for the whole push, as opposed to a single rejected
+// cookie which can be skipped.
+func isCmuxUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "access denied") ||
+		strings.Contains(msg, "only processes started inside cmux") ||
+		strings.Contains(msg, "cmuxonly")
 }
 
 // execCmux runs a cmux subcommand, returning stdout. A non-zero exit
