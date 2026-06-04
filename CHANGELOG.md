@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### cmux local loop on by default
+
+When cmux is installed, `agentcookie wizard install` now wires the local
+loop automatically: it sets cmux's `automation.socketControlMode` to
+`allowAll` (backing up `~/.config/cmux/cmux.json` first), installs a
+`dev.agentcookie.cmux-sync` LaunchAgent running `cmux-sync --watch` over
+the full cookie set, and prints the one-time "restart cmux" step (the mode
+is read only at app launch). After that single restart, this Mac's Chrome
+session stays mirrored into cmux's browser hands-free.
+
+New `agentcookie cmux-sync enable` / `disable` manage it directly;
+`wizard install --no-cmux` opts out; `agentcookie doctor` reports loop
+liveness (not-enabled / enabled-but-needs-restart / live). Absent cmux,
+all of this is a clean no-op. Manual `cmux-sync --once/--watch` run inside
+cmux still works with no socket change (a cmux child passes `cmuxOnly`).
+
 ### cmux local loop: `agentcookie cmux-sync`
 
 Same-machine loop so this Mac's Chrome logins flow into this Mac's cmux

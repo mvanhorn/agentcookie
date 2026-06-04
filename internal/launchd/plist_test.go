@@ -36,6 +36,30 @@ func TestSpecRenderSourceRole(t *testing.T) {
 	}
 }
 
+func TestSpecRenderCmuxSyncRole(t *testing.T) {
+	s := Spec{
+		Role:       RoleCmuxSync,
+		BinaryPath: "/Users/test/bin/agentcookie",
+		LogDir:     "/Users/test/.agentcookie/logs",
+		ExtraArgs:  []string{"--watch"},
+	}
+	out, err := s.Render()
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	str := string(out)
+	for _, want := range []string{
+		"dev.agentcookie.cmux-sync",
+		"<string>cmux-sync</string>",
+		"<string>--watch</string>",
+		"/Users/test/.agentcookie/logs/cmux-sync.out.log",
+	} {
+		if !strings.Contains(str, want) {
+			t.Errorf("rendered plist missing %q\nFull output:\n%s", want, str)
+		}
+	}
+}
+
 func TestSpecRenderSinkRole(t *testing.T) {
 	s := Spec{
 		Role:       RoleSink,

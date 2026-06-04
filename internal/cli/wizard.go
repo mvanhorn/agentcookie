@@ -45,6 +45,7 @@ var (
 	wizardSkipChromeSQLite  bool
 	wizardWriteChromeSQLite bool
 	wizardNoCDP             bool
+	wizardNoCmux            bool
 )
 
 var wizardCmd = &cobra.Command{
@@ -106,6 +107,7 @@ func init() {
 	wizardInstallCmd.Flags().BoolVar(&wizardSkipChromeSQLite, "skip-chrome-sqlite", false, "[sink] opt OUT of universal delivery: the sink daemon never reads Chrome Safe Storage or writes Chrome SQLite/leveldb; sidecar + adapter push remain the cookie-delivery paths (degraded mode). The v0.13 default is universal regardless of TTY; pass this to force degraded. Overrides --write-chrome-sqlite when both passed.")
 	wizardInstallCmd.Flags().BoolVar(&wizardWriteChromeSQLite, "write-chrome-sqlite", false, "[sink] force universal delivery (write the real Default Chrome profile) and honor it even if the one-password keychain open cannot complete; does not silently downgrade to degraded")
 	wizardInstallCmd.Flags().BoolVar(&wizardNoCDP, "no-cdp", false, "[sink] do not enable CDP injection alongside skip_chrome_sqlite. By default, headless installs enable CDP injection so Chrome on the sink still sees synced cookies. Pass --no-cdp for sidecar+adapter-only mode.")
+	wizardInstallCmd.Flags().BoolVar(&wizardNoCmux, "no-cmux", false, "do not auto-enable the cmux local loop even if cmux is installed (by default, install wires Chrome->cmux delivery when cmux is present)")
 
 	wizardUninstallCmd.Flags().StringVar(&wizardRole, "as", "", "source | sink (required)")
 	wizardUninstallCmd.Flags().BoolVar(&wizardForce, "purge", false, "also delete configs and paired keys")
@@ -132,12 +134,21 @@ func runWizardInstall(cmd *cobra.Command, args []string) error {
 	home, _ := os.UserHomeDir()
 	logDir := filepath.Join(home, ".agentcookie", "logs")
 
+	var installErr error
 	switch role {
 	case "source":
-		return wizardInstallSource(cmd.Context(), binPath, logDir)
+		installErr = wizardInstallSource(cmd.Context(), binPath, logDir)
 	case "sink":
-		return wizardInstallSink(cmd.Context(), binPath, logDir)
+		installErr = wizardInstallSink(cmd.Context(), binPath, logDir)
 	}
+	if installErr != nil {
+		return installErr
+	}
+
+	// Default-on cmux local loop: when cmux is installed, wire this
+	// machine's Chrome -> cmux delivery automatically (no-op when cmux is
+	// absent, non-fatal, --no-cmux opts out).
+	maybeAutoEnableCmux()
 	return nil
 }
 

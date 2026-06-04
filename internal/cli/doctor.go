@@ -20,6 +20,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
+	"github.com/mvanhorn/agentcookie/internal/launchd"
 	"github.com/mvanhorn/agentcookie/internal/secretsbus"
 	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 	"github.com/mvanhorn/agentcookie/internal/state"
@@ -258,11 +259,11 @@ func buildReport(d doctorDeps) DoctorReport {
 		})
 	}
 
-	// 10c. cmux local loop (source side) -- verifies `cmux-sync` can reach
-	// cmux when the local loop is configured in source.yaml. Same gate as
-	// the sink surface, surfaced from the machine that runs the loop.
+	// 10c. cmux local loop (source side) -- liveness of the always-on loop:
+	// is the launch agent loaded, is cmux reachable, and is the socket mode
+	// applied (not still cmuxOnly, which means a restart is pending).
 	if srcCfg != nil {
-		checks = append(checks, checkCmuxDelivery(srcCfg.Cmux, "cmux local loop"))
+		checks = append(checks, checkCmuxLocalLoop(srcCfg.Cmux))
 	} else {
 		checks = append(checks, Check{
 			Name:     "cmux local loop",
@@ -1000,6 +1001,65 @@ func checkCmuxDeliveryWith(cmux config.CmuxRef, label string, probe func(binary 
 		Severity: SeverityOK,
 		Detail:   "cmux installed, socketControlMode=" + mode + "; cookies can be injected",
 	}
+}
+
+// checkCmuxLocalLoop reports the liveness of the always-on local loop
+// (the `cmux-sync` launch agent), distinguishing "not enabled" from
+// "enabled but needs a cmux restart" from "live". The loop is considered
+// set up if the launch agent is loaded OR source.yaml opted in via
+// cmux.enabled.
+func checkCmuxLocalLoop(cmux config.CmuxRef) Check {
+	return checkCmuxLocalLoopWith(cmux, launchd.IsInstalled, probeCmuxAccessMode)
+}
+
+func checkCmuxLocalLoopWith(cmux config.CmuxRef, agentInstalled func(launchd.Spec) bool, probe func(string) (string, error)) Check {
+	const name = "cmux local loop"
+	agentUp := agentInstalled(launchd.Spec{Role: launchd.RoleCmuxSync})
+	binary := sinkpush.ResolveCmuxBinary(cmux.CmuxPath)
+	info, statErr := os.Stat(binary)
+	cmuxPresent := statErr == nil && !info.IsDir()
+
+	if !agentUp && !cmux.Enabled {
+		if !cmuxPresent {
+			return Check{Name: name, Severity: SeveritySkipped, Detail: "not set up (cmux not installed)"}
+		}
+		return Check{
+			Name:        name,
+			Severity:    SeverityWarn,
+			Detail:      "cmux is installed but the local loop is not enabled",
+			Remediation: "run `agentcookie cmux-sync enable`, then restart cmux once",
+		}
+	}
+	if !cmuxPresent {
+		return Check{
+			Name:        name,
+			Severity:    SeverityWarn,
+			Detail:      "local loop enabled but the cmux CLI was not found at " + binary,
+			Remediation: "install cmux (https://cmux.com) or set cmux.cmux_path",
+		}
+	}
+	mode, err := probe(binary)
+	if err != nil {
+		return Check{
+			Name:        name,
+			Severity:    SeverityWarn,
+			Detail:      "cmux installed but its control socket did not answer (is cmux running?): " + err.Error(),
+			Remediation: "start cmux; if it is already running, restart it once to apply socketControlMode",
+		}
+	}
+	if mode == "cmuxOnly" {
+		return Check{
+			Name:        name,
+			Severity:    SeverityWarn,
+			Detail:      "loop set up but socketControlMode is still \"cmuxOnly\" -- the change has not taken effect yet",
+			Remediation: "RESTART cmux once (socketControlMode is read only at app launch; `cmux reload-config` does not apply it)",
+		}
+	}
+	detail := "config-enabled; socketControlMode=" + mode
+	if agentUp {
+		detail = "launch agent loaded; socketControlMode=" + mode + "; loop active"
+	}
+	return Check{Name: name, Severity: SeverityOK, Detail: detail}
 }
 
 // probeCmuxAccessMode runs `cmux capabilities` and returns the server's
