@@ -18,8 +18,9 @@ import (
 type Role string
 
 const (
-	RoleSource Role = "source"
-	RoleSink   Role = "sink"
+	RoleSource   Role = "source"
+	RoleSink     Role = "sink"
+	RoleCmuxSync Role = "cmux-sync"
 )
 
 // Spec is the input to plist generation. All paths must be absolute.
@@ -45,7 +46,7 @@ func (s Spec) Render() ([]byte, error) {
 	if s.LogDir == "" {
 		return nil, fmt.Errorf("LogDir is required")
 	}
-	if s.Role != RoleSource && s.Role != RoleSink {
+	if s.Role != RoleSource && s.Role != RoleSink && s.Role != RoleCmuxSync {
 		return nil, fmt.Errorf("invalid Role %q", s.Role)
 	}
 

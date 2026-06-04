@@ -119,6 +119,10 @@ Caveats: the surface delivers cookies only, so sites whose session also lives in
 
 The sink surface above is for the two-machine model. If you just want *this* Mac's Chrome logins to flow into *this* Mac's cmux browser, use the local loop instead. No second machine, no Tailscale, no pairing.
 
+**On by default when cmux is installed.** `agentcookie wizard install` detects cmux and turns the loop on automatically: it sets cmux's `socketControlMode` to `allowAll`, installs a launch agent that runs `cmux-sync --watch` over your full cookie set, and tells you to **restart cmux once** to activate (the mode is read only at app launch). After that single restart it stays in sync hands-free. Opt out with `agentcookie wizard install --no-cmux`. Turn it on/off later with `agentcookie cmux-sync enable` / `disable`. `agentcookie doctor` reports the loop's liveness (enabled / needs-restart / live).
+
+For manual or one-shot use:
+
 ```bash
 # one-shot: read Chrome now, inject into cmux
 agentcookie cmux-sync --once

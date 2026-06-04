@@ -13,6 +13,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
+	"github.com/mvanhorn/agentcookie/internal/launchd"
 	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 	"github.com/mvanhorn/agentcookie/internal/state"
 )
@@ -766,5 +767,59 @@ func writeKey(t *testing.T, configDir, peer string, mode os.FileMode) {
 	// a different one; chmod explicitly.
 	if err := os.Chmod(path, mode); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCheckCmuxLocalLoop(t *testing.T) {
+	agentUp := func(launchd.Spec) bool { return true }
+	agentDown := func(launchd.Spec) bool { return false }
+	okProbe := func(string) (string, error) { return "allowAll", nil }
+	cmuxOnlyProbe := func(string) (string, error) { return "cmuxOnly", nil }
+
+	t.Run("agent down + cmux absent = skipped (not set up)", func(t *testing.T) {
+		cfg := config.CmuxRef{CmuxPath: filepath.Join(t.TempDir(), "no-cmux")}
+		c := checkCmuxLocalLoopWith(cfg, agentDown, okProbe)
+		if c.Severity != SeveritySkipped {
+			t.Fatalf("got %q, want SKIPPED", c.Severity)
+		}
+	})
+
+	t.Run("agent down + cmux present = warn run enable", func(t *testing.T) {
+		cfg := config.CmuxRef{CmuxPath: writeExecutable(t)}
+		c := checkCmuxLocalLoopWith(cfg, agentDown, okProbe)
+		if c.Severity != SeverityWarn || !strings.Contains(c.Remediation, "enable") {
+			t.Fatalf("got %q / %q, want WARN + enable hint", c.Severity, c.Remediation)
+		}
+	})
+
+	t.Run("agent up + still cmuxOnly = warn restart", func(t *testing.T) {
+		cfg := config.CmuxRef{CmuxPath: writeExecutable(t)}
+		c := checkCmuxLocalLoopWith(cfg, agentUp, cmuxOnlyProbe)
+		if c.Severity != SeverityWarn || !strings.Contains(c.Remediation, "RESTART") {
+			t.Fatalf("got %q / %q, want WARN + restart hint", c.Severity, c.Remediation)
+		}
+	})
+
+	t.Run("agent up + allowAll = OK live", func(t *testing.T) {
+		cfg := config.CmuxRef{CmuxPath: writeExecutable(t)}
+		c := checkCmuxLocalLoopWith(cfg, agentUp, okProbe)
+		if c.Severity != SeverityOK || !strings.Contains(c.Detail, "loop active") {
+			t.Fatalf("got %q / %q, want OK + loop active", c.Severity, c.Detail)
+		}
+	})
+}
+
+func TestCheckCmuxLocalLoop_ConfigEnabledButAgentDown(t *testing.T) {
+	// Greptile: cmux.enabled in config but the launch agent is not running
+	// means the loop is not actually syncing -> WARN, not OK.
+	agentDown := func(launchd.Spec) bool { return false }
+	okProbe := func(string) (string, error) { return "allowAll", nil }
+	cfg := config.CmuxRef{Enabled: true, CmuxPath: writeExecutable(t)}
+	c := checkCmuxLocalLoopWith(cfg, agentDown, okProbe)
+	if c.Severity != SeverityWarn {
+		t.Fatalf("config-enabled + agent down should WARN, got %q (%q)", c.Severity, c.Detail)
+	}
+	if !strings.Contains(c.Remediation, "enable") {
+		t.Errorf("remediation should point at enable: %q", c.Remediation)
 	}
 }
