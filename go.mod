@@ -1,6 +1,6 @@
 module github.com/mvanhorn/agentcookie
 
-go 1.26.3
+go 1.26.4
 
 require (
 	github.com/chromedp/cdproto v0.0.0-20260321001828-e3e3800016bc
