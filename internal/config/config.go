@@ -51,7 +51,36 @@ type SinkConfig struct {
 	Security         SecurityRef `yaml:"security,omitempty" json:"security,omitempty"`
 	SkipChromeSQLite bool        `yaml:"skip_chrome_sqlite,omitempty" json:"skip_chrome_sqlite,omitempty"`
 	CDP              CDPRef      `yaml:"cdp,omitempty" json:"cdp,omitempty"`
+	Cmux             CmuxRef     `yaml:"cmux,omitempty" json:"cmux,omitempty"`
 	Delivery         string      `yaml:"delivery,omitempty" json:"delivery,omitempty"`
+}
+
+// CmuxRef configures the cmux cookie-delivery surface (a fourth surface
+// alongside Chrome SQLite, the sidecar, and the per-CLI adapters). When
+// Enabled, the sink injects the synced cookies into cmux's embedded
+// WebKit browser after each /sync via `cmux rpc browser.cookies.set`, so
+// an agent driving cmux's browser wakes up authenticated. cmux holds its
+// own WebKit cookie jar (separate from Chrome's SQLite), so this surface
+// is purely additive.
+//
+// omitempty keeps a pre-cmux sink.yaml valid with the surface off: an
+// absent block decodes to Enabled=false and the sink never touches cmux.
+//
+// NOTE: cmux's RPC socket defaults to socketControlMode "cmuxOnly", which
+// rejects this sink (a LaunchAgent, not a cmux child). `agentcookie
+// doctor` detects that and prints the one-line remediation
+// (socketControlMode allowAll/password in ~/.config/cmux/cmux.json, then
+// a full cmux restart -- the mode is read only at app launch).
+type CmuxRef struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// CmuxPath overrides the cmux CLI location. Empty uses the
+	// canonical app-bundle path with a PATH fallback (see
+	// internal/sinkpush.NewCmux).
+	CmuxPath string `yaml:"cmux_path,omitempty" json:"cmux_path,omitempty"`
+	// DomainFilter narrows which cookies reach cmux, as SQLite-LIKE
+	// host_key patterns (e.g. "%github.com"). Empty means deliver the
+	// full synced set (after the sink's blocklist filter).
+	DomainFilter []string `yaml:"domain_filter,omitempty" json:"domain_filter,omitempty"`
 }
 
 // CDPRef configures the v0.12.0-beta.3 CDP-injection mode. When Enabled,
@@ -176,6 +205,9 @@ func LoadSink(dir string) (*SinkConfig, error) {
 	}
 	if cfg.Chrome.DBPath == "" {
 		cfg.Chrome.DBPath = DefaultChromeCookiesPath()
+	}
+	if cfg.Cmux.CmuxPath != "" {
+		cfg.Cmux.CmuxPath = ExpandTilde(cfg.Cmux.CmuxPath)
 	}
 	return &cfg, nil
 }

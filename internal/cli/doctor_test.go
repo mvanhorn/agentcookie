@@ -322,6 +322,77 @@ func TestCheckSealing(t *testing.T) {
 
 // TestCheckCDPInjector covers the v0.12.0-beta.3 CDP-injection check.
 // cdp.enabled=false reports SKIPPED. cdp.enabled=true with a valid
+func TestCheckCmuxDelivery(t *testing.T) {
+	okProbe := func(string) (string, error) { return "allowAll", nil }
+	cmuxOnlyProbe := func(string) (string, error) { return "cmuxOnly", nil }
+	errProbe := func(string) (string, error) { return "", errors.New("broken pipe") }
+
+	t.Run("disabled is skipped", func(t *testing.T) {
+		cfg := &config.SinkConfig{Cmux: config.CmuxRef{Enabled: false}}
+		c := checkCmuxDeliveryWith(cfg, okProbe)
+		if c.Severity != SeveritySkipped {
+			t.Fatalf("got %q, want SKIPPED", c.Severity)
+		}
+	})
+
+	t.Run("enabled but cmux binary missing warns", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "no-cmux")
+		cfg := &config.SinkConfig{Cmux: config.CmuxRef{Enabled: true, CmuxPath: missing}}
+		c := checkCmuxDeliveryWith(cfg, okProbe)
+		if c.Severity != SeverityWarn {
+			t.Fatalf("got %q (%q), want WARN", c.Severity, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "not found") {
+			t.Errorf("detail: %q", c.Detail)
+		}
+	})
+
+	t.Run("cmuxOnly mode warns with restart remediation", func(t *testing.T) {
+		bin := writeExecutable(t)
+		cfg := &config.SinkConfig{Cmux: config.CmuxRef{Enabled: true, CmuxPath: bin}}
+		c := checkCmuxDeliveryWith(cfg, cmuxOnlyProbe)
+		if c.Severity != SeverityWarn {
+			t.Fatalf("got %q, want WARN", c.Severity)
+		}
+		if !strings.Contains(c.Detail, "cmuxOnly") {
+			t.Errorf("detail should name cmuxOnly: %q", c.Detail)
+		}
+		if !strings.Contains(c.Remediation, "socketControlMode") || !strings.Contains(c.Remediation, "restart") {
+			t.Errorf("remediation should mention socketControlMode + restart: %q", c.Remediation)
+		}
+	})
+
+	t.Run("unreachable socket warns", func(t *testing.T) {
+		bin := writeExecutable(t)
+		cfg := &config.SinkConfig{Cmux: config.CmuxRef{Enabled: true, CmuxPath: bin}}
+		c := checkCmuxDeliveryWith(cfg, errProbe)
+		if c.Severity != SeverityWarn {
+			t.Fatalf("got %q, want WARN", c.Severity)
+		}
+	})
+
+	t.Run("reachable non-cmuxOnly mode is OK", func(t *testing.T) {
+		bin := writeExecutable(t)
+		cfg := &config.SinkConfig{Cmux: config.CmuxRef{Enabled: true, CmuxPath: bin}}
+		c := checkCmuxDeliveryWith(cfg, okProbe)
+		if c.Severity != SeverityOK {
+			t.Fatalf("got %q (%q), want OK", c.Severity, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "allowAll") {
+			t.Errorf("detail should report the mode: %q", c.Detail)
+		}
+	})
+}
+
+func writeExecutable(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "cmux")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
 // profile dir reports OK when Chrome is found. cdp.enabled=true with
 // no profile dir reports WARN.
 func TestCheckCDPInjector(t *testing.T) {
@@ -618,9 +689,10 @@ peer:
 	// check (source role only; present here since this fixture is source).
 	// The consumption bridge added the Secret coverage + Binary install checks.
 	// Universal cookie delivery added the Cookie delivery check. Source browser
-	// adapters added the Source adapter check.
-	if got := len(report.Checks); got != 16 {
-		t.Fatalf("got %d checks, want 16", got)
+	// adapters added the Source adapter check. The cmux delivery surface added
+	// the cmux delivery check.
+	if got := len(report.Checks); got != 17 {
+		t.Fatalf("got %d checks, want 17", got)
 	}
 
 	// Serialize the envelope and confirm it round-trips.

@@ -286,6 +286,72 @@ security:
 	})
 }
 
+func TestLoadSinkCmuxSurface(t *testing.T) {
+	t.Run("enabled cmux block round-trips with filter and tilde-expanded path", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "sink.yaml", `
+listen:
+  addr: 100.80.229.80:9999
+cmux:
+  enabled: true
+  cmux_path: ~/bin/cmux
+  domain_filter:
+    - "%github.com"
+    - "%openai.com"
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+		cfg, err := LoadSink(dir)
+		if err != nil {
+			t.Fatalf("LoadSink: %v", err)
+		}
+		if !cfg.Cmux.Enabled {
+			t.Errorf("Cmux.Enabled: got false, want true")
+		}
+		if strings.HasPrefix(cfg.Cmux.CmuxPath, "~") {
+			t.Errorf("Cmux.CmuxPath should be tilde-expanded, got %q", cfg.Cmux.CmuxPath)
+		}
+		if len(cfg.Cmux.DomainFilter) != 2 || cfg.Cmux.DomainFilter[0] != "%github.com" {
+			t.Errorf("Cmux.DomainFilter: got %v", cfg.Cmux.DomainFilter)
+		}
+	})
+
+	t.Run("absent cmux block defaults to disabled (no migration)", func(t *testing.T) {
+		// A sink.yaml written before this field must load cleanly with the
+		// surface off -- no silent flip on a binary upgrade.
+		dir := t.TempDir()
+		writeFile(t, dir, "sink.yaml", `
+listen:
+  addr: 100.80.229.80:9999
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+		cfg, err := LoadSink(dir)
+		if err != nil {
+			t.Fatalf("LoadSink: %v", err)
+		}
+		if cfg.Cmux.Enabled {
+			t.Errorf("Cmux.Enabled: got true, want false (legacy default)")
+		}
+	})
+
+	t.Run("unknown key under cmux is rejected by KnownFields", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "sink.yaml", `
+listen:
+  addr: 100.80.229.80:9999
+cmux:
+  enabled: true
+  bogus_key: nope
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+		if _, err := LoadSink(dir); err == nil {
+			t.Fatal("expected error for unknown cmux key, got nil")
+		}
+	})
+}
+
 func TestLoadSinkHonorsExplicitListenAddr(t *testing.T) {
 	// Regression for v0.11 -> v0.12: an existing sink.yaml that already
 	// has a 100.x address keeps working without re-detection prompting.

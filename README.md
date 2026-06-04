@@ -60,7 +60,7 @@ agentcookie source --watch  (decrypt Chrome with Keychain key,
                                                                 v
                                               agentcookie sink (LaunchAgent)
                                                 |
-                                                | one of three cookie delivery surfaces:
+                                                | cookie delivery surfaces:
                                                 v
                                               1. Chrome's Cookies SQLite (re-encrypted for sink Keychain)
                                               2. Plaintext sidecar at ~/.agentcookie/cookies-plain.db
@@ -71,17 +71,49 @@ agentcookie source --watch  (decrypt Chrome with Keychain key,
                                                    ebay       -> config.toml + cookies.json
                                                    pagliacci  -> config.toml + cookies.json
                                                    table-reservation-goat -> session.json
+                                              4. cmux WebKit browser (opt-in) via
+                                                   cmux rpc browser.cookies.set
 
                                               plus the secrets bus mirror:
                                                 ~/.agentcookie/secrets/<cli>/secrets.env  (mode 0600,
                                                   optional sealed twin under the v0.12 master key)
 ```
 
-Three cookie surfaces because different agents read cookies differently. Universal delivery (surface 1, the real Default profile plus the one-password Safe Storage open) is the default and is what makes any unmodified cookie tool work; the sidecar (surface 2) and per-CLI adapters (surface 3) are the agentcookie-aware paths that also work in degraded mode, when no login password is available to open the key. The sink runs all three after every sync, so the agent picks what fits.
+Multiple cookie surfaces because different agents read cookies differently. Universal delivery (surface 1, the real Default profile plus the one-password Safe Storage open) is the default and is what makes any unmodified cookie tool work; the sidecar (surface 2) and per-CLI adapters (surface 3) are the agentcookie-aware paths that also work in degraded mode, when no login password is available to open the key. The sink runs surfaces 1 through 3 after every sync, so the agent picks what fits.
+
+Surface 4 is the opt-in cmux surface. cmux ([cmux.com](https://cmux.com)) ships its own embedded browser on Apple WebKit with a cookie jar separate from Chrome's, so none of the other surfaces reach it. Enable it and the sink injects the synced session into cmux's browser after every sync (`cmux rpc browser.cookies.set`), so an agent driving cmux's browser pane wakes up authenticated. Injected cookies persist at cmux's profile level, so one injection carries to the agent's later panes. See [cmux delivery](#cmux-delivery-opt-in).
 
 Bearer tokens, API keys, and other per-CLI auth blobs ride the same encrypted push and land at `~/.agentcookie/secrets/<cli>/secrets.env` on the sink. CLIs read them via environment variables, the in-process `pkg/agentcookiesecret` Go library, or a project's own `agentcookie.toml` manifest (see the adoption standard below).
 
 New cookie adapters are roughly 50 lines of Go and a `Register()` call; the runbook walks through it. New secrets bus consumers usually require no agentcookie-side change at all: drop an `agentcookie.toml` next to your CLI and `agentcookie discover` finds it.
+
+## cmux delivery (opt-in)
+
+cmux's browser is Apple WebKit, with a cookie jar separate from Chrome's, so it needs its own surface. Enable it in `sink.yaml`:
+
+```yaml
+cmux:
+  enabled: true
+  # cmux_path: /custom/path/to/cmux   # optional; default resolves the app bundle, then PATH
+  # domain_filter:                     # optional; SQLite-LIKE host_key patterns. empty = all synced cookies
+  #   - "%github.com"
+  #   - "%openai.com"
+```
+
+One required cmux-side step: cmux's RPC socket defaults to `socketControlMode: "cmuxOnly"`, which only accepts processes started inside cmux. The agentcookie sink is a LaunchAgent, not a cmux child, so with the default it is rejected and no cookies land. Open the socket to the sink:
+
+```jsonc
+// ~/.config/cmux/cmux.json
+{
+  "automation": {
+    "socketControlMode": "allowAll"   // or "password" (then set automation.socketPassword)
+  }
+}
+```
+
+Then fully restart cmux (Quit and reopen). The mode is read only at app launch; `cmux reload-config` does not apply it. Verify with `cmux capabilities | grep access_mode` (it should no longer say `cmuxOnly`), or just run `agentcookie doctor`, which reports the cmux delivery surface and prints this exact remediation when the gate is still closed.
+
+Caveats: the surface delivers cookies only, so sites whose session also lives in localStorage/IndexedDB or is device-bound (DBSC, e.g. Google/Workspace) may still need a one-time sign-in inside the cmux pane; WebKit's ITP can also drop some cross-site cookies. The surface is best-effort and non-fatal: if cmux is not running or still gated, the sync and the other three surfaces are unaffected.
 
 ## Install
 

@@ -245,6 +245,19 @@ func buildReport(d doctorDeps) DoctorReport {
 		})
 	}
 
+	// 10b. cmux delivery -- sink role only. Verifies the opt-in cmux
+	// surface can reach cmux, and specifically that socketControlMode is
+	// not the default "cmuxOnly" that would reject the LaunchAgent sink.
+	if sinkCfg != nil {
+		checks = append(checks, checkCmuxDelivery(sinkCfg))
+	} else {
+		checks = append(checks, Check{
+			Name:     "cmux delivery",
+			Severity: SeveritySkipped,
+			Detail:   "source-only install",
+		})
+	}
+
 	// 11. Secrets bus (v0.13). Reports how many CLIs are registered,
 	// total key count, sealed-vs-plaintext mode, sync freshness.
 	// Reads from the secrets root on whichever machine is running
@@ -924,6 +937,80 @@ func hostMatchesAnyAdapter(hostKey string, adapters []sinkpush.Adapter) bool {
 // usable: cdp.profile_dir exists and is writable, AND Chrome.app is
 // installed on this Mac. WARN when configured but unusable; SKIPPED
 // when cdp.enabled is false.
+// checkCmuxDelivery reports whether the opt-in cmux cookie-delivery
+// surface can actually reach cmux. The headline failure it catches: the
+// sink is a LaunchAgent, not a cmux child, so cmux's default
+// socketControlMode "cmuxOnly" rejects it and cookies silently never
+// land. WARN (not FAIL) and always non-fatal -- the surface degrades
+// cleanly and the other surfaces are unaffected.
+func checkCmuxDelivery(sinkCfg *config.SinkConfig) Check {
+	return checkCmuxDeliveryWith(sinkCfg, probeCmuxAccessMode)
+}
+
+func checkCmuxDeliveryWith(sinkCfg *config.SinkConfig, probe func(binary string) (string, error)) Check {
+	const name = "cmux delivery"
+	if !sinkCfg.Cmux.Enabled {
+		return Check{
+			Name:     name,
+			Severity: SeveritySkipped,
+			Detail:   "cmux.enabled is false",
+		}
+	}
+	binary := sinkpush.ResolveCmuxBinary(sinkCfg.Cmux.CmuxPath)
+	if info, err := os.Stat(binary); err != nil || info.IsDir() {
+		return Check{
+			Name:        name,
+			Severity:    SeverityWarn,
+			Detail:      "cmux.enabled but the cmux CLI was not found at " + binary,
+			Remediation: "install cmux (https://cmux.com), or set cmux.cmux_path in sink.yaml to the CLI location",
+		}
+	}
+	mode, err := probe(binary)
+	if err != nil {
+		return Check{
+			Name:        name,
+			Severity:    SeverityWarn,
+			Detail:      "cmux is installed but its control socket did not answer (is cmux running?): " + err.Error(),
+			Remediation: "start cmux; if it is already running, its socketControlMode may be blocking the sink -- set automation.socketControlMode to allowAll (or password) in ~/.config/cmux/cmux.json and fully restart cmux",
+		}
+	}
+	if mode == "cmuxOnly" {
+		return Check{
+			Name:        name,
+			Severity:    SeverityWarn,
+			Detail:      "cmux socketControlMode is \"cmuxOnly\", which rejects the sink (a LaunchAgent, not a cmux child); cookies will not be delivered",
+			Remediation: "set automation.socketControlMode to allowAll (or password) in ~/.config/cmux/cmux.json, then FULLY restart cmux -- the mode is read only at app launch; `cmux reload-config` does not apply it",
+		}
+	}
+	return Check{
+		Name:     name,
+		Severity: SeverityOK,
+		Detail:   "cmux installed, socketControlMode=" + mode + "; sink can inject cookies",
+	}
+}
+
+// probeCmuxAccessMode runs `cmux capabilities` and returns the server's
+// access_mode (the effective socketControlMode). It reflects the running
+// cmux's configured mode regardless of the caller.
+func probeCmuxAccessMode(binary string) (string, error) {
+	out, err := exec.Command(binary, "capabilities").Output()
+	if err != nil {
+		detail := ""
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			detail = strings.TrimSpace(string(ee.Stderr))
+		}
+		return "", fmt.Errorf("%w (%s)", err, detail)
+	}
+	var caps struct {
+		AccessMode string `json:"access_mode"`
+	}
+	if err := json.Unmarshal(out, &caps); err != nil {
+		return "", fmt.Errorf("parse capabilities: %w", err)
+	}
+	return caps.AccessMode, nil
+}
+
 func checkCDPInjector(sinkCfg *config.SinkConfig) Check {
 	if !sinkCfg.CDP.Enabled {
 		return Check{

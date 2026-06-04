@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### cmux cookie-delivery surface (opt-in)
+
+A fourth sink delivery surface that injects the synced session into
+cmux's embedded WebKit browser after every sync via
+`cmux rpc browser.cookies.set`, so an agent driving cmux's browser pane
+wakes up authenticated. cmux holds its own WebKit cookie jar separate
+from Chrome's SQLite, so this is purely additive.
+
+Opt in with `cmux.enabled: true` in `sink.yaml` (optional `cmux_path`
+and `domain_filter`). Implemented as a `sinkpush.Adapter`, so it inherits
+blocklist/DBSC filtering, the non-fatal contract, and `wizard
+verify-adapters` visibility, and is registered at sink startup only when
+enabled. Cookie values pass through verbatim (no second App-Bound strip);
+domains keep their leading dot (WebKit accepts it, unlike CDP); the
+adapter opens and reuses one unfocused `about:blank` browser surface
+since `browser.cookies.set` requires a surface and injected cookies
+persist at the profile level.
+
+`agentcookie doctor` gains a "cmux delivery" check that detects the
+common gotcha: cmux's default `socketControlMode: cmuxOnly` rejects the
+LaunchAgent sink, and the fix (set `allowAll`/`password` in
+`~/.config/cmux/cmux.json` and fully restart cmux) is printed as the
+remediation. See the "cmux delivery" section in the README.
+
 ### v0.14.0-beta.1: secrets bus adoption standard
 
 A standard projects can adopt to opt into agentcookie sync. Layered on

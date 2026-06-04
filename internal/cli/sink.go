@@ -115,6 +115,17 @@ func runSink(cmd *cobra.Command, args []string) error {
 		ListenAddr: cfg.Listen.Addr,
 	}
 
+	// Opt-in cmux delivery surface (sink.yaml `cmux.enabled`). Registered
+	// here, not in sinkpush.init(), because it carries config (binary
+	// path, host filter) the package-load init cannot see. Once
+	// registered it fires after every sync via sinkpush.RunAll alongside
+	// the built-in per-CLI adapters, and shows up in `doctor` and
+	// `wizard verify-adapters` for free.
+	if cfg.Cmux.Enabled {
+		sinkpush.Register(sinkpush.NewCmux(cfg.Cmux.CmuxPath, cfg.Cmux.DomainFilter))
+		fmt.Fprintln(os.Stderr, "agentcookie sink: cmux delivery surface enabled")
+	}
+
 	mux := newSinkMux(cfg, transportSecret, key, seqTracker, stateWriter, sinkState)
 
 	srv := httpserver.Configure(&http.Server{Addr: cfg.Listen.Addr, Handler: mux}, httpserver.SinkSync)
