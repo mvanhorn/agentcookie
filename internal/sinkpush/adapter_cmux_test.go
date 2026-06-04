@@ -343,3 +343,30 @@ func countOpens(calls [][]string) int {
 	}
 	return n
 }
+
+func TestCmuxPush_SurfaceErrorAfterReopenHardFails(t *testing.T) {
+	// Greptile P1: a reopen happens but the retry still hits a surface error.
+	// That must hard-fail, not fall into per-cookie fallback and silently drop
+	// the whole chunk.
+	f := &fakeCmux{setErrs: []error{
+		errors.New("invalid_params: Surface is not a browser"), // batch
+		errors.New("invalid_params: Surface is not a browser"), // retry after reopen
+	}}
+	a := newTestCmux(f, nil)
+	a.surfaceID = "surface:stale"
+	err := a.Push([]chrome.Cookie{{HostKey: ".x.com", Name: "a", Value: "1"}})
+	if err == nil || !strings.Contains(err.Error(), "not a browser") {
+		t.Fatalf("a persistent surface error must hard-fail (no silent chunk loss), got %v", err)
+	}
+}
+
+func TestCmuxPush_PermissionDeniedHardFails(t *testing.T) {
+	// Greptile P2: EACCES ("permission denied") means cmux is unusable; it must
+	// hard-fail, not be mistaken for a per-cookie reject and silently skipped.
+	f := &fakeCmux{setErrs: []error{errors.New("fork/exec /x/cmux: permission denied")}}
+	a := newTestCmux(f, nil)
+	err := a.Push([]chrome.Cookie{{HostKey: ".x.com", Name: "a", Value: "1"}})
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("permission denied must hard-fail, got %v", err)
+	}
+}

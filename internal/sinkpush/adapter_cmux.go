@@ -138,10 +138,7 @@ func (a *CmuxAdapter) Push(cookies []chrome.Cookie) error {
 	// ARG_MAX (~1MB); cmuxCookieBatch keeps each call well under that.
 	reopened := false
 	for start := 0; start < len(cookies); start += cmuxCookieBatch {
-		end := start + cmuxCookieBatch
-		if end > len(cookies) {
-			end = len(cookies)
-		}
+		end := min(start+cmuxCookieBatch, len(cookies))
 		chunk := cookies[start:end]
 		err := a.setCookiesLocked(chunk)
 		if err == nil {
@@ -161,24 +158,25 @@ func (a *CmuxAdapter) Push(cookies []chrome.Cookie) error {
 				err = rerr
 			}
 		}
-		// cmux unreachable (down / cmuxOnly-gated) is a hard failure -- the
-		// whole loop can't deliver, so surface it.
-		if isCmuxUnavailable(err) {
+		// Hard-fail (do not silently drop the chunk) when cmux is unreachable
+		// (down / cmuxOnly-gated) OR the error is still surface-related after
+		// the one reopen attempt -- a reopen that didn't fix it won't be fixed
+		// per-cookie either, and silently skipping would lose the whole chunk.
+		if isCmuxUnavailable(err) || isSurfaceError(err) {
 			return fmt.Errorf("cmux: set cookies [%d:%d] of %d: %w", start, end, len(cookies), err)
 		}
 		// Otherwise one cookie in the chunk is rejected by cmux (e.g. a
 		// payload WebKit won't accept). Fall back to per-cookie so the rest
-		// of the chunk still lands; skip the individual rejects. A
-		// cmux-unavailable error mid-fallback still hard-fails.
+		// of the chunk still lands; skip only the genuine individual rejects.
+		// A cmux-unavailable or surface error mid-fallback still hard-fails.
 		for _, c := range chunk {
 			if e := a.setCookiesLocked([]chrome.Cookie{c}); e != nil {
-				if isCmuxUnavailable(e) {
+				if isCmuxUnavailable(e) || isSurfaceError(e) {
 					return fmt.Errorf("cmux: set cookie %q: %w", c.Name, e)
 				}
-				// individual reject: skip it, keep going
+				// individual payload reject: skip it, keep going
 			}
 		}
-		continue
 	}
 	return nil
 }
@@ -309,6 +307,7 @@ func isCmuxUnavailable(err error) bool {
 	return strings.Contains(msg, "broken pipe") ||
 		strings.Contains(msg, "connection refused") ||
 		strings.Contains(msg, "access denied") ||
+		strings.Contains(msg, "permission denied") || // EACCES (unexecutable cmux mid-run)
 		strings.Contains(msg, "only processes started inside cmux") ||
 		strings.Contains(msg, "cmuxonly")
 }
