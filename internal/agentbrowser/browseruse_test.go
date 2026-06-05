@@ -23,7 +23,7 @@ func TestBrowserUse_Wire_WritesExecutableLauncher(t *testing.T) {
 	b := newBrowserUseAt("/usr/local/bin/browser-use")
 	endpoint := "ws://127.0.0.1:9222/devtools/browser/abc"
 
-	res, err := b.Wire(endpoint)
+	res, err := b.Wire(AttachTarget{Port: 9222, WSEndpoint: endpoint})
 	if err != nil {
 		t.Fatalf("Wire: %v", err)
 	}
@@ -58,12 +58,13 @@ func TestBrowserUse_Wire_Idempotent(t *testing.T) {
 	b := newBrowserUseAt("/usr/local/bin/browser-use")
 	endpoint := "ws://127.0.0.1:9222/devtools/browser/abc"
 
-	r1, err := b.Wire(endpoint)
+	target := AttachTarget{Port: 9222, WSEndpoint: endpoint}
+	r1, err := b.Wire(target)
 	if err != nil {
 		t.Fatal(err)
 	}
 	first, _ := os.ReadFile(r1.LauncherPath)
-	r2, err := b.Wire(endpoint)
+	r2, err := b.Wire(target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,15 +85,28 @@ func TestBrowserUse_Wire_RejectsBadEndpoint(t *testing.T) {
 		"ws://127.0.0.1:9222/\nmalicious", // newline
 	}
 	for _, e := range bad {
-		if _, err := b.Wire(e); err == nil {
+		if _, err := b.Wire(AttachTarget{WSEndpoint: e}); err == nil {
 			t.Errorf("Wire(%q) succeeded, want rejection", e)
 		}
 	}
 }
 
+func TestBrowserUse_Wire_PortOnlyUsesHTTP(t *testing.T) {
+	withTempDir(t)
+	b := newBrowserUseAt("/usr/local/bin/browser-use")
+	res, err := b.Wire(AttachTarget{Port: 9222})
+	if err != nil {
+		t.Fatalf("Wire: %v", err)
+	}
+	body, _ := os.ReadFile(res.LauncherPath)
+	if !strings.Contains(string(body), "http://127.0.0.1:9222") {
+		t.Errorf("port-only target should produce an http:// cdp-url:\n%s", body)
+	}
+}
+
 func TestBrowserUse_LaunchSnippet(t *testing.T) {
 	b := newBrowserUseAt("/usr/local/bin/browser-use")
-	snip := b.LaunchSnippet("ws://127.0.0.1:9222/devtools/browser/abc")
+	snip := b.LaunchSnippet(AttachTarget{Port: 9222, WSEndpoint: "ws://127.0.0.1:9222/devtools/browser/abc"})
 	if !strings.Contains(snip, "--cdp-url") || !strings.Contains(snip, "ws://127.0.0.1:9222") {
 		t.Errorf("snippet missing attach: %q", snip)
 	}

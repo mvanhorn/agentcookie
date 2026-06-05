@@ -46,18 +46,35 @@ func (b *BrowserUse) IsInstalled() bool {
 	return err == nil && !info.IsDir()
 }
 
+// cdpURL resolves the AttachTarget to a browser-use --cdp-url value:
+// the ws:// browser endpoint when known, otherwise the loopback http://
+// endpoint (which browser-use also accepts).
+func cdpURL(t AttachTarget) (string, error) {
+	if t.WSEndpoint != "" {
+		return t.WSEndpoint, nil
+	}
+	if t.Port > 0 {
+		return fmt.Sprintf("http://127.0.0.1:%d", t.Port), nil
+	}
+	return "", fmt.Errorf("agentbrowser: AttachTarget has neither WSEndpoint nor Port")
+}
+
 // Wire writes a launcher at ~/.agentcookie/agent-browser/browser-use-attached
-// that execs `browser-use --cdp-url <endpoint> "$@"`, so any invocation
-// of that launcher attaches to the user's real Chrome.
-func (b *BrowserUse) Wire(endpoint string) (WireResult, error) {
-	if err := validateEndpoint(endpoint); err != nil {
+// that execs `browser-use --cdp-url <url> "$@"`, so any invocation of that
+// launcher attaches to the user's real Chrome.
+func (b *BrowserUse) Wire(target AttachTarget) (WireResult, error) {
+	url, err := cdpURL(target)
+	if err != nil {
+		return WireResult{}, err
+	}
+	if err := validateEndpoint(url); err != nil {
 		return WireResult{}, err
 	}
 	dir, err := launcherDir()
 	if err != nil {
 		return WireResult{}, err
 	}
-	path, err := writeLauncher(dir, "browser-use-attached", b.binary, []string{"--cdp-url", endpoint})
+	path, err := writeLauncher(dir, "browser-use-attached", b.binary, []string{"--cdp-url", url})
 	if err != nil {
 		return WireResult{}, err
 	}
@@ -70,6 +87,10 @@ func (b *BrowserUse) Wire(endpoint string) (WireResult, error) {
 // LaunchSnippet returns the one-shot command for attaching without
 // writing a launcher. `--connect` (zero-arg auto-discovery) is offered as
 // the alternative that survives a changed debug port.
-func (b *BrowserUse) LaunchSnippet(endpoint string) string {
-	return fmt.Sprintf("browser-use --cdp-url %s   # or: browser-use --connect", endpoint)
+func (b *BrowserUse) LaunchSnippet(target AttachTarget) string {
+	url, err := cdpURL(target)
+	if err != nil {
+		return "browser-use --connect"
+	}
+	return fmt.Sprintf("browser-use --cdp-url %s   # or: browser-use --connect", url)
 }

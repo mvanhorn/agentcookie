@@ -19,6 +19,18 @@ import (
 	"strings"
 )
 
+// AttachTarget identifies the running Chrome to attach to. Different
+// agent browsers want different shapes of the same endpoint: browser-use
+// takes a ws:// or http:// URL (--cdp-url), agent-browser takes the bare
+// debug port (--cdp). Both are carried so each adapter uses what it needs.
+type AttachTarget struct {
+	// Port is the loopback Chrome remote-debugging port (e.g. 9222).
+	Port int
+	// WSEndpoint is the browser-level webSocketDebuggerUrl when known
+	// (from agentattach discovery); may be empty if only the port is known.
+	WSEndpoint string
+}
+
 // Wirer is one Chromium agent browser the broker can attach to a CDP
 // endpoint.
 type Wirer interface {
@@ -28,13 +40,13 @@ type Wirer interface {
 	IsInstalled() bool
 	// BinaryPath returns the resolved agent-browser binary path.
 	BinaryPath() string
-	// Wire makes future invocations attach to endpoint and returns what
-	// it did (the launcher path). It is idempotent: re-wiring the same
-	// endpoint rewrites identical bytes.
-	Wire(endpoint string) (WireResult, error)
+	// Wire makes future invocations attach to target and returns what it
+	// did (the launcher path). It is idempotent: re-wiring the same target
+	// rewrites identical bytes.
+	Wire(target AttachTarget) (WireResult, error)
 	// LaunchSnippet returns a copy-pasteable command that attaches to
-	// endpoint without writing anything.
-	LaunchSnippet(endpoint string) string
+	// target without writing anything.
+	LaunchSnippet(target AttachTarget) string
 }
 
 // WireResult describes a completed Wire.
@@ -126,7 +138,7 @@ func shellQuote(s string) string {
 
 // All returns every known agent-browser wirer.
 func All() []Wirer {
-	return []Wirer{NewBrowserUse()}
+	return []Wirer{NewBrowserUse(), NewAgentBrowser()}
 }
 
 // Lookup returns the wirer with the given Name, or (nil, false).
