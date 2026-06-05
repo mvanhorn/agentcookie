@@ -41,6 +41,8 @@ func (b *BrowserUse) Name() string { return "browser-use" }
 
 func (b *BrowserUse) BinaryPath() string { return b.binary }
 
+func (b *BrowserUse) LauncherPath() string { return launcherPathNoCreate("browser-use-attached") }
+
 func (b *BrowserUse) IsInstalled() bool {
 	info, err := os.Stat(b.binary)
 	return err == nil && !info.IsDir()

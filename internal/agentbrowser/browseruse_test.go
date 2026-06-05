@@ -146,3 +146,20 @@ func TestLookupAndAll(t *testing.T) {
 		t.Error("All() should return at least one wirer")
 	}
 }
+
+func TestLauncherPathAndIsWired(t *testing.T) {
+	withTempDir(t)
+	b := newBrowserUseAt("/usr/local/bin/browser-use")
+	if IsWired(b) {
+		t.Error("should not be wired before Wire")
+	}
+	if _, err := b.Wire(AttachTarget{Port: 9222}); err != nil {
+		t.Fatal(err)
+	}
+	if !IsWired(b) {
+		t.Error("should be wired after Wire")
+	}
+	if b.LauncherPath() == "" {
+		t.Error("LauncherPath should be non-empty")
+	}
+}

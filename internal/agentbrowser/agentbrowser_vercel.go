@@ -39,6 +39,8 @@ func (a *AgentBrowser) Name() string { return "agent-browser" }
 
 func (a *AgentBrowser) BinaryPath() string { return a.binary }
 
+func (a *AgentBrowser) LauncherPath() string { return launcherPathNoCreate("agent-browser-attached") }
+
 func (a *AgentBrowser) IsInstalled() bool {
 	info, err := os.Stat(a.binary)
 	return err == nil && !info.IsDir()

@@ -40,6 +40,9 @@ type Wirer interface {
 	IsInstalled() bool
 	// BinaryPath returns the resolved agent-browser binary path.
 	BinaryPath() string
+	// LauncherPath returns the path Wire writes its launcher to, whether
+	// or not it exists yet.
+	LauncherPath() string
 	// Wire makes future invocations attach to target and returns what it
 	// did (the launcher path). It is idempotent: re-wiring the same target
 	// rewrites identical bytes.
@@ -47,6 +50,12 @@ type Wirer interface {
 	// LaunchSnippet returns a copy-pasteable command that attaches to
 	// target without writing anything.
 	LaunchSnippet(target AttachTarget) string
+}
+
+// IsWired reports whether w's launcher has been written (attach --wire run).
+func IsWired(w Wirer) bool {
+	info, err := os.Stat(w.LauncherPath())
+	return err == nil && !info.IsDir()
 }
 
 // WireResult describes a completed Wire.
@@ -65,21 +74,39 @@ const launcherSubdir = "agent-browser"
 // the real ~/.agentcookie/agent-browser.
 var dirOverride string
 
+// baseDir returns the launcher directory without creating it.
+func baseDir() (string, error) {
+	if dirOverride != "" {
+		return dirOverride, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".agentcookie", launcherSubdir), nil
+}
+
 // launcherDir returns the directory launcher scripts are written to,
 // creating it if needed.
 func launcherDir() (string, error) {
-	base := dirOverride
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		base = filepath.Join(home, ".agentcookie", launcherSubdir)
+	base, err := baseDir()
+	if err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return "", err
 	}
 	return base, nil
+}
+
+// launcherPathNoCreate computes the launcher path for filename without
+// creating the directory. Used by LauncherPath()/IsWired().
+func launcherPathNoCreate(filename string) string {
+	base, err := baseDir()
+	if err != nil {
+		return filename
+	}
+	return filepath.Join(base, filename)
 }
 
 // validateEndpoint rejects anything that is not a plain ws://, wss://, or

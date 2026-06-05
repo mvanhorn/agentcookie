@@ -182,17 +182,24 @@ func checkAttach(out io.Writer, d agentattach.Discovery, wirers []agentbrowser.W
 
 	fmt.Fprintln(out, attachStatusLine(d))
 	for _, w := range wirers {
-		state := "installed"
-		if !w.IsInstalled() {
-			state = "not installed"
-		}
-		fmt.Fprintf(out, "  %-14s %s\n", w.Name(), state)
+		fmt.Fprintf(out, "  %-14s %s\n", w.Name(), targetCheckState(w))
 	}
 	if !d.Reachable {
 		fmt.Fprintf(out, "\n%s\n", d.Remediation)
 		return errNotReachable
 	}
 	return nil
+}
+
+// targetCheckState renders one target's install + wiring state for --check.
+func targetCheckState(w agentbrowser.Wirer) string {
+	if !w.IsInstalled() {
+		return "not installed"
+	}
+	if agentbrowser.IsWired(w) {
+		return "installed, wired"
+	}
+	return "installed, not wired (run `agentcookie attach --wire`)"
 }
 
 func wireAttach(out io.Writer, d agentattach.Discovery, wirers []agentbrowser.Wirer, target agentbrowser.AttachTarget, asJSON bool) error {

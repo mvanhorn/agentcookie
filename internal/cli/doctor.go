@@ -74,6 +74,11 @@ type doctorDeps struct {
 	SourceAdapterCookiesExists func(path string) error
 	SourceAdapterPassword      func(chrome.Browser) (string, error)
 	SourceAdapterDecrypt       func(path string, key []byte) error
+
+	// AgentBrowserAttachCheck produces the agent-browser attach check.
+	// Injectable so tests avoid the live loopback CDP probe; nil defaults
+	// to the live checkAgentBrowserAttach.
+	AgentBrowserAttachCheck func() Check
 }
 
 var doctorCmd = &cobra.Command{
@@ -84,8 +89,9 @@ keystore, sink listener, sink state, source state, sealing state) and
 prints one line per check. Exit code is 0 only when no check FAILs.
 
 Use --json to emit a stable machine-readable envelope. doctor opens
-no network connections beyond local Tailscale daemon introspection;
-it never phones home.
+no network connections beyond local Tailscale daemon introspection and
+a loopback CDP probe for the agent-browser attach check; it never phones
+home.
 
 Typical run:
   agentcookie doctor
@@ -114,8 +120,9 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 			_, err := os.Stat(path)
 			return err
 		},
-		SourceAdapterPassword: chrome.SafeStoragePasswordFor,
-		SourceAdapterDecrypt:  sourceAdapterDecryptSmoke,
+		SourceAdapterPassword:   chrome.SafeStoragePasswordFor,
+		SourceAdapterDecrypt:    sourceAdapterDecryptSmoke,
+		AgentBrowserAttachCheck: checkAgentBrowserAttach,
 	}
 
 	report := buildReport(deps)
@@ -271,6 +278,14 @@ func buildReport(d doctorDeps) DoctorReport {
 			Detail:   "sink-only install",
 		})
 	}
+
+	// 10d. Agent browser attach (v0.14): are browser-use / agent-browser
+	// attached to a real Chrome over CDP, or do they run empty profiles?
+	agentAttachCheck := d.AgentBrowserAttachCheck
+	if agentAttachCheck == nil {
+		agentAttachCheck = checkAgentBrowserAttach
+	}
+	checks = append(checks, agentAttachCheck())
 
 	// 11. Secrets bus (v0.13). Reports how many CLIs are registered,
 	// total key count, sealed-vs-plaintext mode, sync freshness.

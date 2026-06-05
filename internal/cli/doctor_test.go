@@ -691,9 +691,10 @@ peer:
 	// The consumption bridge added the Secret coverage + Binary install checks.
 	// Universal cookie delivery added the Cookie delivery check. Source browser
 	// adapters added the Source adapter check. The cmux delivery surface added
-	// the cmux delivery check.
-	if got := len(report.Checks); got != 18 {
-		t.Fatalf("got %d checks, want 18", got)
+	// the cmux delivery check. The agent-browser attach surface (v0.14) added
+	// the agent browser attach check.
+	if got := len(report.Checks); got != 19 {
+		t.Fatalf("got %d checks, want 19", got)
 	}
 
 	// Serialize the envelope and confirm it round-trips.
