@@ -111,6 +111,23 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cmux CLI not found at %s (install cmux, or set --cmux-path / cmux.cmux_path in source.yaml)", adapter.CLIBinary())
 	}
 
+	// lastDBSCSkipped carries the most recent cycle's DBSC-skipped count out
+	// of the closure so the --once summary can surface it: a device-bound
+	// cookie that was dropped is the usual reason a cmux pane still reads
+	// logged-out, so naming the count makes that explainable rather than
+	// mysterious.
+	var lastDBSCSkipped int
+
+	// localStorage carry into cmux is intentionally not done here yet.
+	// cmux exposes the sink-side RPC for it (browser.storage.set, confirmed
+	// against the installed cmux), but the source side needs to read
+	// Chrome's localStorage key/values out of its LevelDB, which requires a
+	// LevelDB reader agentcookie does not yet have. The Chromium attach path
+	// (agentcookie attach) sidesteps this by sharing the real profile; cmux
+	// is WebKit and cannot attach, so its localStorage carry waits on that
+	// reader. Until then, cmux-sync carries cookies and reports the
+	// DBSC-skipped count below.
+
 	syncOnce := func(ctx context.Context) (int, error) {
 		blocklist, err := loadFreshBlocklist()
 		if err != nil {
@@ -120,6 +137,7 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return 0, err
 		}
+		lastDBSCSkipped = st.dbsc.skipped
 		// Apply the cmux domain filter the same way RunAll would before Push.
 		cookies = sinkpush.FilterByHostPatterns(cookies, domainFilter)
 		if cmuxSyncVerbose {
@@ -148,7 +166,7 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 			// remediation, exit non-zero so a one-shot caller sees the failure.
 			return fmt.Errorf("cmux-sync: %w (if cmux is running, check socketControlMode -- `agentcookie doctor` prints the fix)", err)
 		}
-		fmt.Fprintf(os.Stderr, "agentcookie cmux-sync: injected %d cookies into cmux\n", n)
+		fmt.Fprint(os.Stderr, cmuxSyncSummary(n, lastDBSCSkipped))
 		return nil
 	}
 
@@ -170,4 +188,16 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "agentcookie cmux-sync --watch: watching %s, injecting into cmux\n", cfg.Chrome.DBPath)
 	return w.Run(cmd.Context())
+}
+
+// cmuxSyncSummary renders the --once completion line(s). It always reports
+// how many cookies were injected, and adds a DBSC note when device-bound
+// cookies were skipped -- the usual reason a cmux pane still reads
+// logged-out for a given site.
+func cmuxSyncSummary(injected, dbscSkipped int) string {
+	s := fmt.Sprintf("agentcookie cmux-sync: injected %d cookies into cmux\n", injected)
+	if dbscSkipped > 0 {
+		s += fmt.Sprintf("agentcookie cmux-sync: skipped %d device-bound (DBSC) cookies -- those sessions cannot transfer and may read as logged-out in cmux\n", dbscSkipped)
+	}
+	return s
 }

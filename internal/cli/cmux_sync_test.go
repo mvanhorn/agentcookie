@@ -33,3 +33,19 @@ func TestCmuxSyncFlagValidation(t *testing.T) {
 		}
 	})
 }
+
+func TestCmuxSyncSummary(t *testing.T) {
+	// No DBSC skips: single injected line, no DBSC note.
+	s := cmuxSyncSummary(12, 0)
+	if !strings.Contains(s, "injected 12 cookies") {
+		t.Errorf("missing injected count: %q", s)
+	}
+	if strings.Contains(s, "DBSC") {
+		t.Errorf("should not mention DBSC when none skipped: %q", s)
+	}
+	// With DBSC skips: the explanatory note appears.
+	s = cmuxSyncSummary(12, 3)
+	if !strings.Contains(s, "skipped 3 device-bound") || !strings.Contains(s, "logged-out") {
+		t.Errorf("missing DBSC note: %q", s)
+	}
+}
