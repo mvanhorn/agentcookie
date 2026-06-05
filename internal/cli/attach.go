@@ -14,11 +14,12 @@ import (
 )
 
 var (
-	attachTarget string
-	attachPort   int
-	attachPrint  bool
-	attachWire   bool
-	attachCheck  bool
+	attachTarget   string
+	attachPort     int
+	attachPrint    bool
+	attachWire     bool
+	attachCheck    bool
+	attachFallback bool
 )
 
 var attachCmd = &cobra.Command{
@@ -51,12 +52,19 @@ func init() {
 	attachCmd.Flags().BoolVar(&attachPrint, "print", false, "print the CDP endpoint and launch snippets without writing anything")
 	attachCmd.Flags().BoolVar(&attachWire, "wire", false, "write launcher wrappers so the agent browser always attaches (default action)")
 	attachCmd.Flags().BoolVar(&attachCheck, "check", false, "report attach reachability and policy tier")
+	attachCmd.Flags().BoolVar(&attachFallback, "fallback", false, "use a synced debug Chrome profile instead of attaching the real profile (for older Chrome or an isolated session)")
 }
 
 func runAttach(cmd *cobra.Command, args []string) error {
 	wirers, err := selectWirers(attachTarget)
 	if err != nil {
 		return err
+	}
+
+	// --fallback is its own path: it does not probe-then-wire the real
+	// profile, it stands up a synced debug profile and wires to that.
+	if attachFallback {
+		return fallbackAttach(cmd.Context(), os.Stdout, wirers, attachPort)
 	}
 
 	action, err := resolveAttachAction(attachPrint, attachWire, attachCheck)
