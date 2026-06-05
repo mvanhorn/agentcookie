@@ -143,39 +143,30 @@ Run model and the `cmuxOnly` gate:
 
 Keychain note: run the **installed, signed `agentcookie`** binary. Reading Chrome's Safe Storage key is a one-time Keychain grant for that signed binary (set up at `wizard install`), so it does not prompt. Running via `go run` or an unsigned/rebuilt binary will pop the macOS Keychain password prompt on every run, because the grant is scoped per binary.
 
-## Agent browser attach (browser-use, agent-browser)
+## Agent browsers (browser-use, agent-browser): what actually works
 
-cmux is WebKit and gets *injected* cookies (above). The Chromium agent browsers used for automation and HAR sniffing -- **browser-use** and vercel-labs **agent-browser** -- are different: instead of copying your session into an empty profile (which loses device-bound logins and localStorage tokens, the usual cause of "are you sure you're logged in?"), agentcookie points them at your *real* Chrome over the DevTools Protocol. There is one session, not a copy.
+A note up front, learned the hard way: **you cannot reliably transplant a hardened login into a separate Chromium agent browser.** browser-use and vercel-labs agent-browser were tested against GitHub with both a CDP attach and a Playwright `storage_state` snapshot of real Chrome cookies. Neither carried the login:
 
-```bash
-agentcookie attach              # wire every installed agent browser to your real Chrome
-agentcookie attach --print      # show the endpoint + launch snippets, write nothing
-agentcookie attach --check      # report reachability, Chrome policy tier, and wiring
-```
+- Over `--cdp-url`, these tools open an *isolated* browser context that does not inherit the target Chrome profile's cookies.
+- A `storage_state` snapshot loads non-httpOnly and session cookies, but Chromium drops the protected persistent+httpOnly session cookies (`user_session`, `__Host-...`) that actually authenticate you. This is deliberate browser hardening, not a bug agentcookie can fix.
 
-`attach` writes a small launcher (`~/.agentcookie/agent-browser/<tool>-attached`) that runs the agent browser with the right CDP flag, so every invocation attaches. browser-use also accepts `--connect` (auto-discover) and agent-browser `--auto-connect`.
+So the reliable way to give a Chromium agent browser your real login is to use the **same profile**, via the tool's own mechanism:
 
-One-time Chrome step (Chrome 136+): Chrome no longer exposes remote debugging on your default profile via a command-line flag. On **Chrome 144+** enable it once at `chrome://inspect#remote-debugging` (toggle on); `attach` prints these steps when the endpoint isn't live yet. This keeps your real profile -- all cookies, localStorage, and device-bound (DBSC) sessions match.
+- **browser-use:** `browser-use --profile Default` — drives your real Chrome profile natively (full fidelity). Requires your normal Chrome to be **closed** (one Chrome per profile dir), and on Chrome 136+ enable `chrome://inspect#remote-debugging` once.
+- **agent-browser:** `agent-browser --profile <dir>` likewise uses a real profile dir.
 
-Older Chrome, or want an isolated profile? Use the fallback:
+agentcookie's role for these tools is therefore limited; the cookie-delivery surfaces agentcookie *does* carry reliably are the cross-machine **sink** and the **cmux WebKit** loop (above).
 
-```bash
-agentcookie attach --fallback   # seed a dedicated debug Chrome from your default profile, attach to that
-```
+> The `agentcookie attach` command and its `--fallback` debug profile remain in the binary as scaffolding (Chrome version/policy detection, a loopback debug Chrome, a `doctor` reachability check), but they do not reliably carry a hardened login into browser-use/agent-browser for the reasons above. Treat them as experimental. The concrete, shipped win from this work is the cookie-injector correctness fix below.
 
-The fallback copies cookies + localStorage into a separate `~/.agentcookie/chrome-debug` profile and launches it on a loopback debug port. Device-bound (DBSC) sessions cannot transfer to a separate profile, so a few sites may still read as logged-out there (`attach` reports the skipped count). The debug port is bound to `127.0.0.1` only.
+### Cookie-injector fix (helps the sink and cmux)
 
-Configure defaults under an `agent_browsers:` block in `source.yaml` (flags override):
+While building the above, two real bugs were found and fixed in the shared CDP cookie injector (`internal/cdp`) that the **sink** and **cmux** delivery already use:
 
-```yaml
-agent_browsers:
-  # targets:            # optional; default = all installed
-  #   - browser-use
-  #   - agent-browser
-  # port: 9222          # optional; loopback debug port
-```
+- It set a `Domain` attribute on every cookie. Chrome **hard-rejects** `__Host-` cookies that carry a `Domain`, and host-only cookies should stay host-only. Host-bound login cookies (GitHub `user_session`, `dotcom_user`, `__Host-user_session_same_site`) were silently dropped.
+- It tore down its headless Chrome with a SIGKILL, so cookies set over CDP never flushed to SQLite — dropping cookies nondeterministically.
 
-`agentcookie doctor` reports whether Chrome is attachable and which agent browsers are wired.
+After the fix, those GitHub login cookies persist correctly into a seeded profile (6 → 13 cookies). This makes the sink's cookie delivery materially more faithful for modern sites.
 
 ## Install
 
@@ -286,7 +277,7 @@ In short: DBSC narrows one corner of the web (today, mostly Google) and agentcoo
 | [v0.11 adapter runbook](docs/runbook-v0.11-adapter-cookie-push.md) | adapter mechanism + how to write your own |
 | [v0.12 security runbook](docs/runbook-v0.12-security-hardening.md) | sealed master key, tailnet-only listeners, rate-limited pairing |
 | [v0.12 codesign runbook](docs/runbook-v0.12-codesign.md) | Developer ID signing, notarization, CI secrets, renewal |
-| [v0.14 agent-browser attach runbook](docs/runbook-v0.14-agent-browser-attach.md) | attach browser-use / agent-browser to your real Chrome over CDP; the Chrome 144+ enable step; the debug-profile fallback |
+| [v0.14 agent browsers + injector fix](docs/runbook-v0.14-agent-browser-attach.md) | why a hardened login can't be transplanted into a separate agent browser, the same-profile path that works, and the cookie-injector correctness fix for the sink/cmux |
 | [Secrets bus v1 spec](docs/spec-agentcookie-secrets-bus-v1.md) | wire format and on-disk layout for non-cookie auth |
 | [Secrets bus v2 adoption spec](docs/spec-agentcookie-secrets-bus-v2-adoption.md) | `agentcookie.toml` manifest format and discovery rules |
 | [Secrets bus adoption runbook](docs/runbook-secrets-bus-adoption.md) | migrating a CLI from imperative `secret import-from` to manifest-driven sync |

@@ -1,124 +1,76 @@
-# Runbook: v0.14 agent-browser attach
+# Runbook: v0.14 agent browsers + cookie-injector fix
 
-Make a Chromium agent browser (browser-use, vercel-labs agent-browser)
-share your real Chrome session over the DevTools Protocol, so it is logged
-in everywhere you are -- the fix for "are you sure you're logged in?" during
-agent navigation and HAR sniffing.
+This work set out to give Chromium agent browsers (browser-use, vercel-labs
+agent-browser) your real Chrome login the same way agentcookie does for the
+cross-machine sink and the cmux WebKit pane. Testing showed that goal is not
+reliably achievable for hardened logins, and the durable win turned out to be
+a correctness fix in the shared cookie injector. This runbook records both
+honestly so the next person does not repeat the investigation.
 
-This is distinct from the cmux loop. cmux is WebKit and cannot CDP-attach,
-so it gets *injected* cookies (`agentcookie cmux-sync`). browser-use and
-agent-browser are Chromium and *attach* to the real browser instead of
-receiving a copy, which is the only way device-bound (DBSC) logins and
-localStorage-token sessions come along.
+## Finding: you cannot transplant a hardened login into a separate agent browser
 
-## Why attach instead of copy
+Tested against GitHub (Chrome 148) with two transplant methods:
 
-Copying cookies into a fresh agent-browser profile fails for two common
-session types:
+1. **CDP attach (`browser-use --cdp-url` / `agent-browser --cdp`).** These
+   tools open an isolated browser context over CDP that does not inherit the
+   connected Chrome profile's cookies. A session driven this way saw ~7
+   cookies (only what it set itself), not the profile's thousands. GitHub
+   read logged-out.
 
-- **Device-bound (DBSC) cookies** cannot be replayed into another browser
-  or profile. The binding key lives in the OS keystore, tied to the
-  originating browser; a copied cookie row is rejected by the server.
-- **Auth in localStorage/IndexedDB** (common in SPAs) is not a cookie and
-  is not carried by a cookie copy.
+2. **Playwright `storage_state` snapshot.** agentcookie can emit a correct
+   storage_state JSON from real Chrome (verified: `logged_in=yes`,
+   `dotcom_user=mvanhorn`, a valid 48-char `user_session`). But when an agent
+   browser loads it, Chromium accepts the non-httpOnly and session cookies
+   and **drops the persistent + httpOnly session cookies** that actually
+   authenticate (`user_session`, `__Host-user_session_same_site`). This is
+   intentional browser hardening, not an agentcookie bug. `/settings/profile`
+   redirected to login.
 
-Attaching to the real Chrome sidesteps both: there is one session.
+The discriminator was clean: cookies that are *both* persistent *and*
+httpOnly were dropped on load; session or non-httpOnly cookies loaded fine.
 
-## One-time Chrome setup (Chrome 136+)
+### What works instead: same profile
 
-Since Chrome 136, `--remote-debugging-port` is refused on the default
-profile (a malware-hardening change). To attach your real profile you must
-use the Chrome 144+ user-gated path:
+The only reliable way to give a Chromium agent browser your real login is to
+use the same profile, via the tool's own flag:
 
-1. Open `chrome://inspect#remote-debugging`.
-2. Turn the remote-debugging toggle on.
+- `browser-use --profile Default` — native real-profile drive (full
+  fidelity). Needs your normal Chrome **closed**; on Chrome 136+ enable
+  `chrome://inspect#remote-debugging` once.
+- `agent-browser --profile <dir>` — same idea.
 
-That exposes a loopback CDP endpoint for your real profile without a wide
-open command-line port. `agentcookie attach` prints these exact steps when
-it cannot reach the endpoint on a Chrome 144+ install.
+agentcookie does not need to be in the loop for that path. The surfaces
+agentcookie *does* carry reliably remain the sink and cmux.
 
-Check your Chrome version at `chrome://version` (or `attach --check`, which
-reports the detected version and policy tier).
+## The shipped win: cookie-injector correctness fix
 
-## Wire it
+The investigation surfaced two real bugs in `internal/cdp` (the CDP cookie
+injector the **sink** and **cmux** delivery already use):
 
-```bash
-agentcookie attach              # wire every installed agent browser (default)
-agentcookie attach --print      # show the endpoint + launch snippets, write nothing
-agentcookie attach --check      # report reachability, policy tier, and per-target wiring
-agentcookie attach --target browser-use --wire
-```
+1. **Domain on host-only / `__Host-` cookies.** `buildCookieParam` set a
+   `Domain` attribute on every cookie. Chrome hard-rejects `__Host-` cookies
+   that carry a `Domain`, and host-only cookies (host_key without a leading
+   dot) should stay host-only. The fix sets `Domain` only for genuinely
+   domain-scoped cookies (leading dot, non-`__Host-`) and enforces the
+   `__Host-` mandates (Secure, Path `/`, no Domain).
 
-`--wire` writes a launcher per agent browser at
-`~/.agentcookie/agent-browser/<tool>-attached`. Running that launcher runs
-the tool already attached:
+2. **No flush on close.** `InjectCookies` cancelled the headless Chrome
+   context (SIGKILL). Cookies set over CDP live in Chrome's in-memory store
+   and only flush to SQLite on a clean shutdown, so the kill dropped cookies
+   nondeterministically and left the profile SingletonLock held. The fix
+   calls `chromedp.Cancel` for a graceful close that flushes and waits.
 
-```bash
-~/.agentcookie/agent-browser/browser-use-attached open https://example.com
-```
+Verified: GitHub's host-bound login cookies (`user_session`, `dotcom_user`,
+`__Host-user_session_same_site`) go from silently dropped to persisted (6 →
+13 cookies in a seeded profile). This makes the sink's delivery faithful for
+modern sites that use `__Host-`/host-only session cookies.
 
-The launcher bakes the stable `http://127.0.0.1:<port>` endpoint, not the
-per-session WebSocket URL (which changes on every Chrome restart), so it
-keeps working across restarts as long as the `chrome://inspect` toggle
-stays on.
+## Status of `agentcookie attach`
 
-Equivalent one-shot flags, if you'd rather not use the launcher:
-
-- browser-use: `browser-use --cdp-url http://127.0.0.1:9222`, or
-  `browser-use --connect` (auto-discover).
-- agent-browser: `agent-browser --cdp 9222`, or `agent-browser
-  --auto-connect`.
-
-## The tradeoff
-
-When attached to your real Chrome, the agent drives your **live** browser
-session. Actions happen in the browser you use. While the debug endpoint is
-open, any process running as your user can connect to it (see
-`docs/threat-model.md`). Enable it when running agents; turn the
-`chrome://inspect` toggle off when you're done. For an isolated session,
-use the fallback below.
-
-## Fallback: a synced debug profile
-
-For Chrome older than 144, or when you want the agent browser isolated from
-your live session:
-
-```bash
-agentcookie attach --fallback
-```
-
-This seeds a dedicated profile at `~/.agentcookie/chrome-debug` with your
-default profile's cookies and localStorage, launches it on a loopback debug
-port, and wires the agent browsers to it.
-
-Limits of the fallback:
-
-- **DBSC sessions do not transfer** to a separate profile -- a few sites may
-  still read as logged-out. `attach --fallback` reports the skipped count.
-- It is **one-shot**: it seeds and launches once. Continuous re-sync on
-  every Chrome cookie change is a planned follow-up (it requires CDP-based
-  re-injection to avoid a profile-lock conflict with the running debug
-  Chrome).
-
-## Configure defaults
-
-`source.yaml` (flags override):
-
-```yaml
-agent_browsers:
-  # targets:            # optional; default = all installed
-  #   - browser-use
-  #   - agent-browser
-  # port: 9222          # optional; loopback debug port
-```
-
-## Verify
-
-```bash
-agentcookie attach --check     # endpoint + per-target wiring
-agentcookie doctor             # includes the "agent browser attach" check
-```
-
-`doctor` reports whether Chrome is attachable on CDP and which agent
-browsers are wired, and prints the remediation when something is off
-(debugging not enabled, or a target not yet wired).
+The `attach` command, its `--fallback` debug profile, the Chrome
+version/policy gate, and the `doctor` reachability check remain in the binary
+as scaffolding. They correctly seed a profile and detect Chrome's debugging
+posture, but they do **not** reliably carry a hardened login into the agent
+browsers (see the finding above). Treat them as experimental until/unless the
+agent browsers expose a profile-context attach that inherits cookies, or
+support an unhardened-cookie storage_state path.
