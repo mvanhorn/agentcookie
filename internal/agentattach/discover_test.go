@@ -121,3 +121,18 @@ func TestDiscoverAt_Non200IsUnreachable(t *testing.T) {
 		t.Errorf("Tier = %v, want auto-connect (from installed version)", d.Tier)
 	}
 }
+
+func TestDiscoverAt_UnreachableLegacy(t *testing.T) {
+	srv := httptest.NewServer(versionHandler("", ""))
+	url := srv.URL
+	srv.Close()
+
+	d := discoverAt(context.Background(), url, 9222, func() int { return 120 })
+
+	if d.Tier != TierLegacy {
+		t.Errorf("Tier = %v, want legacy", d.Tier)
+	}
+	if !strings.Contains(d.Remediation, "--remote-debugging-port") {
+		t.Errorf("legacy remediation should mention --remote-debugging-port, got %q", d.Remediation)
+	}
+}

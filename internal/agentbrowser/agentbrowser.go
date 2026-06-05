@@ -38,8 +38,6 @@ type Wirer interface {
 	Name() string
 	// IsInstalled reports whether the agent browser binary is present.
 	IsInstalled() bool
-	// BinaryPath returns the resolved agent-browser binary path.
-	BinaryPath() string
 	// LauncherPath returns the path Wire writes its launcher to, whether
 	// or not it exists yet.
 	LauncherPath() string
@@ -63,12 +61,17 @@ type WireResult struct {
 	// LauncherPath is the executable the user/agent should invoke to get
 	// an attached session.
 	LauncherPath string
-	// Note is a one-line human explanation of what was wired.
-	Note string
 }
 
-// DefaultDir is where launcher scripts are written.
+// launcherSubdir is the subdirectory under ~/.agentcookie where launcher
+// scripts are written.
 const launcherSubdir = "agent-browser"
+
+// binaryInstalled reports whether path exists and is a regular file.
+func binaryInstalled(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
 
 // dirOverride lets tests redirect the launcher directory. Empty means
 // the real ~/.agentcookie/agent-browser.

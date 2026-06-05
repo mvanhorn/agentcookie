@@ -39,14 +39,9 @@ func newBrowserUseAt(binary string) *BrowserUse {
 
 func (b *BrowserUse) Name() string { return "browser-use" }
 
-func (b *BrowserUse) BinaryPath() string { return b.binary }
-
 func (b *BrowserUse) LauncherPath() string { return launcherPathNoCreate("browser-use-attached") }
 
-func (b *BrowserUse) IsInstalled() bool {
-	info, err := os.Stat(b.binary)
-	return err == nil && !info.IsDir()
-}
+func (b *BrowserUse) IsInstalled() bool { return binaryInstalled(b.binary) }
 
 // cdpURL resolves the AttachTarget to a browser-use --cdp-url value.
 // It prefers the stable loopback http:// endpoint (http://127.0.0.1:port)
@@ -83,10 +78,7 @@ func (b *BrowserUse) Wire(target AttachTarget) (WireResult, error) {
 	if err != nil {
 		return WireResult{}, err
 	}
-	return WireResult{
-		LauncherPath: path,
-		Note:         fmt.Sprintf("Run %s to drive browser-use attached to your real Chrome.", path),
-	}, nil
+	return WireResult{LauncherPath: path}, nil
 }
 
 // LaunchSnippet returns the one-shot command for attaching without

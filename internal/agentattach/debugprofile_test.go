@@ -96,3 +96,34 @@ func readFile(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+// Launch, waitReachable, and Stop require a real Chrome binary on a
+// loopback debug port and are exercised by manual/integration runs, not
+// unit tests; the pure seed/copy/args helpers above carry the unit coverage.
+
+func TestCopyTree_SkipsSymlinks(t *testing.T) {
+	srcProfile := t.TempDir()
+	ls := filepath.Join(srcProfile, "Local Storage", "leveldb")
+	if err := os.MkdirAll(ls, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(ls, "000005.ldb"), "real")
+	// A symlink pointing outside the source tree must not be copied.
+	outside := filepath.Join(t.TempDir(), "secret")
+	mustWrite(t, outside, "do-not-copy")
+	if err := os.Symlink(outside, filepath.Join(ls, "evil-link")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	dp := &DebugProfile{Dir: t.TempDir(), Port: 9333}
+	n, err := dp.CopyLocalStorage(srcProfile)
+	if err != nil {
+		t.Fatalf("CopyLocalStorage: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("copied %d files, want 1 (symlink skipped)", n)
+	}
+	if _, err := os.Lstat(filepath.Join(dp.Dir, "Local Storage", "leveldb", "evil-link")); err == nil {
+		t.Error("symlink should not have been copied into the debug profile")
+	}
+}

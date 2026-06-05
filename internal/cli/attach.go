@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -258,7 +259,7 @@ func wireAttach(out io.Writer, d agentattach.Discovery, wirers []agentbrowser.Wi
 			continue
 		}
 		installed++
-		results = append(results, wireOutcome{Name: w.Name(), Launcher: res.LauncherPath, Note: res.Note})
+		results = append(results, wireOutcome{Name: w.Name(), Launcher: res.LauncherPath})
 	}
 
 	if asJSON {
@@ -298,7 +299,6 @@ func wireAttach(out io.Writer, d agentattach.Discovery, wirers []agentbrowser.Wi
 type wireOutcome struct {
 	Name     string `json:"name"`
 	Launcher string `json:"launcher,omitempty"`
-	Note     string `json:"note,omitempty"`
 	Skipped  bool   `json:"skipped,omitempty"`
 	Reason   string `json:"reason,omitempty"`
 	Error    string `json:"error,omitempty"`
@@ -325,8 +325,4 @@ func attachStatusLine(d agentattach.Discovery) string {
 
 // errNotReachable is returned (after printing) so `--check` exits non-zero
 // for scripting without an extra error line.
-var errNotReachable = errStr("chrome debug endpoint not reachable")
-
-type errStr string
-
-func (e errStr) Error() string { return string(e) }
+var errNotReachable = errors.New("chrome debug endpoint not reachable")

@@ -65,8 +65,10 @@ func (dp *DebugProfile) SeedCookies(ctx context.Context, cookies []chrome.Cookie
 }
 
 // localStorageRel is the Chrome profile-relative path to the localStorage
-// LevelDB tree.
-var localStorageRel = filepath.Join("Local Storage")
+// LevelDB tree, matching chromepaths.LocalStorageLevelDB (the "leveldb"
+// subdir under "Local Storage"). Copying just the LevelDB tree avoids
+// dragging unrelated sibling files into the debug profile.
+var localStorageRel = filepath.Join("Local Storage", "leveldb")
 
 // CopyLocalStorage copies the localStorage LevelDB tree from srcProfileDir
 // into the debug profile (KTD6: file copy, no LevelDB parse). It must run

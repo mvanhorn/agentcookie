@@ -2,7 +2,6 @@ package agentbrowser
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 )
 
@@ -37,14 +36,9 @@ func newAgentBrowserAt(binary string) *AgentBrowser {
 
 func (a *AgentBrowser) Name() string { return "agent-browser" }
 
-func (a *AgentBrowser) BinaryPath() string { return a.binary }
-
 func (a *AgentBrowser) LauncherPath() string { return launcherPathNoCreate("agent-browser-attached") }
 
-func (a *AgentBrowser) IsInstalled() bool {
-	info, err := os.Stat(a.binary)
-	return err == nil && !info.IsDir()
-}
+func (a *AgentBrowser) IsInstalled() bool { return binaryInstalled(a.binary) }
 
 // Wire writes a launcher at ~/.agentcookie/agent-browser/agent-browser-attached
 // that execs `agent-browser --cdp <port> "$@"`. The port is an int, so no
@@ -61,10 +55,7 @@ func (a *AgentBrowser) Wire(target AttachTarget) (WireResult, error) {
 	if err != nil {
 		return WireResult{}, err
 	}
-	return WireResult{
-		LauncherPath: path,
-		Note:         fmt.Sprintf("Run %s to drive agent-browser attached to your real Chrome.", path),
-	}, nil
+	return WireResult{LauncherPath: path}, nil
 }
 
 // LaunchSnippet returns the one-shot attach command. `--auto-connect`
