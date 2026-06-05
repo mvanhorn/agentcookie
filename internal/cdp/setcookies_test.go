@@ -147,3 +147,48 @@ func TestBuildCookieParam_SessionCookie(t *testing.T) {
 		t.Errorf("session cookie should have nil Expires, got non-nil")
 	}
 }
+
+// TestBuildCookieParam_HostOnlyOmitsDomain confirms a host-only cookie
+// (host_key without a leading dot) is injected with NO Domain attribute,
+// so Chrome scopes it to the exact host via the URL rather than widening
+// it to subdomains (and so host-bound login cookies actually land).
+func TestBuildCookieParam_HostOnlyOmitsDomain(t *testing.T) {
+	c := chrome.Cookie{HostKey: "github.com", Name: "user_session", Value: "v", Path: "/", IsSecure: 1, IsHTTPOnly: 1, SameSite: 1}
+	got := buildCookieParam(c, "v")
+	if got.Domain != "" {
+		t.Errorf("host-only cookie must have empty Domain, got %q", got.Domain)
+	}
+	if got.URL != "https://github.com/" {
+		t.Errorf("URL: got %q", got.URL)
+	}
+}
+
+// TestBuildCookieParam_HostPrefixRejectionGuard confirms a __Host- cookie
+// is injected with no Domain and the mandatory Secure + Path "/" so Chrome
+// does not hard-reject it.
+func TestBuildCookieParam_HostPrefixRejectionGuard(t *testing.T) {
+	// Deliberately pass a leading-dot host_key and a non-root path to prove
+	// the __Host- handling overrides both.
+	c := chrome.Cookie{HostKey: ".github.com", Name: "__Host-user_session_same_site", Value: "v", Path: "/app", IsSecure: 0, SameSite: 2}
+	got := buildCookieParam(c, "v")
+	if got.Domain != "" {
+		t.Errorf("__Host- cookie must have empty Domain, got %q", got.Domain)
+	}
+	if !got.Secure {
+		t.Errorf("__Host- cookie must be Secure")
+	}
+	if got.Path != "/" {
+		t.Errorf("__Host- cookie must have Path /, got %q", got.Path)
+	}
+}
+
+// TestBuildCookieParam_DomainCookieKeepsDomain confirms a genuinely
+// domain-scoped cookie (leading dot, not __Host-) still carries its
+// dot-stripped Domain so its subdomain scope round-trips.
+func TestBuildCookieParam_DomainCookieKeepsDomain(t *testing.T) {
+	c := chrome.Cookie{HostKey: ".example.com", Name: "sess", Value: "v", Path: "/", IsSecure: 1}
+	got := buildCookieParam(c, "v")
+	if got.Domain != "example.com" {
+		t.Errorf("domain cookie must keep dot-stripped Domain, got %q", got.Domain)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/cdp"
@@ -77,6 +78,20 @@ func InjectCookies(ctx context.Context, profileDir string, cookies []chrome.Cook
 	if err := chromedp.Run(chromeCtx, network.SetCookies(params)); err != nil {
 		return fmt.Errorf("cdp.InjectCookies: Network.SetCookies (%d cookies, profile=%s): %w", len(params), profileDir, err)
 	}
+
+	// Gracefully close the browser and WAIT for it to exit before
+	// returning. Cookies set via Network.setCookies live in Chrome's
+	// in-memory cookie store and are only flushed to the profile's SQLite
+	// on a clean shutdown. The deferred context cancels below SIGKILL the
+	// process, which loses un-flushed writes nondeterministically and
+	// leaves the profile's SingletonLock held -- which corrupts the seed
+	// when a persistent Chrome is then launched on the same dir (the
+	// debug-profile fallback) and can silently drop cookies on the sink.
+	// chromedp.Cancel performs the graceful Browser.close and waits for
+	// the process to exit, guaranteeing the flush and lock release.
+	if err := chromedp.Cancel(chromeCtx); err != nil {
+		return fmt.Errorf("cdp.InjectCookies: graceful close (flush): %w", err)
+	}
 	return nil
 }
 
@@ -98,17 +113,41 @@ func InjectCookies(ctx context.Context, profileDir string, cookies []chrome.Cook
 //     Chrome would derive from the same Set-Cookie header sent by the
 //     server, so the semantics round-trip correctly.
 func buildCookieParam(c chrome.Cookie, value string) *network.CookieParam {
-	return &network.CookieParam{
+	p := &network.CookieParam{
 		Name:     c.Name,
 		Value:    value,
 		URL:      synthesizeCookieURL(c),
-		Domain:   normalizeDomain(c.HostKey),
 		Path:     c.Path,
 		Secure:   c.IsSecure == 1,
 		HTTPOnly: c.IsHTTPOnly == 1,
 		SameSite: chromeSameSiteToCDP(c.SameSite),
 		Expires:  cookieExpiresEpoch(c.ExpiresUTC),
 	}
+
+	// Domain attribute: only set it for cookies Chrome stored as
+	// domain-scoped (host_key WITH a leading dot, valid for subdomains).
+	// Host-only cookies must carry NO Domain -- Chrome scopes them to the
+	// exact host via the URL. Two cases are host-only:
+	//   1. host_key without a leading dot (Chrome's host-only form).
+	//   2. __Host--prefixed cookies, which Network.setCookies HARD-REJECTS
+	//      when a Domain is present. Modern host-bound session cookies
+	//      (e.g. GitHub's __Host-user_session_same_site) only land when
+	//      Domain is omitted.
+	// Setting both URL and a Domain on a host-only cookie is also what
+	// silently dropped host-bound login cookies before this fix.
+	isHostPrefixed := strings.HasPrefix(c.Name, "__Host-")
+	if strings.HasPrefix(c.HostKey, ".") && !isHostPrefixed {
+		p.Domain = normalizeDomain(c.HostKey)
+	}
+
+	// __Host- cookies have mandatory attributes (Secure, Path "/"); enforce
+	// them so a slightly-off source row is not rejected wholesale.
+	if isHostPrefixed {
+		p.Secure = true
+		p.Path = "/"
+	}
+
+	return p
 }
 
 // normalizeDomain converts Chrome's host_key form to the CDP-acceptable
