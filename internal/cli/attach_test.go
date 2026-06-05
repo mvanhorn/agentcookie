@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 
@@ -80,7 +81,7 @@ func TestWireAttach_OldChromeRefusesToWire(t *testing.T) {
 func TestPrintAttach_NoMutation(t *testing.T) {
 	d := agentattach.Discovery{Reachable: true, Version: 148, Tier: agentattach.TierAutoConnect}
 	var buf bytes.Buffer
-	if err := printAttach(nil, &buf, d, agentbrowser.All(), agentbrowser.AttachTarget{Port: 9222}, false); err != nil {
+	if err := printAttach(context.Background(), &buf, d, agentbrowser.All(), agentbrowser.AttachTarget{Port: 9222}, false); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
