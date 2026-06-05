@@ -46,17 +46,20 @@ func (b *BrowserUse) IsInstalled() bool {
 	return err == nil && !info.IsDir()
 }
 
-// cdpURL resolves the AttachTarget to a browser-use --cdp-url value:
-// the ws:// browser endpoint when known, otherwise the loopback http://
-// endpoint (which browser-use also accepts).
+// cdpURL resolves the AttachTarget to a browser-use --cdp-url value.
+// It prefers the stable loopback http:// endpoint (http://127.0.0.1:port)
+// over the discovered ws:// browser endpoint: the ws URL embeds a
+// per-session devtools/browser/<id> that changes on every Chrome restart,
+// so baking it into a durable launcher would break after a restart. The
+// http endpoint is stable and browser-use resolves the live ws itself.
 func cdpURL(t AttachTarget) (string, error) {
-	if t.WSEndpoint != "" {
-		return t.WSEndpoint, nil
-	}
 	if t.Port > 0 {
 		return fmt.Sprintf("http://127.0.0.1:%d", t.Port), nil
 	}
-	return "", fmt.Errorf("agentbrowser: AttachTarget has neither WSEndpoint nor Port")
+	if t.WSEndpoint != "" {
+		return t.WSEndpoint, nil
+	}
+	return "", fmt.Errorf("agentbrowser: AttachTarget has neither Port nor WSEndpoint")
 }
 
 // Wire writes a launcher at ~/.agentcookie/agent-browser/browser-use-attached

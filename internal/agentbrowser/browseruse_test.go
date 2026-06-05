@@ -21,9 +21,11 @@ func withTempDir(t *testing.T) string {
 func TestBrowserUse_Wire_WritesExecutableLauncher(t *testing.T) {
 	dir := withTempDir(t)
 	b := newBrowserUseAt("/usr/local/bin/browser-use")
-	endpoint := "ws://127.0.0.1:9222/devtools/browser/abc"
+	// A live ws endpoint is supplied, but the durable launcher must bake the
+	// stable http://127.0.0.1:<port> form, not the per-session ws URL.
+	wantURL := "http://127.0.0.1:9222"
 
-	res, err := b.Wire(AttachTarget{Port: 9222, WSEndpoint: endpoint})
+	res, err := b.Wire(AttachTarget{Port: 9222, WSEndpoint: "ws://127.0.0.1:9222/devtools/browser/abc"})
 	if err != nil {
 		t.Fatalf("Wire: %v", err)
 	}
@@ -42,8 +44,11 @@ func TestBrowserUse_Wire_WritesExecutableLauncher(t *testing.T) {
 
 	body, _ := os.ReadFile(want)
 	s := string(body)
-	if !strings.Contains(s, "--cdp-url") || !strings.Contains(s, endpoint) {
-		t.Errorf("launcher missing attach flag/endpoint:\n%s", s)
+	if !strings.Contains(s, "--cdp-url") || !strings.Contains(s, wantURL) {
+		t.Errorf("launcher missing attach flag/stable endpoint:\n%s", s)
+	}
+	if strings.Contains(s, "devtools/browser/abc") {
+		t.Errorf("launcher baked the per-session ws id; should use stable http endpoint:\n%s", s)
 	}
 	if !strings.Contains(s, "'/usr/local/bin/browser-use'") {
 		t.Errorf("launcher does not exec the real binary:\n%s", s)
@@ -107,7 +112,7 @@ func TestBrowserUse_Wire_PortOnlyUsesHTTP(t *testing.T) {
 func TestBrowserUse_LaunchSnippet(t *testing.T) {
 	b := newBrowserUseAt("/usr/local/bin/browser-use")
 	snip := b.LaunchSnippet(AttachTarget{Port: 9222, WSEndpoint: "ws://127.0.0.1:9222/devtools/browser/abc"})
-	if !strings.Contains(snip, "--cdp-url") || !strings.Contains(snip, "ws://127.0.0.1:9222") {
+	if !strings.Contains(snip, "--cdp-url") || !strings.Contains(snip, "http://127.0.0.1:9222") {
 		t.Errorf("snippet missing attach: %q", snip)
 	}
 	if !strings.Contains(snip, "--connect") {
