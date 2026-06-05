@@ -608,3 +608,45 @@ func writeFile(t *testing.T, dir, name, content string) {
 		t.Fatalf("write %s: %v", name, err)
 	}
 }
+
+func TestLoadSourceAgentBrowsersBlock(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "source.yaml", `
+sink:
+  url: http://example.test:9999/sync
+agent_browsers:
+  targets:
+    - browser-use
+    - agent-browser
+  port: 9333
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+	cfg, err := LoadSource(dir)
+	if err != nil {
+		t.Fatalf("LoadSource: %v", err)
+	}
+	if got := cfg.AgentBrowsers.Port; got != 9333 {
+		t.Errorf("AgentBrowsers.Port = %d, want 9333", got)
+	}
+	if len(cfg.AgentBrowsers.Targets) != 2 || cfg.AgentBrowsers.Targets[0] != "browser-use" {
+		t.Errorf("AgentBrowsers.Targets = %v", cfg.AgentBrowsers.Targets)
+	}
+}
+
+func TestLoadSourceAgentBrowsersAbsentDefaultsZero(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "source.yaml", `
+sink:
+  url: http://example.test:9999/sync
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+	cfg, err := LoadSource(dir)
+	if err != nil {
+		t.Fatalf("LoadSource: %v", err)
+	}
+	if cfg.AgentBrowsers.Port != 0 || len(cfg.AgentBrowsers.Targets) != 0 {
+		t.Errorf("absent agent_browsers should be zero value, got %+v", cfg.AgentBrowsers)
+	}
+}

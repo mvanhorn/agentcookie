@@ -92,3 +92,25 @@ func TestPrintAttach_NoMutation(t *testing.T) {
 		t.Errorf("print should list browser-use:\n%s", out)
 	}
 }
+
+func TestResolveWirers(t *testing.T) {
+	// Flag set wins, even if config targets exist.
+	w, err := resolveWirers("browser-use", true, []string{"agent-browser"})
+	if err != nil || len(w) != 1 || w[0].Name() != "browser-use" {
+		t.Errorf("flag should win: %v err=%v", w, err)
+	}
+	// No flag, config narrows.
+	w, err = resolveWirers("all", false, []string{"agent-browser"})
+	if err != nil || len(w) != 1 || w[0].Name() != "agent-browser" {
+		t.Errorf("config should narrow: %v err=%v", w, err)
+	}
+	// No flag, no config -> all.
+	w, err = resolveWirers("all", false, nil)
+	if err != nil || len(w) < 2 {
+		t.Errorf("default should be all: %v err=%v", w, err)
+	}
+	// Unknown config target errors.
+	if _, err := resolveWirers("all", false, []string{"nope"}); err == nil {
+		t.Error("unknown config target should error")
+	}
+}

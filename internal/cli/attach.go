@@ -11,6 +11,7 @@ import (
 
 	"github.com/mvanhorn/agentcookie/internal/agentattach"
 	"github.com/mvanhorn/agentcookie/internal/agentbrowser"
+	"github.com/mvanhorn/agentcookie/internal/config"
 )
 
 var (
@@ -56,7 +57,17 @@ func init() {
 }
 
 func runAttach(cmd *cobra.Command, args []string) error {
-	wirers, err := selectWirers(attachTarget)
+	// Config provides defaults; explicit flags override. A missing/zero
+	// config block leaves the built-in defaults in place.
+	var configTargets []string
+	if cfg, err := config.LoadSourceLocal(common.ConfigDir); err == nil {
+		if !cmd.Flags().Changed("port") && cfg.AgentBrowsers.Port > 0 {
+			attachPort = cfg.AgentBrowsers.Port
+		}
+		configTargets = cfg.AgentBrowsers.Targets
+	}
+
+	wirers, err := resolveWirers(attachTarget, cmd.Flags().Changed("target"), configTargets)
 	if err != nil {
 		return err
 	}
@@ -104,6 +115,26 @@ func resolveAttachAction(print, wire, check bool) (string, error) {
 	default:
 		return "wire", nil
 	}
+}
+
+// resolveWirers picks the wirers to act on: an explicit --target flag wins;
+// otherwise a config target list narrows the set; otherwise all known.
+func resolveWirers(flagTarget string, flagChanged bool, configTargets []string) ([]agentbrowser.Wirer, error) {
+	if flagChanged {
+		return selectWirers(flagTarget)
+	}
+	if len(configTargets) > 0 {
+		out := make([]agentbrowser.Wirer, 0, len(configTargets))
+		for _, name := range configTargets {
+			w, ok := agentbrowser.Lookup(name)
+			if !ok {
+				return nil, fmt.Errorf("unknown agent_browsers target %q in config (want: browser-use, agent-browser)", name)
+			}
+			out = append(out, w)
+		}
+		return out, nil
+	}
+	return agentbrowser.All(), nil
 }
 
 // selectWirers resolves the --target value to the set of wirers to act on.

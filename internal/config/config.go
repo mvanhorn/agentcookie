@@ -29,6 +29,24 @@ type SourceConfig struct {
 	// browser. Independent of the sink/peer push path; absent = loop off.
 	// Reuses the CmuxRef shape (see SinkConfig.Cmux).
 	Cmux CmuxRef `yaml:"cmux,omitempty" json:"cmux,omitempty"`
+	// AgentBrowsers configures `agentcookie attach`: which Chromium agent
+	// browsers to wire to the real Chrome and on which loopback port.
+	// Absent = act on all installed agent browsers on the default port.
+	AgentBrowsers AgentBrowsersRef `yaml:"agent_browsers,omitempty" json:"agent_browsers,omitempty"`
+}
+
+// AgentBrowsersRef configures the `agentcookie attach` defaults. Flags on
+// attach override these. An absent block decodes to the zero value (no
+// target restriction, default port), so a pre-v0.14 source.yaml stays
+// valid with attach acting on every installed agent browser.
+type AgentBrowsersRef struct {
+	// Targets restricts which agent browsers attach acts on when --target
+	// is not passed. Empty means all known. Values: "browser-use",
+	// "agent-browser".
+	Targets []string `yaml:"targets,omitempty" json:"targets,omitempty"`
+	// Port overrides the default loopback Chrome remote-debugging port
+	// attach probes/wires. Zero means the built-in default (9222).
+	Port int `yaml:"port,omitempty" json:"port,omitempty"`
 }
 
 // SinkConfig captures the sink machine's settings.

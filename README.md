@@ -143,6 +143,40 @@ Run model and the `cmuxOnly` gate:
 
 Keychain note: run the **installed, signed `agentcookie`** binary. Reading Chrome's Safe Storage key is a one-time Keychain grant for that signed binary (set up at `wizard install`), so it does not prompt. Running via `go run` or an unsigned/rebuilt binary will pop the macOS Keychain password prompt on every run, because the grant is scoped per binary.
 
+## Agent browser attach (browser-use, agent-browser)
+
+cmux is WebKit and gets *injected* cookies (above). The Chromium agent browsers used for automation and HAR sniffing -- **browser-use** and vercel-labs **agent-browser** -- are different: instead of copying your session into an empty profile (which loses device-bound logins and localStorage tokens, the usual cause of "are you sure you're logged in?"), agentcookie points them at your *real* Chrome over the DevTools Protocol. There is one session, not a copy.
+
+```bash
+agentcookie attach              # wire every installed agent browser to your real Chrome
+agentcookie attach --print      # show the endpoint + launch snippets, write nothing
+agentcookie attach --check      # report reachability, Chrome policy tier, and wiring
+```
+
+`attach` writes a small launcher (`~/.agentcookie/agent-browser/<tool>-attached`) that runs the agent browser with the right CDP flag, so every invocation attaches. browser-use also accepts `--connect` (auto-discover) and agent-browser `--auto-connect`.
+
+One-time Chrome step (Chrome 136+): Chrome no longer exposes remote debugging on your default profile via a command-line flag. On **Chrome 144+** enable it once at `chrome://inspect#remote-debugging` (toggle on); `attach` prints these steps when the endpoint isn't live yet. This keeps your real profile -- all cookies, localStorage, and device-bound (DBSC) sessions match.
+
+Older Chrome, or want an isolated profile? Use the fallback:
+
+```bash
+agentcookie attach --fallback   # seed a dedicated debug Chrome from your default profile, attach to that
+```
+
+The fallback copies cookies + localStorage into a separate `~/.agentcookie/chrome-debug` profile and launches it on a loopback debug port. Device-bound (DBSC) sessions cannot transfer to a separate profile, so a few sites may still read as logged-out there (`attach` reports the skipped count). The debug port is bound to `127.0.0.1` only.
+
+Configure defaults under an `agent_browsers:` block in `source.yaml` (flags override):
+
+```yaml
+agent_browsers:
+  # targets:            # optional; default = all installed
+  #   - browser-use
+  #   - agent-browser
+  # port: 9222          # optional; loopback debug port
+```
+
+`agentcookie doctor` reports whether Chrome is attachable and which agent browsers are wired.
+
 ## Install
 
 Prereqs: Tailscale running on both Macs, Chrome installed, Go 1.22+ (or a pre-built release).
@@ -252,6 +286,7 @@ In short: DBSC narrows one corner of the web (today, mostly Google) and agentcoo
 | [v0.11 adapter runbook](docs/runbook-v0.11-adapter-cookie-push.md) | adapter mechanism + how to write your own |
 | [v0.12 security runbook](docs/runbook-v0.12-security-hardening.md) | sealed master key, tailnet-only listeners, rate-limited pairing |
 | [v0.12 codesign runbook](docs/runbook-v0.12-codesign.md) | Developer ID signing, notarization, CI secrets, renewal |
+| [v0.14 agent-browser attach runbook](docs/runbook-v0.14-agent-browser-attach.md) | attach browser-use / agent-browser to your real Chrome over CDP; the Chrome 144+ enable step; the debug-profile fallback |
 | [Secrets bus v1 spec](docs/spec-agentcookie-secrets-bus-v1.md) | wire format and on-disk layout for non-cookie auth |
 | [Secrets bus v2 adoption spec](docs/spec-agentcookie-secrets-bus-v2-adoption.md) | `agentcookie.toml` manifest format and discovery rules |
 | [Secrets bus adoption runbook](docs/runbook-secrets-bus-adoption.md) | migrating a CLI from imperative `secret import-from` to manifest-driven sync |
