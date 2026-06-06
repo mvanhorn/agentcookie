@@ -16,16 +16,43 @@ import (
 type fakeCmux struct {
 	calls    [][]string
 	openOut  string
-	openErr  error
+	openErrs []error // consumed in order, one per browser open call
+	openIdx  int
+	listOut  string // workspace list --json response ("" = empty list)
+	listErr  error
+	wsOut    string // workspace create response
+	wsErr    error
 	setErrs  []error // consumed in order, one per browser.cookies.set call
 	setCalls int
 }
 
 func (f *fakeCmux) run(args ...string) (string, error) {
 	f.calls = append(f.calls, args)
+	if len(args) >= 2 && args[0] == "workspace" && args[1] == "list" {
+		if f.listErr != nil {
+			return "", f.listErr
+		}
+		out := f.listOut
+		if out == "" {
+			out = `{"workspaces":[]}`
+		}
+		return out, nil
+	}
+	if len(args) >= 2 && args[0] == "workspace" && args[1] == "create" {
+		if f.wsErr != nil {
+			return "", f.wsErr
+		}
+		out := f.wsOut
+		if out == "" {
+			out = "OK workspace:7"
+		}
+		return out, nil
+	}
 	if len(args) >= 2 && args[0] == "browser" && args[1] == "open" {
-		if f.openErr != nil {
-			return "", f.openErr
+		i := f.openIdx
+		f.openIdx++
+		if i < len(f.openErrs) && f.openErrs[i] != nil {
+			return "", f.openErrs[i]
 		}
 		out := f.openOut
 		if out == "" {
@@ -168,9 +195,17 @@ func TestCmuxPush_OpensSurfaceThenBatchSets(t *testing.T) {
 	if err := a.Push(cookies); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
-	// One open, and both cookies in a single batched set call.
-	if f.calls[0][0] != "browser" || f.calls[0][1] != "open" {
-		t.Errorf("first call should open a surface, got %v", f.calls[0])
+	// One open (inside the background workspace), and both cookies in a
+	// single batched set call.
+	open := findCall(f.calls, "browser", "open")
+	if open == nil {
+		t.Fatalf("no browser open call, got %v", f.calls)
+	}
+	if !hasFlag(open, "--workspace", "workspace:7") {
+		t.Errorf("open must target the background workspace, got %v", open)
+	}
+	if !hasFlag(open, "--focus", "false") {
+		t.Errorf("open must be unfocused, got %v", open)
 	}
 	if f.setCalls != 1 {
 		t.Errorf("expected 1 batched cookies.set call for 2 cookies, got %d", f.setCalls)
@@ -342,6 +377,99 @@ func countOpens(calls [][]string) int {
 		}
 	}
 	return n
+}
+
+// findCall returns the first recorded call whose leading args match.
+func findCall(calls [][]string, prefix ...string) []string {
+	for _, c := range calls {
+		if len(c) < len(prefix) {
+			continue
+		}
+		match := true
+		for i, p := range prefix {
+			if c[i] != p {
+				match = false
+				break
+			}
+		}
+		if match {
+			return c
+		}
+	}
+	return nil
+}
+
+// hasFlag reports whether args contains the flag followed by value.
+func hasFlag(args []string, flag, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func TestCmuxPush_ReusesExistingNamedWorkspace(t *testing.T) {
+	// A workspace named "agentcookie" from a previous run is reused (cmux
+	// prefixes active titles with a status glyph), so restarts don't
+	// accumulate one background workspace each.
+	f := &fakeCmux{listOut: `{"workspaces":[
+		{"ref":"workspace:2","title":"✳ Claude Code"},
+		{"ref":"workspace:5","title":"⠂ agentcookie"}
+	]}`}
+	a := newTestCmux(f, nil)
+	if err := a.Push([]chrome.Cookie{{HostKey: ".x.com", Name: "a", Value: "1"}}); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if c := findCall(f.calls, "workspace", "create"); c != nil {
+		t.Errorf("existing workspace must be reused, but create was called: %v", c)
+	}
+	open := findCall(f.calls, "browser", "open")
+	if open == nil || !hasFlag(open, "--workspace", "workspace:5") {
+		t.Errorf("open should target the existing workspace:5, got %v", open)
+	}
+}
+
+func TestCmuxPush_RecreatesClosedWorkspace(t *testing.T) {
+	// The cached background workspace was closed by the user between
+	// syncs: browser open fails with a workspace error, and the adapter
+	// recreates the workspace once and retries the open.
+	f := &fakeCmux{openErrs: []error{errors.New("not_found: Workspace not found")}}
+	a := newTestCmux(f, nil)
+	a.workspaceRef = "workspace:stale"
+	if err := a.Push([]chrome.Cookie{{HostKey: ".x.com", Name: "a", Value: "1"}}); err != nil {
+		t.Fatalf("Push should recover by recreating the workspace, got %v", err)
+	}
+	if findCall(f.calls, "workspace", "create") == nil {
+		t.Errorf("expected a workspace create after the stale-workspace open failure, calls: %v", f.calls)
+	}
+	if countOpens(f.calls) != 2 {
+		t.Errorf("expected 2 opens (stale fail + retry), got %d", countOpens(f.calls))
+	}
+	if a.workspaceRef != "workspace:7" {
+		t.Errorf("workspaceRef should be the recreated workspace, got %q", a.workspaceRef)
+	}
+}
+
+func TestFindWorkspaceRef(t *testing.T) {
+	list := `{"workspaces":[
+		{"ref":"workspace:1","title":"✳ Claude Code"},
+		{"ref":"workspace:3","title":"agentcookie"},
+		{"ref":"workspace:4","title":"not-agentcookie"}
+	]}`
+	if got := findWorkspaceRef(list, "agentcookie"); got != "workspace:3" {
+		t.Errorf("exact title: got %q, want workspace:3", got)
+	}
+	glyph := `{"workspaces":[{"ref":"workspace:9","title":"⠐ agentcookie"}]}`
+	if got := findWorkspaceRef(glyph, "agentcookie"); got != "workspace:9" {
+		t.Errorf("glyph-prefixed title: got %q, want workspace:9", got)
+	}
+	if got := findWorkspaceRef(list, "missing"); got != "" {
+		t.Errorf("missing name should return empty, got %q", got)
+	}
+	if got := findWorkspaceRef("not json", "agentcookie"); got != "" {
+		t.Errorf("bad json should return empty, got %q", got)
+	}
 }
 
 func TestCmuxPush_SurfaceErrorAfterReopenHardFails(t *testing.T) {

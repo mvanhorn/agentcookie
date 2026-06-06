@@ -27,6 +27,19 @@ const chromeEpochOffsetSec = 11644473600
 // output, e.g. "OK surface=surface:45 pane=pane:32 placement=split".
 var surfaceRefRE = regexp.MustCompile(`surface:\d+`)
 
+// workspaceRefRE extracts the `workspace:N` ref from `cmux workspace
+// create` output, e.g. "OK workspace:9".
+var workspaceRefRE = regexp.MustCompile(`workspace:\d+`)
+
+// cmuxWorkspaceName is the dedicated background workspace the adapter
+// parks its injection surface in. The cmux-sync LaunchAgent runs outside
+// cmux, so $CMUX_WORKSPACE_ID is unset and a bare `browser open` lands
+// the pane in whatever workspace the user has focused -- right in their
+// face, and reopened on every sync if they close it. A named, unfocused
+// workspace keeps the surface alive without ever entering the user's
+// view.
+const cmuxWorkspaceName = "agentcookie"
+
 // CmuxAdapter delivers synced cookies into cmux's embedded WebKit
 // browser via the cmux control socket, so an agent driving cmux's
 // browser pane wakes up authenticated. It is the fourth delivery
@@ -45,9 +58,12 @@ var surfaceRefRE = regexp.MustCompile(`surface:\d+`)
 //   - browser.cookies.set REQUIRES a browser surface_id; there is no
 //     profile-level set, and browser surfaces are not listed by
 //     surface.list. So the adapter opens its own about:blank surface
-//     (unfocused) and caches it for reuse. Injected cookies persist at
+//     (unfocused, inside the dedicated cmuxWorkspaceName background
+//     workspace) and caches it for reuse. Injected cookies persist at
 //     the WKWebsiteDataStore (profile) level, surviving pane close, so
 //     a single injection authenticates the agent's future panes.
+//   - Surface refs are workspace-scoped: any command that targets the
+//     cached surface by ref must carry the cached workspace ref too.
 //   - expires is Unix seconds; omit it for session cookies. WebKit
 //     clamps far-future expiries to its ~400-day max (expected).
 //   - Cookie values are passed through VERBATIM. The App-Bound (Chrome
@@ -58,8 +74,9 @@ type CmuxAdapter struct {
 	binary       string
 	domainFilter []string
 
-	mu        sync.Mutex
-	surfaceID string // cached browser surface ref, opened lazily, reused
+	mu           sync.Mutex
+	surfaceID    string // cached browser surface ref, opened lazily, reused
+	workspaceRef string // cached background workspace ref hosting the surface
 
 	// run executes a cmux subcommand and returns stdout. Swappable in
 	// tests; defaults to execCmux.
@@ -182,12 +199,27 @@ func (a *CmuxAdapter) Push(cookies []chrome.Cookie) error {
 }
 
 // ensureSurfaceLocked returns the cached browser surface ref, opening an
-// unfocused about:blank pane if none is cached. Caller must hold a.mu.
+// unfocused about:blank pane inside the dedicated background workspace
+// if none is cached. If the cached workspace has been closed by the user
+// since, it is recreated once. Caller must hold a.mu.
 func (a *CmuxAdapter) ensureSurfaceLocked() (string, error) {
 	if a.surfaceID != "" {
 		return a.surfaceID, nil
 	}
-	out, err := a.run("browser", "open", "about:blank", "--focus", "false")
+	ws, err := a.ensureWorkspaceLocked()
+	if err != nil {
+		return "", fmt.Errorf("background workspace: %w", err)
+	}
+	out, err := a.run("browser", "open", "about:blank", "--workspace", ws, "--focus", "false")
+	if err != nil && isWorkspaceError(err) {
+		// The cached workspace went away (user closed it). Recreate once.
+		a.workspaceRef = ""
+		ws, werr := a.ensureWorkspaceLocked()
+		if werr != nil {
+			return "", fmt.Errorf("recreate background workspace after %v: %w", err, werr)
+		}
+		out, err = a.run("browser", "open", "about:blank", "--workspace", ws, "--focus", "false")
+	}
 	if err != nil {
 		return "", err
 	}
@@ -197,6 +229,56 @@ func (a *CmuxAdapter) ensureSurfaceLocked() (string, error) {
 	}
 	a.surfaceID = sid
 	return sid, nil
+}
+
+// ensureWorkspaceLocked returns the cached background workspace ref,
+// finding an existing workspace named cmuxWorkspaceName or creating an
+// unfocused one. Caller must hold a.mu.
+func (a *CmuxAdapter) ensureWorkspaceLocked() (string, error) {
+	if a.workspaceRef != "" {
+		return a.workspaceRef, nil
+	}
+	// Reuse an existing workspace from a previous run so restarts don't
+	// accumulate one workspace each. A list failure is non-fatal: fall
+	// through to create.
+	if out, err := a.run("workspace", "list", "--json"); err == nil {
+		if ref := findWorkspaceRef(out, cmuxWorkspaceName); ref != "" {
+			a.workspaceRef = ref
+			return ref, nil
+		}
+	}
+	out, err := a.run("workspace", "create", "--name", cmuxWorkspaceName, "--focus", "false")
+	if err != nil {
+		return "", err
+	}
+	ref := workspaceRefRE.FindString(out)
+	if ref == "" {
+		return "", fmt.Errorf("could not parse workspace ref from %q", strings.TrimSpace(out))
+	}
+	a.workspaceRef = ref
+	return ref, nil
+}
+
+// findWorkspaceRef scans `workspace list --json` output for a workspace
+// whose title is name. cmux prefixes active-workspace titles with a
+// status glyph ("✳ agentcookie"), so a trailing-word match is accepted
+// alongside the exact one.
+func findWorkspaceRef(listJSON, name string) string {
+	var parsed struct {
+		Workspaces []struct {
+			Ref   string `json:"ref"`
+			Title string `json:"title"`
+		} `json:"workspaces"`
+	}
+	if err := json.Unmarshal([]byte(listJSON), &parsed); err != nil {
+		return ""
+	}
+	for _, w := range parsed.Workspaces {
+		if w.Title == name || strings.HasSuffix(w.Title, " "+name) {
+			return w.Ref
+		}
+	}
+	return ""
 }
 
 // cmuxCookieBatch caps how many cookies ride one browser.cookies.set
@@ -293,6 +375,17 @@ func isSurfaceError(err error) bool {
 	// "not found" (Go's exec.LookPath error contains it).
 	return strings.Contains(msg, "surface") ||
 		strings.Contains(msg, "not a browser")
+}
+
+// isWorkspaceError reports whether err looks like a stale/missing
+// workspace (e.g. the user closed the background workspace), which
+// warrants one recreate. cmux answers "not_found: Workspace not found"
+// for a closed workspace ref.
+func isWorkspaceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "workspace")
 }
 
 // isCmuxUnavailable reports whether err means cmux itself can't be
