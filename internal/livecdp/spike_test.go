@@ -77,11 +77,21 @@ func loadSpikeCookies(t *testing.T, path string) []chrome.Cookie {
 	}
 	out := make([]chrome.Cookie, 0, len(state.Cookies))
 	for _, c := range state.Cookies {
+		// Playwright storage_state expires is Unix seconds (-1 = session).
+		// chrome.Cookie.ExpiresUTC is microseconds-since-1601; map persistent
+		// cookies through so the spike doesn't silently treat them as session
+		// cookies and mask a persistent-cookie injection bug.
+		var expiresUTC int64
+		if c.Expires > 0 {
+			const chromeEpochOffsetSec = 11644473600
+			expiresUTC = int64((c.Expires + chromeEpochOffsetSec) * 1e6)
+		}
 		ck := chrome.Cookie{
-			HostKey: c.Domain,
-			Name:    c.Name,
-			Value:   c.Value,
-			Path:    c.Path,
+			HostKey:    c.Domain,
+			Name:       c.Name,
+			Value:      c.Value,
+			Path:       c.Path,
+			ExpiresUTC: expiresUTC,
 		}
 		if c.Secure {
 			ck.IsSecure = 1
