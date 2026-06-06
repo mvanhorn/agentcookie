@@ -143,6 +143,29 @@ Run model and the `cmuxOnly` gate:
 
 Keychain note: run the **installed, signed `agentcookie`** binary. Reading Chrome's Safe Storage key is a one-time Keychain grant for that signed binary (set up at `wizard install`), so it does not prompt. Running via `go run` or an unsigned/rebuilt binary will pop the macOS Keychain password prompt on every run, because the grant is scoped per binary.
 
+## Agent browsers (browser-use, agent-browser)
+
+cmux is WebKit. The Chromium agent browsers used for automation and HAR sniffing -- **browser-use** and vercel-labs **agent-browser** -- get their own loop: `agent-sync`. It launches a dedicated Chrome on a loopback debug port, reads this Mac's Chrome cookies (same decrypt + blocklist + DBSC pipeline as `source`), and injects them -- as plaintext, over CDP -- into every browser context that Chrome opens, including the context a connector creates for itself. browser-use / agent-browser connect via `--cdp-url` and wake up logged into your sites.
+
+```bash
+agentcookie agent-sync                          # launch + sync, hold until Ctrl-C
+agentcookie agent-sync --headed                 # show the owned browser window
+agentcookie agent-sync --domain "%github.com"   # limit to matching hosts
+```
+
+It prints the connect commands for the running browser:
+
+```bash
+browser-use --cdp-url http://127.0.0.1:9400 open https://github.com
+agent-browser --cdp 9400
+```
+
+Why this works where copying cookies does not: this is **live injection into a running browser**, not a cold on-disk profile or a Playwright `storage_state` file. Cookies go straight into Chrome's in-memory store via CDP, so Chrome 127+ App-Bound Encryption -- which makes cold-profile cookies undecryptable on load -- never applies, and httpOnly + persistent session cookies (the real auth cookies, which Playwright's `addCookies` rejects) carry fine. The owned Chrome uses its own `--user-data-dir`, so the debug port is honored without the `chrome://inspect` toggle (Chrome 136+ only blocks the port on the *default* profile) and your everyday Chrome is never touched. Verified end to end: browser-use connected to `agent-sync` reads logged-in on github.com, including the login-gated `/settings/profile`.
+
+It re-injects whenever your Chrome cookies change (fsnotify, same loop `cmux-sync` uses) and injects each new context as it appears, so a site you log into in your real Chrome becomes logged-in in the agent browser without a restart.
+
+Limits: **device-bound (DBSC) cookies cannot transfer** to another browser -- Google/Workspace account cookies are the broad adopter -- so those sites may still read logged-out; everything else (the large majority) works. Sites whose auth lives in localStorage/IndexedDB rather than cookies are not yet carried (cookies-first; localStorage injection is a planned follow-up). Keychain note above applies (run the signed binary).
+
 ## Install
 
 Prereqs: Tailscale running on both Macs, Chrome installed, Go 1.22+ (or a pre-built release).
@@ -249,6 +272,7 @@ In short: DBSC narrows one corner of the web (today, mostly Google) and agentcoo
 | [Headless quickstart](docs/quickstart-beta.md) | SSH-only install on a headless second Mac |
 | [v0.13 one-password keychain runbook](docs/runbook-v0.13-one-password-keychain.md) | universal delivery: the one-password Safe Storage partition open, the duplicate-item race + converge, and the unsigned-CGO boundary |
 | [v0.10 keychain runbook](docs/runbook-v0.10-keychain-access.md) | legacy sink Keychain ACL setup (superseded by v0.13 for the grant path) |
+| [agent-sync runbook](docs/runbook-agent-sync.md) | log browser-use / agent-browser into your sites via live CDP injection; why cold profiles / storage_state fail |
 | [v0.11 adapter runbook](docs/runbook-v0.11-adapter-cookie-push.md) | adapter mechanism + how to write your own |
 | [v0.12 security runbook](docs/runbook-v0.12-security-hardening.md) | sealed master key, tailnet-only listeners, rate-limited pairing |
 | [v0.12 codesign runbook](docs/runbook-v0.12-codesign.md) | Developer ID signing, notarization, CI secrets, renewal |
