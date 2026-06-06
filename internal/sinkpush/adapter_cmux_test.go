@@ -464,11 +464,41 @@ func TestFindWorkspaceRef(t *testing.T) {
 	if got := findWorkspaceRef(glyph, "agentcookie"); got != "workspace:9" {
 		t.Errorf("glyph-prefixed title: got %q, want workspace:9", got)
 	}
+	// Greptile P2: only a single leading glyph is accepted -- a user
+	// workspace that merely ends with the name must not be hijacked.
+	words := `{"workspaces":[
+		{"ref":"workspace:2","title":"dev agentcookie"},
+		{"ref":"workspace:6","title":"my old agentcookie"}
+	]}`
+	if got := findWorkspaceRef(words, "agentcookie"); got != "" {
+		t.Errorf("word-prefixed titles must not match, got %q", got)
+	}
 	if got := findWorkspaceRef(list, "missing"); got != "" {
 		t.Errorf("missing name should return empty, got %q", got)
 	}
 	if got := findWorkspaceRef("not json", "agentcookie"); got != "" {
 		t.Errorf("bad json should return empty, got %q", got)
+	}
+}
+
+func TestIsWorkspaceError_OnlyMissingWorkspace(t *testing.T) {
+	// Greptile P1: only the closed/missing-ref signature triggers the
+	// one-shot recreate. Quota or permission failures would recur on a
+	// fresh workspace, so recreating for them just leaks workspaces.
+	if !isWorkspaceError(errors.New("not_found: Workspace not found")) {
+		t.Error("missing-workspace error must trigger recreate")
+	}
+	for _, msg := range []string{
+		"workspace quota exceeded",
+		"workspace permission denied",
+		"connection refused",
+	} {
+		if isWorkspaceError(errors.New(msg)) {
+			t.Errorf("%q must not trigger a workspace recreate", msg)
+		}
+	}
+	if isWorkspaceError(nil) {
+		t.Error("nil error must not trigger recreate")
 	}
 }
 

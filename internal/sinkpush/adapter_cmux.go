@@ -261,8 +261,9 @@ func (a *CmuxAdapter) ensureWorkspaceLocked() (string, error) {
 
 // findWorkspaceRef scans `workspace list --json` output for a workspace
 // whose title is name. cmux prefixes active-workspace titles with a
-// status glyph ("✳ agentcookie"), so a trailing-word match is accepted
-// alongside the exact one.
+// single status glyph ("✳ agentcookie"), so a glyph-plus-name title is
+// accepted alongside the exact one -- but not arbitrary leading words
+// ("dev agentcookie" is someone else's workspace).
 func findWorkspaceRef(listJSON, name string) string {
 	var parsed struct {
 		Workspaces []struct {
@@ -274,7 +275,10 @@ func findWorkspaceRef(listJSON, name string) string {
 		return ""
 	}
 	for _, w := range parsed.Workspaces {
-		if w.Title == name || strings.HasSuffix(w.Title, " "+name) {
+		if w.Title == name {
+			return w.Ref
+		}
+		if fields := strings.Fields(w.Title); len(fields) == 2 && fields[1] == name && len([]rune(fields[0])) == 1 {
 			return w.Ref
 		}
 	}
@@ -377,15 +381,18 @@ func isSurfaceError(err error) bool {
 		strings.Contains(msg, "not a browser")
 }
 
-// isWorkspaceError reports whether err looks like a stale/missing
+// isWorkspaceError reports whether err is specifically a stale/missing
 // workspace (e.g. the user closed the background workspace), which
 // warrants one recreate. cmux answers "not_found: Workspace not found"
-// for a closed workspace ref.
+// for a closed workspace ref. Deliberately NOT any error mentioning
+// "workspace" -- a quota or permission failure would recur on the
+// recreated workspace too, so recreating for those is a spurious
+// workspace per failed sync.
 func isWorkspaceError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(strings.ToLower(err.Error()), "workspace")
+	return strings.Contains(strings.ToLower(err.Error()), "workspace not found")
 }
 
 // isCmuxUnavailable reports whether err means cmux itself can't be
