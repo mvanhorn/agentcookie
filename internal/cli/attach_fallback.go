@@ -35,8 +35,8 @@ func fallbackAttach(ctx context.Context, out io.Writer, wirers []agentbrowser.Wi
 	if d := agentattach.Discover(ctx, port); d.Reachable {
 		fmt.Fprintf(out, "A browser is already serving CDP on 127.0.0.1:%d; not launching a second debug Chrome.\n", port)
 		fmt.Fprintln(out, "If that is a stale agentcookie debug Chrome and you want fresh cookies, quit it and re-run.")
-		target := agentbrowser.AttachTarget{Port: port}
-		return wireAttach(out, agentattach.Discovery{Reachable: true, Tier: agentattach.TierLegacy}, wirers, target, common.JSON)
+		target := agentbrowser.AttachTarget{Port: port, WSEndpoint: d.WSEndpoint}
+		return wireAttach(out, d, wirers, target, common.JSON)
 	}
 
 	cfg, err := config.LoadSourceLocal(common.ConfigDir)

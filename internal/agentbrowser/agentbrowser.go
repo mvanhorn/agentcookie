@@ -96,7 +96,7 @@ func launcherDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(base, 0o755); err != nil {
+	if err := os.MkdirAll(base, 0o700); err != nil {
 		return "", err
 	}
 	return base, nil

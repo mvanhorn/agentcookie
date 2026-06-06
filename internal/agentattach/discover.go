@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -93,7 +94,7 @@ func fetchVersion(ctx context.Context, baseURL string) (versionResponse, error) 
 		return versionResponse{}, fmt.Errorf("agentattach: /json/version returned %d", resp.StatusCode)
 	}
 	var v versionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64*1024)).Decode(&v); err != nil {
 		return versionResponse{}, fmt.Errorf("agentattach: decode /json/version: %w", err)
 	}
 	return v, nil
