@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -123,7 +124,16 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 		lastPushed = map[string]uint64{}
 	}
 
+	// The watcher fires pushes as goroutines (the startup push in
+	// particular bypasses the rate cap), so two cycles can overlap. They
+	// would both read the same lastPushed snapshot, compute the same
+	// "everything is new" delta, and double-push the full set -- and race
+	// on the map. Serialize whole cycles.
+	var cycleMu sync.Mutex
+
 	syncOnce := func(ctx context.Context) (int, error) {
+		cycleMu.Lock()
+		defer cycleMu.Unlock()
 		blocklist, err := loadFreshBlocklist()
 		if err != nil {
 			return 0, err
