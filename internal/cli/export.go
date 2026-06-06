@@ -62,7 +62,10 @@ func runExport(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := loadFreshBlocklist(); err != nil {
+	// Load the blocklist once, up front: fails fast on a broken file before any
+	// keychain prompt, and is reused for the read below.
+	blocklist, err := loadFreshBlocklist()
+	if err != nil {
 		return err
 	}
 
@@ -85,10 +88,6 @@ func runExport(cmd *cobra.Command, args []string) error {
 
 	skipDBSC := exportSkipDBSC || os.Getenv("AGENTCOOKIE_SKIP_DBSC_SUSPECT") == "1"
 
-	blocklist, err := loadFreshBlocklist()
-	if err != nil {
-		return err
-	}
 	cookies, st, err := readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
 	if err != nil {
 		return err
