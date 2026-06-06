@@ -16,6 +16,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/livecdp"
 	"github.com/mvanhorn/agentcookie/internal/sinkpush"
+	"github.com/mvanhorn/agentcookie/internal/watcher"
 )
 
 var (
@@ -159,11 +160,36 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(os.Stderr, "Connect an agent browser:")
 	fmt.Fprintf(os.Stderr, "  browser-use --cdp-url %s open https://github.com\n", oc.Endpoint)
 	fmt.Fprintf(os.Stderr, "  agent-browser --cdp %d\n", oc.Port)
-	fmt.Fprintln(os.Stderr, "Watching for new contexts. Ctrl-C to stop.")
+	fmt.Fprintln(os.Stderr, "Watching Chrome cookies + new contexts. Ctrl-C to stop.")
 
 	// Poll for new contexts (e.g. the one browser-use creates on connect) and
-	// inject them. Returns when ctx is cancelled (signal).
-	err = syncer.Run(ctx)
+	// inject them. Runs concurrently with the cookie-change watcher below.
+	go func() {
+		if runErr := syncer.Run(ctx); runErr != nil && runErr != context.Canceled {
+			syncLog("context poll: %v", runErr)
+		}
+	}()
+
+	// Watch the source Chrome cookie DB; on each debounced change, re-inject
+	// current cookies into every live context so a site the user just logged
+	// into in their real Chrome becomes logged-in in the agent browser too.
+	// A failed cycle is logged and the watcher keeps running.
+	w, err := watcher.New(watcher.Config{
+		CookiesPath: cfg.Chrome.DBPath,
+		LogLabel:    "agentcookie agent-sync",
+		Push: func(context.Context) (int, error) {
+			return syncer.ReinjectAll()
+		},
+		OnEvent: func(ev watcher.Event) {
+			if agentSyncVerbose {
+				fmt.Fprintf(os.Stderr, "agentcookie agent-sync: %s\n", ev.String())
+			}
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("init watcher: %w", err)
+	}
+	err = w.Run(ctx)
 	if err != nil && err != context.Canceled {
 		return err
 	}
