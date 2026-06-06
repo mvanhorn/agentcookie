@@ -166,7 +166,7 @@ func TestInject_LiveLogin(t *testing.T) {
 
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(),
 		append(chromedp.DefaultExecAllocatorOptions[:],
-			chromedp.Flag("headless", true),
+			chromedp.Flag("headless", "new"),
 			chromedp.Flag("no-first-run", true),
 			chromedp.Flag("no-default-browser-check", true),
 		)...)
