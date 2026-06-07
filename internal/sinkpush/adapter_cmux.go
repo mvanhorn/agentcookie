@@ -74,9 +74,8 @@ type CmuxAdapter struct {
 	binary       string
 	domainFilter []string
 
-	mu           sync.Mutex
-	surfaceID    string // cached browser surface ref, opened lazily, reused
-	workspaceRef string // last background workspace ref resolved by ensureWorkspaceLocked (informational: refs renumber across cmux restarts, so it is re-resolved by name, never reused)
+	mu        sync.Mutex
+	surfaceID string // cached browser surface ref, opened lazily, reused
 
 	// run executes a cmux subcommand and returns stdout. Swappable in
 	// tests; defaults to execCmux.
@@ -235,22 +234,21 @@ func (a *CmuxAdapter) ensureSurfaceLocked() (string, error) {
 // existing workspace named cmuxWorkspaceName or creating an unfocused
 // one. Caller must hold a.mu.
 //
-// The ref cached in a.workspaceRef is deliberately NOT trusted here:
-// short refs like `workspace:N` renumber when cmux restarts, and this
-// process outlives cmux (the cmux-sync LaunchAgent runs for days). A
-// stale cached ref can silently alias a live user workspace after a
-// restart -- `browser open --workspace` then succeeds without error, the
-// recreate path never fires, and the about:blank pane lands right in the
-// user's view. Resolving by name is the only stable identity, and it
-// only happens on surface (re)open, so the extra `workspace list` is
-// rare.
+// The workspace ref is deliberately re-resolved by NAME every call and
+// never cached on the adapter: short refs like `workspace:N` renumber
+// when cmux restarts, and this process outlives cmux (the cmux-sync
+// LaunchAgent runs for days). A stale cached ref can silently alias a
+// live user workspace after a restart -- `browser open --workspace` then
+// succeeds without error, the recreate path never fires, and the
+// about:blank pane lands right in the user's view. Name lookup is the
+// only stable identity, and this runs only on surface (re)open, so the
+// extra `workspace list` is rare.
 func (a *CmuxAdapter) ensureWorkspaceLocked() (string, error) {
 	// Reuse an existing workspace from a previous run so restarts don't
 	// accumulate one workspace each. A list failure is non-fatal: fall
 	// through to create.
 	if out, err := a.run("workspace", "list", "--json"); err == nil {
 		if ref := findWorkspaceRef(out, cmuxWorkspaceName); ref != "" {
-			a.workspaceRef = ref
 			return ref, nil
 		}
 	}
@@ -262,7 +260,6 @@ func (a *CmuxAdapter) ensureWorkspaceLocked() (string, error) {
 	if ref == "" {
 		return "", fmt.Errorf("could not parse workspace ref from %q", strings.TrimSpace(out))
 	}
-	a.workspaceRef = ref
 	return ref, nil
 }
 
