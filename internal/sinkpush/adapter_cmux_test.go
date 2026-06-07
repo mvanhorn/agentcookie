@@ -14,13 +14,13 @@ import (
 // fakeCmux records the cmux subcommands invoked and returns scripted
 // responses, so adapter tests never shell out to a real cmux.
 type fakeCmux struct {
-	calls   [][]string
-	addOut  string  // new-surface response ("" = a default surface in the targeted workspace)
-	addErrs []error // consumed in order, one per new-surface call
-	addIdx  int
-	listOut string // workspace list --json response ("" = one default workspace)
-	listErr error
-	setErrs []error // consumed in order, one per browser.cookies.set call
+	calls    [][]string
+	addOut   string  // new-surface response ("" = a default surface in the targeted workspace)
+	addErrs  []error // consumed in order, one per new-surface call
+	addIdx   int
+	listOut  string // workspace list --json response ("" = one default workspace)
+	listErr  error
+	setErrs  []error // consumed in order, one per browser.cookies.set call
 	setCalls int
 }
 

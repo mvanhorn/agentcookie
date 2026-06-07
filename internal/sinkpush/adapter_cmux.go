@@ -355,7 +355,6 @@ func isSurfaceError(err error) bool {
 		strings.Contains(msg, "not a browser")
 }
 
-
 // isCmuxUnavailable reports whether err means cmux itself can't be
 // reached (down, or socketControlMode gating a non-cmux-child caller) --
 // a hard failure for the whole push, as opposed to a single rejected
