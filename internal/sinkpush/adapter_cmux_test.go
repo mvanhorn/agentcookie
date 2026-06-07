@@ -451,6 +451,66 @@ func TestCmuxPush_RecreatesClosedWorkspace(t *testing.T) {
 	}
 }
 
+func TestCmuxPush_StaleWorkspaceRefNeverAliasesUserWorkspace(t *testing.T) {
+	// Regression (2026-06-06): cmux restarted underneath the long-lived
+	// cmux-sync daemon. Short refs renumber across restarts, so a
+	// workspace ref cached before the restart can alias a live USER
+	// workspace afterwards. Trusting it made `browser open` succeed
+	// silently -- no workspace error, no recreate -- and parked the
+	// about:blank pane right in the user's view. The adapter must
+	// re-resolve the background workspace by name instead.
+	f := &fakeCmux{listOut: `{"workspaces":[
+		{"ref":"workspace:2","title":"✳ Claude Code"},
+		{"ref":"workspace:5","title":"⠂ Process incoming email task"}
+	]}`}
+	a := newTestCmux(f, nil)
+	a.workspaceRef = "workspace:5" // pre-restart cache; now someone else's workspace
+	if err := a.Push([]chrome.Cookie{{HostKey: ".x.com", Name: "a", Value: "1"}}); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if findCall(f.calls, "workspace", "create") == nil {
+		t.Fatalf("no agentcookie workspace exists, so create is required; calls: %v", f.calls)
+	}
+	open := findCall(f.calls, "browser", "open")
+	if open == nil {
+		t.Fatalf("no browser open call, got %v", f.calls)
+	}
+	if hasFlag(open, "--workspace", "workspace:5") {
+		t.Errorf("open targeted the aliased user workspace:5: %v", open)
+	}
+	if !hasFlag(open, "--workspace", "workspace:7") {
+		t.Errorf("open should target the freshly created background workspace:7, got %v", open)
+	}
+}
+
+func TestCmuxPush_ReopenAfterCmuxRestartReResolvesWorkspaceByName(t *testing.T) {
+	// The exact incident path: a push against the pre-restart cached
+	// surface fails with a surface error, and the reopen must not reuse
+	// the pre-restart workspace ref (which now aliases a user workspace).
+	f := &fakeCmux{
+		listOut: `{"workspaces":[
+			{"ref":"workspace:5","title":"⠂ Process incoming email task"}
+		]}`,
+		setErrs: []error{errors.New("not_found: Surface not found")},
+	}
+	a := newTestCmux(f, nil)
+	a.surfaceID = "surface:12"     // pre-restart cache; surface is gone
+	a.workspaceRef = "workspace:5" // pre-restart cache; aliases a user workspace
+	if err := a.Push([]chrome.Cookie{{HostKey: ".x.com", Name: "a", Value: "1"}}); err != nil {
+		t.Fatalf("Push should recover via reopen, got %v", err)
+	}
+	open := findCall(f.calls, "browser", "open")
+	if open == nil {
+		t.Fatalf("expected a reopen, got %v", f.calls)
+	}
+	if hasFlag(open, "--workspace", "workspace:5") {
+		t.Errorf("reopen targeted the aliased user workspace:5: %v", open)
+	}
+	if !hasFlag(open, "--workspace", "workspace:7") {
+		t.Errorf("reopen should target the recreated background workspace, got %v", open)
+	}
+}
+
 func TestFindWorkspaceRef(t *testing.T) {
 	list := `{"workspaces":[
 		{"ref":"workspace:1","title":"✳ Claude Code"},

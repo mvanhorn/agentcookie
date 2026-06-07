@@ -76,7 +76,7 @@ type CmuxAdapter struct {
 
 	mu           sync.Mutex
 	surfaceID    string // cached browser surface ref, opened lazily, reused
-	workspaceRef string // cached background workspace ref hosting the surface
+	workspaceRef string // last background workspace ref resolved by ensureWorkspaceLocked (informational: refs renumber across cmux restarts, so it is re-resolved by name, never reused)
 
 	// run executes a cmux subcommand and returns stdout. Swappable in
 	// tests; defaults to execCmux.
@@ -212,8 +212,8 @@ func (a *CmuxAdapter) ensureSurfaceLocked() (string, error) {
 	}
 	out, err := a.run("browser", "open", "about:blank", "--workspace", ws, "--focus", "false")
 	if err != nil && isWorkspaceError(err) {
-		// The cached workspace went away (user closed it). Recreate once.
-		a.workspaceRef = ""
+		// The workspace vanished between resolution and open (user closed
+		// it). Re-resolve by name / recreate once.
 		ws, werr := a.ensureWorkspaceLocked()
 		if werr != nil {
 			return "", fmt.Errorf("recreate background workspace after %v: %w", err, werr)
@@ -231,13 +231,20 @@ func (a *CmuxAdapter) ensureSurfaceLocked() (string, error) {
 	return sid, nil
 }
 
-// ensureWorkspaceLocked returns the cached background workspace ref,
-// finding an existing workspace named cmuxWorkspaceName or creating an
-// unfocused one. Caller must hold a.mu.
+// ensureWorkspaceLocked returns the background workspace ref, finding an
+// existing workspace named cmuxWorkspaceName or creating an unfocused
+// one. Caller must hold a.mu.
+//
+// The ref cached in a.workspaceRef is deliberately NOT trusted here:
+// short refs like `workspace:N` renumber when cmux restarts, and this
+// process outlives cmux (the cmux-sync LaunchAgent runs for days). A
+// stale cached ref can silently alias a live user workspace after a
+// restart -- `browser open --workspace` then succeeds without error, the
+// recreate path never fires, and the about:blank pane lands right in the
+// user's view. Resolving by name is the only stable identity, and it
+// only happens on surface (re)open, so the extra `workspace list` is
+// rare.
 func (a *CmuxAdapter) ensureWorkspaceLocked() (string, error) {
-	if a.workspaceRef != "" {
-		return a.workspaceRef, nil
-	}
 	// Reuse an existing workspace from a previous run so restarts don't
 	// accumulate one workspace each. A list failure is non-fatal: fall
 	// through to create.
