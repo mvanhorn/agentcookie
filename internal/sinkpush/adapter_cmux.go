@@ -23,22 +23,9 @@ const cmuxAppCLI = "/Applications/cmux.app/Contents/Resources/bin/cmux"
 // microseconds since 1601; cmux's RPC wants Unix seconds.
 const chromeEpochOffsetSec = 11644473600
 
-// surfaceRefRE extracts the `surface:N` ref from `cmux browser open`
-// output, e.g. "OK surface=surface:45 pane=pane:32 placement=split".
+// surfaceRefRE extracts the `surface:N` ref from `cmux new-surface`
+// output, e.g. "OK surface:29 pane:7 workspace:5".
 var surfaceRefRE = regexp.MustCompile(`surface:\d+`)
-
-// workspaceRefRE extracts the `workspace:N` ref from `cmux workspace
-// create` output, e.g. "OK workspace:9".
-var workspaceRefRE = regexp.MustCompile(`workspace:\d+`)
-
-// cmuxWorkspaceName is the dedicated background workspace the adapter
-// parks its injection surface in. The cmux-sync LaunchAgent runs outside
-// cmux, so $CMUX_WORKSPACE_ID is unset and a bare `browser open` lands
-// the pane in whatever workspace the user has focused -- right in their
-// face, and reopened on every sync if they close it. A named, unfocused
-// workspace keeps the surface alive without ever entering the user's
-// view.
-const cmuxWorkspaceName = "agentcookie"
 
 // CmuxAdapter delivers synced cookies into cmux's embedded WebKit
 // browser via the cmux control socket, so an agent driving cmux's
@@ -51,19 +38,27 @@ const cmuxWorkspaceName = "agentcookie"
 // internal/cli/sink.go at sink startup rather than in init.go, because
 // it carries config (binary path, host filter) that init() cannot see.
 //
+// Injection surface (why a hidden background tab, not a workspace):
+// browser.cookies.set requires a browser surface_id -- there is no
+// profile-level set call. But WebKit cookies persist at the
+// WKWebsiteDataStore (profile) level, shared across every browser
+// surface and surviving pane close (confirmed empirically: a set on one
+// surface is visible to cookies.get on any other). So the surface only
+// has to exist; it never has to be seen. The adapter adds ONE unfocused
+// (`--focus false`) about:blank browser tab to an existing workspace's
+// active pane and caches it. A non-selected browser tab is a hidden
+// webview -- cookies.set still lands on it -- so the only UI artifact is
+// a small tab chip; nothing opens in the user's view and nothing appears
+// in the workspace sidebar. An earlier design parked the surface in a
+// dedicated "agentcookie" workspace, which showed in the sidebar and
+// (because cmux short refs renumber across restarts) could alias a live
+// user workspace and pop the pane into focus; the hidden-tab approach
+// removes the workspace entirely.
+//
 // WebKit cookie semantics (confirmed empirically, differ from Chrome's
 // CDP path):
 //   - Domain is stored VERBATIM. ".example.com" is accepted, so unlike
 //     the CDP injector we do NOT strip the leading dot from host_key.
-//   - browser.cookies.set REQUIRES a browser surface_id; there is no
-//     profile-level set, and browser surfaces are not listed by
-//     surface.list. So the adapter opens its own about:blank surface
-//     (unfocused, inside the dedicated cmuxWorkspaceName background
-//     workspace) and caches it for reuse. Injected cookies persist at
-//     the WKWebsiteDataStore (profile) level, surviving pane close, so
-//     a single injection authenticates the agent's future panes.
-//   - Surface refs are workspace-scoped: any command that targets the
-//     cached surface by ref must carry the cached workspace ref too.
 //   - expires is Unix seconds; omit it for session cookies. WebKit
 //     clamps far-future expiries to its ~400-day max (expected).
 //   - Cookie values are passed through VERBATIM. The App-Bound (Chrome
@@ -75,7 +70,7 @@ type CmuxAdapter struct {
 	domainFilter []string
 
 	mu        sync.Mutex
-	surfaceID string // cached browser surface ref, opened lazily, reused
+	surfaceID string // cached hidden background tab ref, added lazily, reused
 
 	// run executes a cmux subcommand and returns stdout. Swappable in
 	// tests; defaults to execCmux.
@@ -117,9 +112,9 @@ func (a *CmuxAdapter) IsInstalled() bool {
 func (a *CmuxAdapter) CookieHostPatterns() []string { return a.domainFilter }
 
 // Push injects each cookie into cmux's WebKit browser via
-// `cmux rpc browser.cookies.set`. It ensures a cached browser surface
-// exists (opening an unfocused about:blank pane on first use), and
-// reopens once if the cached surface has gone away. Errors are returned
+// `cmux rpc browser.cookies.set`. It ensures a cached hidden background
+// tab exists (adding one unfocused about:blank tab on first use), and
+// re-adds once if the cached surface has gone away. Errors are returned
 // for RunAll to log; a missing or cmuxOnly-gated cmux is a soft failure
 // that never aborts the sync or the other surfaces.
 func (a *CmuxAdapter) Push(cookies []chrome.Cookie) error {
@@ -197,28 +192,23 @@ func (a *CmuxAdapter) Push(cookies []chrome.Cookie) error {
 	return nil
 }
 
-// ensureSurfaceLocked returns the cached browser surface ref, opening an
-// unfocused about:blank pane inside the dedicated background workspace
-// if none is cached. If the cached workspace has been closed by the user
-// since, it is recreated once. Caller must hold a.mu.
+// ensureSurfaceLocked returns the cached injection surface ref, adding an
+// unfocused about:blank browser tab to an existing workspace if none is
+// cached. The tab is hidden (a non-selected webview) -- cookies.set lands
+// on it without it ever being shown, and it adds no sidebar entry.
+// Caller must hold a.mu.
 func (a *CmuxAdapter) ensureSurfaceLocked() (string, error) {
 	if a.surfaceID != "" {
 		return a.surfaceID, nil
 	}
-	ws, err := a.ensureWorkspaceLocked()
+	ws, err := a.hostWorkspaceLocked()
 	if err != nil {
-		return "", fmt.Errorf("background workspace: %w", err)
+		return "", fmt.Errorf("host workspace: %w", err)
 	}
-	out, err := a.run("browser", "open", "about:blank", "--workspace", ws, "--focus", "false")
-	if err != nil && isWorkspaceError(err) {
-		// The workspace vanished between resolution and open (user closed
-		// it). Re-resolve by name / recreate once.
-		ws, werr := a.ensureWorkspaceLocked()
-		if werr != nil {
-			return "", fmt.Errorf("recreate background workspace after %v: %w", err, werr)
-		}
-		out, err = a.run("browser", "open", "about:blank", "--workspace", ws, "--focus", "false")
-	}
+	// --focus false adds the about:blank as a non-selected background tab,
+	// so the user's selected surface stays put and nothing pops into view.
+	// cmux picks the workspace's active pane when --pane is omitted.
+	out, err := a.run("new-surface", "--type", "browser", "--workspace", ws, "--url", "about:blank", "--focus", "false")
 	if err != nil {
 		return "", err
 	}
@@ -230,59 +220,39 @@ func (a *CmuxAdapter) ensureSurfaceLocked() (string, error) {
 	return sid, nil
 }
 
-// ensureWorkspaceLocked returns the background workspace ref, finding an
-// existing workspace named cmuxWorkspaceName or creating an unfocused
-// one. Caller must hold a.mu.
-//
-// The workspace ref is deliberately re-resolved by NAME every call and
-// never cached on the adapter: short refs like `workspace:N` renumber
-// when cmux restarts, and this process outlives cmux (the cmux-sync
-// LaunchAgent runs for days). A stale cached ref can silently alias a
-// live user workspace after a restart -- `browser open --workspace` then
-// succeeds without error, the recreate path never fires, and the
-// about:blank pane lands right in the user's view. Name lookup is the
-// only stable identity, and this runs only on surface (re)open, so the
-// extra `workspace list` is rare.
-func (a *CmuxAdapter) ensureWorkspaceLocked() (string, error) {
-	// Reuse an existing workspace from a previous run so restarts don't
-	// accumulate one workspace each. A list failure is non-fatal: fall
-	// through to create.
-	if out, err := a.run("workspace", "list", "--json"); err == nil {
-		if ref := findWorkspaceRef(out, cmuxWorkspaceName); ref != "" {
-			return ref, nil
-		}
-	}
-	out, err := a.run("workspace", "create", "--name", cmuxWorkspaceName, "--focus", "false")
+// hostWorkspaceLocked returns a workspace to host the hidden injection
+// tab: the first workspace cmux reports. The cmux-sync LaunchAgent runs
+// outside cmux ($CMUX_WORKSPACE_ID unset), so there is no caller
+// workspace to default to; the first listed one is a stable, already-open
+// home that costs no new workspace and no sidebar entry. Resolved fresh
+// every time a surface must be (re)added -- never cached -- because short
+// refs renumber across cmux restarts and this process outlives cmux.
+// Caller must hold a.mu.
+func (a *CmuxAdapter) hostWorkspaceLocked() (string, error) {
+	out, err := a.run("workspace", "list", "--json")
 	if err != nil {
 		return "", err
 	}
-	ref := workspaceRefRE.FindString(out)
+	ref := firstWorkspaceRef(out)
 	if ref == "" {
-		return "", fmt.Errorf("could not parse workspace ref from %q", strings.TrimSpace(out))
+		return "", fmt.Errorf("no cmux workspace to host the injection tab in %q", strings.TrimSpace(out))
 	}
 	return ref, nil
 }
 
-// findWorkspaceRef scans `workspace list --json` output for a workspace
-// whose title is name. cmux prefixes active-workspace titles with a
-// single status glyph ("✳ agentcookie"), so a glyph-plus-name title is
-// accepted alongside the exact one -- but not arbitrary leading words
-// ("dev agentcookie" is someone else's workspace).
-func findWorkspaceRef(listJSON, name string) string {
+// firstWorkspaceRef returns the ref of the first workspace in `workspace
+// list --json` output, or "" if there are none / the JSON is unparseable.
+func firstWorkspaceRef(listJSON string) string {
 	var parsed struct {
 		Workspaces []struct {
-			Ref   string `json:"ref"`
-			Title string `json:"title"`
+			Ref string `json:"ref"`
 		} `json:"workspaces"`
 	}
 	if err := json.Unmarshal([]byte(listJSON), &parsed); err != nil {
 		return ""
 	}
 	for _, w := range parsed.Workspaces {
-		if w.Title == name {
-			return w.Ref
-		}
-		if fields := strings.Fields(w.Title); len(fields) == 2 && fields[1] == name && len([]rune(fields[0])) == 1 {
+		if w.Ref != "" {
 			return w.Ref
 		}
 	}
@@ -385,19 +355,6 @@ func isSurfaceError(err error) bool {
 		strings.Contains(msg, "not a browser")
 }
 
-// isWorkspaceError reports whether err is specifically a stale/missing
-// workspace (e.g. the user closed the background workspace), which
-// warrants one recreate. cmux answers "not_found: Workspace not found"
-// for a closed workspace ref. Deliberately NOT any error mentioning
-// "workspace" -- a quota or permission failure would recur on the
-// recreated workspace too, so recreating for those is a spurious
-// workspace per failed sync.
-func isWorkspaceError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(strings.ToLower(err.Error()), "workspace not found")
-}
 
 // isCmuxUnavailable reports whether err means cmux itself can't be
 // reached (down, or socketControlMode gating a non-cmux-child caller) --
