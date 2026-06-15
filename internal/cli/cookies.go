@@ -37,8 +37,8 @@ with --json.
 		if err != nil {
 			return fmt.Errorf("cookies: resolve sidecar path: %w", err)
 		}
-		// Enforce the same blocklist the sink applies, so a blocked domain
-		// never leaks out through this door.
+		// Enforce the same cookie policy the sink applies, so a filtered
+		// domain never leaks out through this door.
 		bl, err := loadFreshBlocklist()
 		if err != nil {
 			return fmt.Errorf("cookies: load blocklist: %w", err)
@@ -81,7 +81,7 @@ func collectDomainCookies(path, domain string, matcher *protocol.BlocklistMatche
 		if !hostMatchesDomain(c.HostKey, bare) {
 			continue
 		}
-		if matcher != nil && matcher.MatchesHost(c.HostKey) {
+		if matcher != nil && !matcher.ShouldSyncHost(c.HostKey) {
 			continue
 		}
 		matched = append(matched, c)

@@ -257,6 +257,31 @@ domains:
 	}
 }
 
+func TestSinkSyncAllowlistFiltersBeforeWrite(t *testing.T) {
+	fx := newSinkHandlerFixture(t, false)
+	writeCLIFile(t, filepath.Join(fx.configDir, "blocklist.yaml"), `
+version: 1
+policy: allowlist
+domains:
+  - pattern: ".allowed.com"
+`)
+
+	rec := fx.postSync(1, []chrome.Cookie{
+		{HostKey: ".blocked.com", Name: "blocked", Value: "b", Path: "/"},
+		{HostKey: ".allowed.com", Name: "allowed", Value: "a", Path: "/"},
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "dropped 1 non-allowlisted cookies") {
+		t.Errorf("response should report non-allowlisted cookie, got %q", rec.Body.String())
+	}
+	if got := fx.sidecarHosts(); !reflect.DeepEqual(got, []string{".allowed.com"}) {
+		t.Fatalf("sidecar hosts = %v, want only allowed", got)
+	}
+}
+
 func TestSinkSyncMissingBlocklistSyncsAll(t *testing.T) {
 	fx := newSinkHandlerFixture(t, false)
 

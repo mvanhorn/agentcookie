@@ -126,6 +126,61 @@ peer:
 	})
 }
 
+func TestCheckCookiePolicy(t *testing.T) {
+	t.Run("missing blocklist is sync all", func(t *testing.T) {
+		c := checkCookiePolicy(t.TempDir())
+		if c.Severity != SeverityInfo {
+			t.Fatalf("got %q, want INFO", c.Severity)
+		}
+		if !strings.Contains(c.Detail, "sync-all") {
+			t.Errorf("detail should report sync-all, got %q", c.Detail)
+		}
+	})
+	t.Run("allowlist with patterns", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "blocklist.yaml"), `version: 1
+policy: allowlist
+domains:
+  - pattern: "example.com"
+`)
+		c := checkCookiePolicy(dir)
+		if c.Severity != SeverityOK {
+			t.Fatalf("got %q (%q), want OK", c.Severity, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "allowlist") {
+			t.Errorf("detail should report allowlist, got %q", c.Detail)
+		}
+	})
+	t.Run("empty allowlist warns", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "blocklist.yaml"), `version: 1
+policy: allowlist
+domains: []
+`)
+		c := checkCookiePolicy(dir)
+		if c.Severity != SeverityWarn {
+			t.Fatalf("got %q, want WARN", c.Severity)
+		}
+		if !strings.Contains(c.Detail, "0 patterns") {
+			t.Errorf("detail should report empty allowlist, got %q", c.Detail)
+		}
+	})
+	t.Run("malformed policy fails", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "blocklist.yaml"), `version: 1
+policy: denylist
+domains: []
+`)
+		c := checkCookiePolicy(dir)
+		if c.Severity != SeverityFail {
+			t.Fatalf("got %q, want FAIL", c.Severity)
+		}
+		if !strings.Contains(c.Detail, "policy") {
+			t.Errorf("detail should report policy failure, got %q", c.Detail)
+		}
+	})
+}
+
 // TestCheckKeystore covers paired-key presence + mode 0600 enforcement.
 func TestCheckKeystore(t *testing.T) {
 	t.Run("key present mode 0600", func(t *testing.T) {
@@ -692,8 +747,8 @@ peer:
 	// Universal cookie delivery added the Cookie delivery check. Source browser
 	// adapters added the Source adapter check. The cmux delivery surface added
 	// the cmux delivery check.
-	if got := len(report.Checks); got != 18 {
-		t.Fatalf("got %d checks, want 18", got)
+	if got := len(report.Checks); got != 19 {
+		t.Fatalf("got %d checks, want 19", got)
 	}
 
 	// Serialize the envelope and confirm it round-trips.

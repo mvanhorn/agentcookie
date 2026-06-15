@@ -64,6 +64,7 @@ type accountsToggleResult struct {
 }
 
 type accountsListResult struct {
+	Policy   string   `json:"policy"`
 	Domains  []string `json:"domains"`
 	Patterns []string `json:"patterns,omitempty"`
 }
@@ -77,6 +78,9 @@ func runAccountsToggle(cmd *cobra.Command, rawDomain string, enabled bool) error
 	bl, err := config.LoadBlocklist(common.ConfigDir)
 	if err != nil {
 		return err
+	}
+	if bl.PolicyMode() == config.CookiePolicyAllowlist {
+		return fmt.Errorf("accounts: blocklist account toggles are unavailable when blocklist.yaml has policy: allowlist")
 	}
 	patterns := accountBlockPatterns(domain)
 	changed := false
@@ -128,8 +132,17 @@ func emitAccountsList(cmd *cobra.Command, bl *config.Blocklist) error {
 		return enc.Encode(result)
 	}
 	if len(result.Domains) == 0 && len(result.Patterns) == 0 {
+		if bl.PolicyMode() == config.CookiePolicyAllowlist {
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), "agentcookie accounts: allowlist mode has no allowed domains")
+			return err
+		}
 		_, err := fmt.Fprintln(cmd.OutOrStdout(), "agentcookie accounts: all domains enabled (blocklist empty)")
 		return err
+	}
+	if bl.PolicyMode() == config.CookiePolicyAllowlist {
+		if _, err := fmt.Fprintln(cmd.OutOrStdout(), "agentcookie accounts: allowlist mode allowed patterns:"); err != nil {
+			return err
+		}
 	}
 	for _, domain := range result.Domains {
 		if _, err := fmt.Fprintln(cmd.OutOrStdout(), domain); err != nil {
@@ -174,7 +187,7 @@ func accountListResult(bl *config.Blocklist) accountsListResult {
 	}
 	sort.Strings(domains)
 	sort.Strings(others)
-	return accountsListResult{Domains: domains, Patterns: others}
+	return accountsListResult{Policy: bl.CookiePolicySummary(), Domains: domains, Patterns: others}
 }
 
 func addAccountBlock(bl *config.Blocklist, domain string) bool {

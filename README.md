@@ -33,7 +33,7 @@ Logging in twice. Once on your laptop, once again on the Mac your agent lives on
 
 Tools that ship cookies between machines today assume a human is going to click "merge" or unlock a vault or open the destination browser. They were built for switching accounts between two laptops the same person uses. They weren't built for "the agent on the headless Mac mini needs my session in 30 seconds and there's nobody home."
 
-agentcookie is the second pattern. One-way, continuous, unattended replication from the machine you live in to the machine your agents act from. Pairing-derived per-peer keys, blocklist filters on both sides, AES-256-GCM over the Tailscale tailnet's WireGuard channel. The hard parts (macOS Keychain protections, Chrome's App-Bound Encryption, per-CLI auth conventions) are handled.
+agentcookie is the second pattern. One-way, continuous, unattended replication from the machine you live in to the machine your agents act from. Pairing-derived per-peer keys, cookie policy filters on both sides, AES-256-GCM over the Tailscale tailnet's WireGuard channel. The hard parts (macOS Keychain protections, Chrome's App-Bound Encryption, per-CLI auth conventions) are handled.
 
 ## How it works
 
@@ -51,7 +51,7 @@ Chrome cookies change      secrets bus change
                  |
                  v
 agentcookie source --watch  (decrypt Chrome with Keychain key,
-                             filter against blocklist, fold in
+                             filter against cookie policy, fold in
                              secrets bus payload)
                  |
                  v
@@ -134,7 +134,7 @@ agentcookie cmux-sync --watch
 agentcookie cmux-sync --watch --domain "%github.com" --domain "%amazon%"
 ```
 
-It reuses `source.yaml`'s Chrome path and blocklist (so your block rules still apply) and the same decrypt + DBSC filtering as `source`. Configure defaults under a `cmux:` block in `source.yaml` (same shape as the sink block above); flags override.
+It reuses `source.yaml`'s Chrome path and cookie policy (so your block or allow rules still apply) and the same decrypt + DBSC filtering as `source`. Configure defaults under a `cmux:` block in `source.yaml` (same shape as the sink block above); flags override.
 
 Run model and the `cmuxOnly` gate:
 
@@ -145,7 +145,7 @@ Keychain note: run the **installed, signed `agentcookie`** binary. Reading Chrom
 
 ## Agent browsers (browser-use, agent-browser)
 
-cmux is WebKit. The Chromium agent browsers used for automation and HAR sniffing -- **browser-use** and vercel-labs **agent-browser** -- get their own loop: `agent-sync`. It launches a dedicated Chrome on a loopback debug port, reads this Mac's Chrome cookies (same decrypt + blocklist + DBSC pipeline as `source`), and injects them -- as plaintext, over CDP -- into every browser context that Chrome opens, including the context a connector creates for itself. browser-use / agent-browser connect via `--cdp-url` and wake up logged into your sites.
+cmux is WebKit. The Chromium agent browsers used for automation and HAR sniffing -- **browser-use** and vercel-labs **agent-browser** -- get their own loop: `agent-sync`. It launches a dedicated Chrome on a loopback debug port, reads this Mac's Chrome cookies (same decrypt + cookie policy + DBSC pipeline as `source`), and injects them -- as plaintext, over CDP -- into every browser context that Chrome opens, including the context a connector creates for itself. browser-use / agent-browser connect via `--cdp-url` and wake up logged into your sites.
 
 ```bash
 agentcookie agent-sync                          # launch + sync, hold until Ctrl-C
@@ -202,6 +202,24 @@ agentcookie accounts on x.com           # remove those blocklist entries
 agentcookie accounts list               # show disabled domains and custom patterns
 ~~~
 
+By default `blocklist.yaml` is an opt-out filter: omitted `policy`, a missing
+file, or an empty domains list preserves sync-all behavior. For a high-trust
+agent runtime where you only want specific browser sessions to leave the source
+machine, make the policy explicit:
+
+```yaml
+version: 1
+policy: allowlist
+domains:
+  - pattern: "github.com"
+  - pattern: "%.github.com"
+```
+
+Allowlist mode runs on both source and sink. Only matching `host_key` patterns
+sync; an empty allowlist syncs no cookie hosts. `agentcookie status` and
+`agentcookie doctor` report the active cookie policy, and `accounts on/off`
+remain blocklist-only helpers.
+
 Healthy output:
 
 ```
@@ -222,7 +240,7 @@ macOS only on both ends today. The source side reads Chrome on macOS via the Key
 
 Working:
 
-- Continuous laptop to second-Mac sync via fsnotify on Chrome's Cookies file, debounced, blocklist filtered, AES-256-GCM over Tailscale.
+- Continuous laptop to second-Mac sync via fsnotify on Chrome's Cookies file, debounced, cookie-policy filtered, AES-256-GCM over Tailscale.
 - Three cookie delivery surfaces on the sink (Chrome SQLite, plaintext sidecar, per-CLI adapter session files).
 - Works with Printing Press CLIs like Stripe, Linear, Notion, Granola, Slack, Kalshi, ElevenLabs, Mercury, and dozens more: anything with a bearer token or API key reads the secrets bus, anything that reads cookies reads the plaintext sidecar. Five PP CLIs (instacart, airbnb, ebay, pagliacci, table-reservation-goat with OpenTable + Tock) additionally get a bespoke zero-config cookie adapter.
 - Per-CLI secrets bus: bearer tokens, API keys, and `KEY=VALUE` auth blobs ride the same encrypted push and land at `~/.agentcookie/secrets/<cli>/secrets.env` (mode 0600) with an optional sealed twin.

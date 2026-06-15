@@ -116,6 +116,39 @@ func TestAccountsToggleWritesBlocklist(t *testing.T) {
 	}
 }
 
+func TestAccountsToggleRefusesAllowlistMode(t *testing.T) {
+	dir := t.TempDir()
+	oldDir := common.ConfigDir
+	oldJSON := common.JSON
+	common.ConfigDir = dir
+	common.JSON = false
+	t.Cleanup(func() {
+		common.ConfigDir = oldDir
+		common.JSON = oldJSON
+	})
+	writeCLIFile(t, filepath.Join(dir, "blocklist.yaml"), `
+version: 1
+policy: allowlist
+domains:
+  - pattern: "example.com"
+`)
+
+	err := runAccountsToggle(commandWithOutput(&bytes.Buffer{}), "x.com", false)
+	if err == nil {
+		t.Fatal("accounts off should refuse allowlist mode")
+	}
+	if !strings.Contains(err.Error(), "policy: allowlist") {
+		t.Errorf("error should mention allowlist mode, got %v", err)
+	}
+	bl, loadErr := config.LoadBlocklist(dir)
+	if loadErr != nil {
+		t.Fatalf("LoadBlocklist: %v", loadErr)
+	}
+	if got := patternsFromBlocklist(bl); strings.Join(got, ",") != "example.com" {
+		t.Fatalf("allowlist patterns changed unexpectedly: %v", got)
+	}
+}
+
 func TestAccountsOnRemovesLegacyBroadPattern(t *testing.T) {
 	bl := &config.Blocklist{Version: 1, Domains: []config.BlocklistEntry{
 		{Pattern: "%x.com"},

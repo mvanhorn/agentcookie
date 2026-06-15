@@ -14,7 +14,7 @@ import (
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Print local config, blocklist, live daemon state, and any load errors",
+	Short: "Print local config, cookie policy, live daemon state, and any load errors",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		home, _ := os.UserHomeDir()
 		st := struct {
@@ -23,6 +23,7 @@ var statusCmd = &cobra.Command{
 			SourceConfig *config.SourceConfig `json:"source_config,omitempty"`
 			SinkConfig   *config.SinkConfig   `json:"sink_config,omitempty"`
 			Blocklist    *config.Blocklist    `json:"blocklist,omitempty"`
+			CookiePolicy string               `json:"cookie_policy,omitempty"`
 			SourceState  *state.SourceState   `json:"source_state,omitempty"`
 			SinkState    *state.SinkState     `json:"sink_state,omitempty"`
 			Errors       []string             `json:"errors,omitempty"`
@@ -43,6 +44,7 @@ var statusCmd = &cobra.Command{
 		}
 		if bl, err := config.LoadBlocklist(common.ConfigDir); err == nil {
 			st.Blocklist = bl
+			st.CookiePolicy = bl.CookiePolicySummary()
 		} else {
 			st.Errors = append(st.Errors, "blocklist.yaml: "+err.Error())
 		}
@@ -76,7 +78,8 @@ var statusCmd = &cobra.Command{
 			fmt.Println("  sink: not configured")
 		}
 		if st.Blocklist != nil {
-			fmt.Printf("  blocklist v%d: %d patterns\n", st.Blocklist.Version, len(st.Blocklist.Domains))
+			fmt.Printf("  cookie policy: %s\n", st.CookiePolicy)
+			fmt.Printf("  blocklist.yaml v%d: %d patterns\n", st.Blocklist.Version, len(st.Blocklist.Domains))
 			for _, d := range st.Blocklist.Domains {
 				if d.Description != "" {
 					fmt.Printf("    - %s  (%s)\n", d.Pattern, d.Description)
@@ -85,7 +88,7 @@ var statusCmd = &cobra.Command{
 				}
 			}
 		} else {
-			fmt.Println("  blocklist: not configured")
+			fmt.Println("  cookie policy: not configured")
 		}
 		if st.SourceState != nil {
 			ago := "never"

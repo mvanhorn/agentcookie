@@ -154,6 +154,7 @@ func buildReport(d doctorDeps) DoctorReport {
 	// 3. Config.
 	configCheck, srcCfg, sinkCfg := checkConfigLoaded(d.ConfigDir)
 	checks = append(checks, configCheck)
+	checks = append(checks, checkCookiePolicy(d.ConfigDir))
 
 	// 4. Keystore: union of source/sink peer hostnames.
 	peers := []string{}
@@ -560,6 +561,40 @@ func checkConfigLoaded(configDir string) (Check, *config.SourceConfig, *config.S
 		Severity: SeverityOK,
 		Detail:   strings.Join(parts, " + ") + " present, parses OK",
 	}, srcCfg, sinkCfg
+}
+
+func checkCookiePolicy(configDir string) Check {
+	bl, err := config.LoadBlocklist(configDir)
+	if err != nil {
+		return Check{
+			Name:        "Cookie policy",
+			Severity:    SeverityFail,
+			Detail:      "blocklist.yaml: " + err.Error(),
+			Remediation: "fix blocklist.yaml or remove it to return to sync-all",
+		}
+	}
+	summary := bl.CookiePolicySummary()
+	switch {
+	case bl.PolicyMode() == config.CookiePolicyAllowlist && len(bl.Domains) == 0:
+		return Check{
+			Name:        "Cookie policy",
+			Severity:    SeverityWarn,
+			Detail:      "cookie policy: allowlist (0 patterns; no cookie hosts will sync)",
+			Remediation: "add allowed domains to blocklist.yaml or set policy: blocklist",
+		}
+	case summary == "sync-all":
+		return Check{
+			Name:     "Cookie policy",
+			Severity: SeverityInfo,
+			Detail:   "cookie policy: sync-all (no blocklist patterns configured)",
+		}
+	default:
+		return Check{
+			Name:     "Cookie policy",
+			Severity: SeverityOK,
+			Detail:   fmt.Sprintf("cookie policy: %s (%d patterns)", summary, len(bl.Domains)),
+		}
+	}
 }
 
 var errSourceAdapterNoEncryptedCookies = errors.New("no encrypted cookies found")

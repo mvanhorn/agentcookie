@@ -82,6 +82,28 @@ domains:
 	}
 }
 
+func TestSourcePushAllowlistFiltersBeforePush(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: "example.com", Name: "apex", Value: "a", Path: "/"},
+		{HostKey: "www.example.com", Name: "sub", Value: "s", Path: "/"},
+		{HostKey: "blocked.com", Name: "blocked", Value: "b", Path: "/"},
+	})
+	writeCLIFile(t, filepath.Join(fx.configDir, "blocklist.yaml"), `
+version: 1
+policy: allowlist
+domains:
+  - pattern: "example.com"
+  - pattern: "%.example.com"
+`)
+
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	if got := fx.hostsAt(0); !reflect.DeepEqual(got, []string{"example.com", "www.example.com"}) {
+		t.Fatalf("allowlist push hosts = %v", got)
+	}
+}
+
 func TestSourcePushMalformedBlocklistSkipsPushAndRecordsFailure(t *testing.T) {
 	fx := newSourcePushFixture(t, []chrome.Cookie{
 		{HostKey: ".blocked.com", Name: "blocked", Value: "b", Path: "/"},

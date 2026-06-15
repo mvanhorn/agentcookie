@@ -31,7 +31,7 @@ var cmuxSyncCmd = &cobra.Command{
 	Use:   "cmux-sync",
 	Short: "Local loop: read this machine's Chrome and inject the session into this machine's cmux browser",
 	Long: `cmux-sync is the same-machine local loop. It reads this Mac's Chrome
-cookies (decrypt + blocklist + DBSC filter, the same pipeline source uses)
+cookies (decrypt + cookie policy + DBSC filter, the same pipeline source uses)
 and injects them into this Mac's cmux WebKit browser via
 cmux rpc browser.cookies.set, so an agent driving cmux's browser pane wakes
 up authenticated. No sink, no peer, no Tailscale hop.
@@ -75,7 +75,7 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	// Blocklist is optional; fail fast on a broken file, reload per cycle.
+	// Cookie policy is optional; fail fast on a broken file, reload per cycle.
 	if _, err := loadFreshBlocklist(); err != nil {
 		return err
 	}
@@ -149,7 +149,7 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 			push = deltaCookies(cookies, lastPushed)
 		}
 		if cmuxSyncVerbose {
-			fmt.Fprintf(os.Stderr, "agentcookie cmux-sync: read %d, blocked %d, dbsc(warn=%d skip=%d), injecting %d (of %d)\n",
+			fmt.Fprintf(os.Stderr, "agentcookie cmux-sync: read %d, filtered %d, dbsc(warn=%d skip=%d), injecting %d (of %d)\n",
 				st.totalRead, st.totalDropped, st.dbsc.warned, st.dbsc.skipped, len(push), len(cookies))
 		}
 		if cmuxSyncDryRun {

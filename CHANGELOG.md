@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Cookie allowlist policy
+
+`blocklist.yaml` now accepts an explicit `policy` field. Omitted policy and
+`policy: blocklist` preserve the existing behavior: missing or empty
+`blocklist.yaml` means sync-all, and matching patterns are dropped.
+
+Set `policy: allowlist` for high-trust/headless agent deployments where only
+named cookie hosts should leave the source machine. Allowlist mode runs on both
+source and sink; only matching `host_key` patterns pass, and an empty allowlist
+syncs no cookie hosts. `agentcookie status` and `agentcookie doctor` report the
+active policy, and `accounts on/off` remain blocklist-only helpers.
+
 ### cmux local loop on by default
 
 When cmux is installed, `agentcookie wizard install` now wires the local

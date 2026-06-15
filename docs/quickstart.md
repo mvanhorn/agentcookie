@@ -30,7 +30,7 @@ Edit `source.yaml`:
 - `sink.url`: the sink's tailnet URL, e.g. `http://my-mac-mini.tailnet.ts.net:9999/sync`
 - `peer.hostname`: the sink's tailnet hostname
 
-Edit `blocklist.yaml` or run `agentcookie accounts off <domain>` for sites you do not want to sync. Empty blocklist means sync everything.
+Edit `blocklist.yaml` or run `agentcookie accounts off <domain>` for sites you do not want to sync. Empty blocklist means sync everything. For a stricter agent-runtime setup, set `policy: allowlist` in `blocklist.yaml` and list only the exact hosts/subdomains you want to sync; all other cookie hosts are dropped on both source and sink.
 
 On the **sink** (Mac mini):
 

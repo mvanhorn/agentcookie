@@ -43,7 +43,7 @@ type dbscSummary struct {
 
 var sourceCmd = &cobra.Command{
 	Use:   "source",
-	Short: "Read local Chrome cookies, apply the blocklist, and push to the configured sink",
+	Short: "Read local Chrome cookies, apply the cookie policy, and push to the configured sink",
 	Long: `Two modes:
 
   agentcookie source --once   one read+push cycle, then exit. Useful for cron
@@ -79,6 +79,7 @@ func runSource(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	// v0.3: sync-all by default. Blocklist is optional; missing file is fine.
+	// Explicit policy: allowlist still reloads per push below.
 	// Fail fast on a broken file at startup, then reload again for each push.
 	if _, err := loadFreshBlocklist(); err != nil {
 		return err
@@ -237,8 +238,8 @@ func recordSourcePushResult(
 // successfully posted (0 on dry-run or error).
 //
 // v0.3 reads ALL cookies from Chrome in one pass (pattern '%') then applies
-// the blocklist matcher to drop opt-out hosts. Missing or empty blocklist =
-// sync everything.
+// the cookie policy matcher to drop disallowed hosts. Missing or empty
+// blocklist-mode config preserves legacy sync-all behavior.
 func pushOnce(
 	ctx context.Context,
 	cfg *config.SourceConfig,
@@ -251,7 +252,7 @@ func pushOnce(
 ) (int, dbscSummary, error) {
 	var dbsc dbscSummary
 
-	// Shared read pipeline (decrypt -> blocklist -> DBSC). See
+	// Shared read pipeline (decrypt -> cookie policy -> DBSC). See
 	// readFilteredCookies in cookie_pipeline.go; `source` and `cmux-sync`
 	// both use it so they filter identically.
 	all, st, err := readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
@@ -263,7 +264,7 @@ func pushOnce(
 	droppedHosts := st.droppedHosts
 	dbsc = st.dbsc
 	if verbose {
-		fmt.Fprintf(os.Stderr, "agentcookie source: read %d cookies, blocked %d on %d hosts, passing %d\n",
+		fmt.Fprintf(os.Stderr, "agentcookie source: read %d cookies, filtered %d on %d hosts, passing %d\n",
 			totalRead, totalDropped, len(droppedHosts), len(all))
 	}
 
@@ -305,6 +306,8 @@ func pushOnce(
 	result := map[string]any{
 		"cookies_read":         totalRead,
 		"cookies_blocked":      totalDropped,
+		"cookies_filtered":     totalDropped,
+		"cookie_policy":        blocklist.CookiePolicySummary(),
 		"cookies_passing":      len(all),
 		"cookies_dbsc_warned":  dbsc.warned,
 		"cookies_dbsc_skipped": dbsc.skipped,
@@ -315,7 +318,7 @@ func pushOnce(
 	}
 
 	if dryRun || (len(all) == 0 && secretsCLICount == 0) {
-		_ = emit(result, fmt.Sprintf("agentcookie source: %d cookies after blocklist, %d secrets clis (dry-run=%v)%s\n", len(all), secretsCLICount, dryRun, dbscNote(dbsc)))
+		_ = emit(result, fmt.Sprintf("agentcookie source: %d cookies after cookie policy (%s), %d secrets clis (dry-run=%v)%s\n", len(all), blocklist.CookiePolicySummary(), secretsCLICount, dryRun, dbscNote(dbsc)))
 		return 0, dbsc, nil
 	}
 

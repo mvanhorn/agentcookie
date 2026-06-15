@@ -18,7 +18,7 @@ type readStats struct {
 }
 
 // readFilteredCookies reads every cookie from the browser's Cookies DB,
-// applies the blocklist, and runs the DBSC classifier -- the shared read
+// applies the cookie policy, and runs the DBSC classifier -- the shared read
 // pipeline behind both `source` (push to a peer) and `cmux-sync` (local
 // loop into cmux). Keeping it in one place is what guarantees the two
 // paths filter identically.

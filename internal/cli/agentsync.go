@@ -35,7 +35,7 @@ var agentSyncCmd = &cobra.Command{
 	Short: "Run an owned Chrome that Chromium agent browsers connect to, kept logged in from your real Chrome",
 	Long: `agent-sync is the Chromium counterpart to cmux-sync. It launches a
 dedicated Chrome on a loopback debug port, reads this Mac's Chrome cookies
-(decrypt + blocklist + DBSC filter, the same pipeline source uses), and
+(decrypt + cookie policy + DBSC filter, the same pipeline source uses), and
 injects them -- as plaintext, over CDP -- into every browser context that
 Chrome opens, including the context a connector like browser-use creates for
 itself. browser-use / agent-browser connect to it via --cdp-url and wake up
@@ -113,7 +113,7 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 		}
 		cookies = sinkpush.FilterByHostPatterns(cookies, domainFilter)
 		if agentSyncVerbose {
-			fmt.Fprintf(os.Stderr, "agentcookie agent-sync: read %d, blocked %d, dbsc(warn=%d skip=%d), injecting %d\n",
+			fmt.Fprintf(os.Stderr, "agentcookie agent-sync: read %d, filtered %d, dbsc(warn=%d skip=%d), injecting %d\n",
 				st.totalRead, st.totalDropped, st.dbsc.warned, st.dbsc.skipped, len(cookies))
 		}
 		return cookies, nil

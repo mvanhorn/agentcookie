@@ -6,19 +6,29 @@ import (
 	"path/filepath"
 )
 
+type CookiePolicy string
+
+const (
+	CookiePolicyBlocklist CookiePolicy = "blocklist"
+	CookiePolicyAllowlist CookiePolicy = "allowlist"
+)
+
 // BlocklistEntry is one explicitly opted-OUT cookie domain. Pattern follows
 // SQLite LIKE syntax (use '%' as wildcard, e.g. "%.chase.com"). Cookies whose
-// host_key matches any pattern are NOT synced.
+// host_key matches any pattern are NOT synced in blocklist mode. In allowlist
+// mode, entries are explicitly opted-IN domains.
 type BlocklistEntry struct {
 	Pattern     string `yaml:"pattern" json:"pattern"`
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 }
 
 // Blocklist is the on-disk shape of blocklist.yaml. Version is bumped if/when
-// the file format changes incompatibly. Empty domains list (or missing file)
-// means sync all cookies.
+// the file format changes incompatibly. Omitted policy preserves legacy
+// blocklist semantics. Empty domains list (or missing file) means sync all
+// cookies only in blocklist mode; empty allowlist mode syncs no cookies.
 type Blocklist struct {
 	Version int              `yaml:"version" json:"version"`
+	Policy  CookiePolicy     `yaml:"policy,omitempty" json:"policy,omitempty"`
 	Domains []BlocklistEntry `yaml:"domains" json:"domains"`
 }
 
@@ -43,12 +53,40 @@ func LoadBlocklist(dir string) (*Blocklist, error) {
 	if bl.Version != 1 {
 		return nil, fmt.Errorf("%s: unsupported blocklist version %d (this binary speaks version 1)", blocklistPath, bl.Version)
 	}
+	switch bl.PolicyMode() {
+	case CookiePolicyBlocklist, CookiePolicyAllowlist:
+	default:
+		return nil, fmt.Errorf("%s: policy must be %q or %q (got %q)", blocklistPath, CookiePolicyBlocklist, CookiePolicyAllowlist, bl.Policy)
+	}
 	for i, e := range bl.Domains {
 		if e.Pattern == "" {
 			return nil, fmt.Errorf("%s: domains[%d].pattern is empty", blocklistPath, i)
 		}
 	}
 	return &bl, nil
+}
+
+// PolicyMode returns the effective cookie filter policy. Empty is the legacy
+// blocklist mode so old blocklist.yaml files keep their behavior unchanged.
+func (bl *Blocklist) PolicyMode() CookiePolicy {
+	if bl == nil || bl.Policy == "" {
+		return CookiePolicyBlocklist
+	}
+	return bl.Policy
+}
+
+// CookiePolicySummary returns the operator-facing policy label.
+func (bl *Blocklist) CookiePolicySummary() string {
+	if bl == nil {
+		return "sync-all"
+	}
+	if bl.PolicyMode() == CookiePolicyAllowlist {
+		return string(CookiePolicyAllowlist)
+	}
+	if len(bl.Domains) == 0 {
+		return "sync-all"
+	}
+	return string(CookiePolicyBlocklist)
 }
 
 // LoadAllowlist is a compatibility wrapper kept so existing callers still

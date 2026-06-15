@@ -43,4 +43,22 @@ func TestReadFilteredCookies(t *testing.T) {
 			t.Errorf("totalDropped=%d, want 1", st.totalDropped)
 		}
 	})
+
+	t.Run("allowlist passes the matching host only", func(t *testing.T) {
+		bl := &config.Blocklist{
+			Version: 1,
+			Policy:  config.CookiePolicyAllowlist,
+			Domains: []config.BlocklistEntry{{Pattern: "%.allowed.com"}},
+		}
+		cookies, st, err := readFilteredCookies(dbPath, bl, key, false, time.Now().UTC())
+		if err != nil {
+			t.Fatalf("readFilteredCookies: %v", err)
+		}
+		if len(cookies) != 1 || cookies[0].HostKey != ".allowed.com" {
+			t.Fatalf("expected only .allowed.com to pass, got %+v", cookies)
+		}
+		if st.totalDropped != 1 {
+			t.Errorf("totalDropped=%d, want 1", st.totalDropped)
+		}
+	})
 }

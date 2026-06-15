@@ -140,14 +140,17 @@ func runSink(cmd *cobra.Command, args []string) error {
 func logSinkStartupBlocklistStatus() {
 	bl, err := loadFreshBlocklist()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "agentcookie sink: blocklist load failed; /sync will fail closed until fixed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "agentcookie sink: cookie policy load failed; /sync will fail closed until fixed: %v\n", err)
 		return
 	}
 	blockMatcher := protocol.NewBlocklistMatcher(bl)
-	if blockMatcher.PatternCount() == 0 {
-		fmt.Fprintln(os.Stderr, "agentcookie sink: blocklist empty; sync-all mode")
-	} else {
-		fmt.Fprintf(os.Stderr, "agentcookie sink: blocklist has %d opt-out patterns\n", blockMatcher.PatternCount())
+	switch blockMatcher.PolicySummary() {
+	case "sync-all":
+		fmt.Fprintln(os.Stderr, "agentcookie sink: cookie policy sync-all (no patterns)")
+	case "allowlist":
+		fmt.Fprintf(os.Stderr, "agentcookie sink: cookie policy allowlist has %d opt-in patterns\n", blockMatcher.PatternCount())
+	default:
+		fmt.Fprintf(os.Stderr, "agentcookie sink: cookie policy blocklist has %d opt-out patterns\n", blockMatcher.PatternCount())
 	}
 }
 
@@ -191,7 +194,7 @@ func newSinkMux(
 
 		bl, err := loadFreshBlocklist()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "agentcookie sink: blocklist load failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "agentcookie sink: cookie policy load failed: %v\n", err)
 			recordSinkReject(sinkState, stateWriter, err)
 			http.Error(w, "load blocklist: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -203,7 +206,7 @@ func newSinkMux(
 			return
 		}
 
-		// Sink-side blocklist filter (defense in depth).
+		// Sink-side cookie policy filter (defense in depth).
 		cookies := envelope.Cookies
 		var droppedHosts map[string]int
 		cookies, droppedHosts = blockMatcher.Filter(cookies)
@@ -230,7 +233,7 @@ func newSinkMux(
 			sinkState.TotalWrites++
 			sinkState.TotalDropped += dropped
 			_ = stateWriter.Save(sinkState)
-			_, _ = fmt.Fprintf(w, "dry-run ok: accepted %d cookies; dropped %d blocklisted cookies\n", len(cookies), dropped)
+			_, _ = fmt.Fprintf(w, "dry-run ok: accepted %d cookies; dropped %d %s cookies\n", len(cookies), dropped, blockMatcher.DropLabel())
 			return
 		}
 
@@ -256,7 +259,7 @@ func newSinkMux(
 			http.Error(w, fmt.Sprintf("apply envelope: %v", writeErr), http.StatusInternalServerError)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies (+ %d sidecar) + %d localStorage origins + %d indexedDB origins (mode=%s, dropped %d blocklisted cookies)\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, writeMode, dropped)
+		fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies (+ %d sidecar) + %d localStorage origins + %d indexedDB origins (mode=%s, dropped %d %s cookies)\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, writeMode, dropped, blockMatcher.DropLabel())
 		sinkState.LastWrite = time.Now().UTC()
 		// In skip_chrome_sqlite mode, result.Cookies is zero (we did not
 		// write Chrome SQLite); report the sidecar count so sink-state
@@ -320,7 +323,7 @@ func newSinkMux(
 		}
 
 		_ = stateWriter.Save(sinkState)
-		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies (%d sidecar), %d localStorage origins, %d indexedDB origins; dropped %d blocklisted cookies\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, dropped)
+		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies (%d sidecar), %d localStorage origins, %d indexedDB origins; dropped %d %s cookies\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, dropped, blockMatcher.DropLabel())
 	})
 	return mux
 }

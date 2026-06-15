@@ -16,8 +16,19 @@
 #
 # Both source and sink read this file independently. The sink owner has the
 # final say on what state lands on their machine.
+#
+# For a high-trust/headless agent deployment, switch to explicit allowlist mode:
+#
+#   policy: allowlist
+#   domains:
+#     - pattern: "github.com"
+#     - pattern: "%.github.com"
+#
+# In allowlist mode, only matching host_key patterns sync. An empty allowlist
+# syncs no cookie hosts.
 
 version: 1
+# policy: blocklist
 
 domains:
   # Banking / brokerage / personal finance:

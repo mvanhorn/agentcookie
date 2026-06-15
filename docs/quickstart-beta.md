@@ -43,6 +43,12 @@ Optional: Go 1.22+ if you want to build from source. Not required when using the
 
 Save the pairing code. You'll need it on the sink.
 
+Cookie policy note: the default `blocklist.yaml` remains opt-out and syncs
+everything unless a host matches a listed pattern. For a stricter headless agent
+deployment, edit `~/.config/agentcookie/blocklist.yaml` on both machines and set
+`policy: allowlist`, then list only the exact hosts and `%.subdomain` patterns
+the sink should receive. `agentcookie doctor` reports the active mode.
+
 ## Install the sink side (your second Mac)
 
 Same flow, opposite role:

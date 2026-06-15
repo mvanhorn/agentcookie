@@ -12,7 +12,7 @@ cmux loop.
 1. Launches a dedicated Chrome on a loopback debug port (its own
    `--user-data-dir`, so the port is honored without `chrome://inspect` and
    your everyday Chrome is untouched).
-2. Reads this Mac's Chrome cookies -- decrypt + blocklist + DBSC filter, the
+2. Reads this Mac's Chrome cookies -- decrypt + cookie policy + DBSC filter, the
    same pipeline `source` and `cmux-sync` use.
 3. Injects them as **plaintext, over CDP** into every browser context the
    owned Chrome opens, including the context a connector creates for itself.

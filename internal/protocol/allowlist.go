@@ -8,12 +8,14 @@ import (
 )
 
 // BlocklistMatcher checks whether a cookie's host_key matches any of the
-// configured patterns. v0.3 inverts the v0.2 semantic: matching = drop.
-// An empty matcher matches nothing, so all cookies pass (sync-all default).
+// configured patterns and applies the effective cookie policy. v0.3 inverted
+// the v0.2 semantic to blocklist-by-default; explicit allowlist mode is
+// available without changing omitted-policy behavior.
 //
 // Patterns mirror SQLite LIKE semantics: '%' is a wildcard, anything else
 // matches literally. Source and sink use the same matching rules.
 type BlocklistMatcher struct {
+	policy   config.CookiePolicy
 	patterns []string
 }
 
@@ -21,7 +23,7 @@ type BlocklistMatcher struct {
 // nil or empty blocklist yields a matcher that drops nothing.
 func NewBlocklistMatcher(bl *config.Blocklist) *BlocklistMatcher {
 	if bl == nil {
-		return &BlocklistMatcher{}
+		return &BlocklistMatcher{policy: config.CookiePolicyBlocklist}
 	}
 	patterns := make([]string, 0, len(bl.Domains))
 	for _, d := range bl.Domains {
@@ -29,12 +31,12 @@ func NewBlocklistMatcher(bl *config.Blocklist) *BlocklistMatcher {
 			patterns = append(patterns, strings.ToLower(d.Pattern))
 		}
 	}
-	return &BlocklistMatcher{patterns: patterns}
+	return &BlocklistMatcher{policy: bl.PolicyMode(), patterns: patterns}
 }
 
 // MatchesHost reports whether host matches at least one configured pattern.
-// In the blocklist model, a match means "drop this cookie." An empty matcher
-// matches nothing, which is the sync-all default.
+// In blocklist mode, a match means "drop this cookie." In allowlist mode, a
+// match means "keep this cookie." Use ShouldSyncHost for policy-aware callers.
 func (m *BlocklistMatcher) MatchesHost(host string) bool {
 	if m == nil || len(m.patterns) == 0 {
 		return false
@@ -48,14 +50,48 @@ func (m *BlocklistMatcher) MatchesHost(host string) bool {
 	return false
 }
 
+// ShouldSyncHost reports whether a host passes the configured policy.
+func (m *BlocklistMatcher) ShouldSyncHost(host string) bool {
+	if m == nil {
+		return true
+	}
+	matched := m.MatchesHost(host)
+	if m.policy == config.CookiePolicyAllowlist {
+		return matched
+	}
+	return !matched
+}
+
+// PolicySummary returns the operator-facing policy label.
+func (m *BlocklistMatcher) PolicySummary() string {
+	if m == nil {
+		return "sync-all"
+	}
+	if m.policy == config.CookiePolicyAllowlist {
+		return string(config.CookiePolicyAllowlist)
+	}
+	if len(m.patterns) == 0 {
+		return "sync-all"
+	}
+	return string(config.CookiePolicyBlocklist)
+}
+
+// DropLabel returns a short phrase for filtered-cookie counts.
+func (m *BlocklistMatcher) DropLabel() string {
+	if m != nil && m.policy == config.CookiePolicyAllowlist {
+		return "non-allowlisted"
+	}
+	return "blocklisted"
+}
+
 // Filter returns the cookies that pass (host_key does NOT match the
-// blocklist) and a map of dropped hosts keyed by host_key with the count
-// per host. Drops are logged on the sink for observability; the source
-// reports its own drop counts via watcher Stats.
+// blocklist, or host_key DOES match the allowlist) and a map of dropped hosts
+// keyed by host_key with the count per host. Drops are logged on the sink for
+// observability; the source reports its own drop counts via watcher Stats.
 func (m *BlocklistMatcher) Filter(cookies []chrome.Cookie) (passed []chrome.Cookie, droppedHosts map[string]int) {
 	droppedHosts = map[string]int{}
 	for _, c := range cookies {
-		if m.MatchesHost(c.HostKey) {
+		if !m.ShouldSyncHost(c.HostKey) {
 			droppedHosts[c.HostKey]++
 			continue
 		}
@@ -64,9 +100,9 @@ func (m *BlocklistMatcher) Filter(cookies []chrome.Cookie) (passed []chrome.Cook
 	return passed, droppedHosts
 }
 
-// PatternCount returns how many opt-out patterns are configured. Surfaced via
-// `agentcookie status` so the user sees "0 patterns (sync-all)" or "3
-// patterns" at a glance.
+// PatternCount returns how many host patterns are configured. Surfaced via
+// `agentcookie status` so the user sees "sync-all", "blocklist", or
+// "allowlist" at a glance.
 func (m *BlocklistMatcher) PatternCount() int {
 	if m == nil {
 		return 0

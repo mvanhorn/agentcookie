@@ -524,6 +524,51 @@ domains:
 	if bl.Domains[0].Pattern != "chase.com" {
 		t.Errorf("first pattern wrong: %q", bl.Domains[0].Pattern)
 	}
+	if bl.PolicyMode() != CookiePolicyBlocklist {
+		t.Errorf("omitted policy = %q, want blocklist", bl.PolicyMode())
+	}
+}
+
+func TestLoadBlocklistExplicitPolicies(t *testing.T) {
+	t.Run("blocklist", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "blocklist.yaml", `
+version: 1
+policy: blocklist
+domains:
+  - pattern: "chase.com"
+`)
+		bl, err := LoadBlocklist(dir)
+		if err != nil {
+			t.Fatalf("LoadBlocklist: %v", err)
+		}
+		if bl.PolicyMode() != CookiePolicyBlocklist {
+			t.Errorf("PolicyMode = %q, want blocklist", bl.PolicyMode())
+		}
+		if bl.CookiePolicySummary() != "blocklist" {
+			t.Errorf("summary = %q, want blocklist", bl.CookiePolicySummary())
+		}
+	})
+	t.Run("allowlist", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "blocklist.yaml", `
+version: 1
+policy: allowlist
+domains:
+  - pattern: "youtube.com"
+  - pattern: "%.youtube.com"
+`)
+		bl, err := LoadBlocklist(dir)
+		if err != nil {
+			t.Fatalf("LoadBlocklist: %v", err)
+		}
+		if bl.PolicyMode() != CookiePolicyAllowlist {
+			t.Errorf("PolicyMode = %q, want allowlist", bl.PolicyMode())
+		}
+		if bl.CookiePolicySummary() != "allowlist" {
+			t.Errorf("summary = %q, want allowlist", bl.CookiePolicySummary())
+		}
+	})
 }
 
 func TestLoadBlocklistMissingReturnsEmpty(t *testing.T) {
@@ -535,6 +580,25 @@ func TestLoadBlocklistMissingReturnsEmpty(t *testing.T) {
 	}
 	if bl == nil || len(bl.Domains) != 0 {
 		t.Errorf("expected empty blocklist, got %+v", bl)
+	}
+	if bl.CookiePolicySummary() != "sync-all" {
+		t.Errorf("missing blocklist summary = %q, want sync-all", bl.CookiePolicySummary())
+	}
+}
+
+func TestLoadBlocklistRejectsUnknownPolicy(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "blocklist.yaml", `
+version: 1
+policy: denylist
+domains: []
+`)
+	_, err := LoadBlocklist(dir)
+	if err == nil {
+		t.Fatal("expected error for unknown policy, got nil")
+	}
+	if !strings.Contains(err.Error(), "blocklist.yaml") || !strings.Contains(err.Error(), "policy") {
+		t.Errorf("error should name file and field, got %v", err)
 	}
 }
 

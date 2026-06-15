@@ -123,6 +123,34 @@ func TestCollectDomainCookies_Blocklist(t *testing.T) {
 	}
 }
 
+func TestCollectDomainCookies_Allowlist(t *testing.T) {
+	path := makeSidecar(t, [][3]string{
+		{"amazon.com", "session-token", "tok"},
+		{".amazon.com", "x-main", "xm"},
+		{"www.amazon.com", "ubid", "ub"},
+	})
+	matcher := protocol.NewBlocklistMatcher(&config.Blocklist{
+		Policy:  config.CookiePolicyAllowlist,
+		Domains: []config.BlocklistEntry{{Pattern: "amazon.com"}, {Pattern: "%.amazon.com"}},
+	})
+	got, err := collectDomainCookies(path, ".amazon.com", matcher)
+	if err != nil {
+		t.Fatalf("collectDomainCookies: %v", err)
+	}
+	if len(got) != 3 {
+		t.Errorf("allowlisted domain should yield all matching cookies, got %d", len(got))
+	}
+
+	denyAll := protocol.NewBlocklistMatcher(&config.Blocklist{Policy: config.CookiePolicyAllowlist})
+	got, err = collectDomainCookies(path, ".amazon.com", denyAll)
+	if err != nil {
+		t.Fatalf("collectDomainCookies empty allowlist: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("empty allowlist should yield no cookies, got %d", len(got))
+	}
+}
+
 func TestCollectDomainCookies_MissingFile(t *testing.T) {
 	got, err := collectDomainCookies(filepath.Join(t.TempDir(), "nope.db"), ".amazon.com", nil)
 	if err != nil {
@@ -177,6 +205,32 @@ domains:
 	}
 	if got := strings.TrimSpace(out); got != "" {
 		t.Errorf("blocklisted domain should emit no cookies, got %q", out)
+	}
+}
+
+func TestCookiesCommandAllowlist(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sidecarPath := filepath.Join(home, ".agentcookie", "cookies-plain.db")
+	makeSidecarAt(t, sidecarPath, [][3]string{
+		{"amazon.com", "session-token", "tok"},
+		{"www.amazon.com", "ubid", "ub"},
+	})
+	configDir := t.TempDir()
+	writeCLIFile(t, filepath.Join(configDir, "blocklist.yaml"), `
+version: 1
+policy: allowlist
+domains:
+  - pattern: "amazon.com"
+  - pattern: "%.amazon.com"
+`)
+
+	out, err := runCookiesCommandForTest(t, configDir, ".amazon.com", false)
+	if err != nil {
+		t.Fatalf("cookies command: %v", err)
+	}
+	if got := strings.TrimSpace(out); got != "session-token=tok; ubid=ub" {
+		t.Errorf("allowlisted domain output = %q", out)
 	}
 }
 

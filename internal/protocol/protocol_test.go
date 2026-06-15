@@ -121,6 +121,54 @@ func TestBlocklistFilter_EmptyBlocklistPassesEverything(t *testing.T) {
 	}
 }
 
+func TestAllowlistMatcher_PassesMatchingDropsNonMatching(t *testing.T) {
+	bl := &config.Blocklist{
+		Version: 1,
+		Policy:  config.CookiePolicyAllowlist,
+		Domains: []config.BlocklistEntry{{Pattern: "example.com"}, {Pattern: "%.example.com"}},
+	}
+	m := NewBlocklistMatcher(bl)
+	cookies := []chrome.Cookie{
+		{HostKey: "example.com", Name: "apex"},
+		{HostKey: "www.example.com", Name: "sub"},
+		{HostKey: "evil-example.com", Name: "sibling"},
+		{HostKey: "github.com", Name: "other"},
+	}
+	passed, dropped := m.Filter(cookies)
+	if len(passed) != 2 {
+		t.Fatalf("expected 2 allowlisted cookies to pass, got %d (%+v)", len(passed), passed)
+	}
+	if passed[0].HostKey != "example.com" || passed[1].HostKey != "www.example.com" {
+		t.Fatalf("passed hosts = %+v", passed)
+	}
+	if dropped["evil-example.com"] != 1 || dropped["github.com"] != 1 {
+		t.Errorf("dropped hosts = %+v", dropped)
+	}
+	if m.PolicySummary() != "allowlist" {
+		t.Errorf("PolicySummary = %q, want allowlist", m.PolicySummary())
+	}
+	if m.DropLabel() != "non-allowlisted" {
+		t.Errorf("DropLabel = %q, want non-allowlisted", m.DropLabel())
+	}
+}
+
+func TestAllowlistMatcher_EmptyDropsEverything(t *testing.T) {
+	m := NewBlocklistMatcher(&config.Blocklist{Version: 1, Policy: config.CookiePolicyAllowlist})
+	if m.ShouldSyncHost("anywhere.com") {
+		t.Error("empty allowlist must not sync arbitrary hosts")
+	}
+	passed, dropped := m.Filter([]chrome.Cookie{
+		{HostKey: "chase.com", Name: "one"},
+		{HostKey: "github.com", Name: "two"},
+	})
+	if len(passed) != 0 {
+		t.Errorf("expected empty allowlist to pass 0 cookies, got %d", len(passed))
+	}
+	if dropped["chase.com"] != 1 || dropped["github.com"] != 1 {
+		t.Errorf("dropped hosts = %+v", dropped)
+	}
+}
+
 func TestMatchLike(t *testing.T) {
 	cases := []struct {
 		pattern, s string
