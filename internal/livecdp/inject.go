@@ -60,9 +60,11 @@ func Inject(ctx context.Context, cookies []chrome.Cookie) error {
 //     Domain -- they are scoped to the exact host via URL. Setting Domain
 //     would silently widen them to all subdomains.
 //
-// Domain cookies (host_key with a leading dot) keep Domain (dot stripped,
-// the CDP-accepted form) plus a synthesized URL so Chrome applies the same
-// relaxed validation a real Set-Cookie navigation would.
+// Domain cookies (host_key with a leading dot) keep Domain WITH its leading
+// dot plus a synthesized URL so Chrome applies the same relaxed validation a
+// real Set-Cookie navigation would. The dot is load-bearing: CDP
+// Network.setCookie stores a dot-less Domain host-only, which narrows a
+// parent-domain cookie to its apex and breaks delivery to app subdomains.
 func BuildCookieParams(cookies []chrome.Cookie) []*network.CookieParam {
 	params := make([]*network.CookieParam, 0, len(cookies))
 	for _, c := range cookies {
@@ -97,9 +99,13 @@ func buildParam(c chrome.Cookie) *network.CookieParam {
 		p.Path = "/"
 		// Domain left empty.
 	case strings.HasPrefix(c.HostKey, "."):
-		// Domain cookie: valid for subdomains. Strip the leading dot to
-		// the CDP-accepted Domain form.
-		p.Domain = strings.TrimPrefix(c.HostKey, ".")
+		// Domain cookie: valid for subdomains. The leading dot is
+		// load-bearing for CDP Network.setCookie -- a Domain WITHOUT a
+		// leading dot is stored host-only (apex only), so a parent-domain
+		// session cookie (e.g. ".example.com") never reaches the app's
+		// subdomain (e.g. app.example.com) and the agent browser lands
+		// logged out. Keep the dot to preserve subdomain scope.
+		p.Domain = c.HostKey
 	default:
 		// Host-only cookie: scoped to the exact host via URL, no Domain.
 	}
