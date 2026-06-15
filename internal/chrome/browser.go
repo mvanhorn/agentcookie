@@ -96,6 +96,22 @@ var browserRegistry = map[string]Browser{
 		KeychainAccount: "Arc",
 		KeychainService: "Arc Safe Storage",
 	},
+	"helium": {
+		Name: "helium",
+		// Helium (https://helium.computer, bundle net.imput.helium) is a
+		// standard Chromium build, so the file-based "<App> Safe Storage"
+		// keychain model and the Default-profile layout apply directly.
+		// Profile root verified on disk on 2026-06-15:
+		// ~/Library/Application Support/net.imput.helium/Default/Cookies
+		// plus Local State (reports Chrome/149). The keychain
+		// account/service follow the well-established Chromium convention
+		// (matching the Brave/Edge/Arc entries above); decryption is
+		// verified at runtime by the doctor source-adapter check rather
+		// than at registry-definition time.
+		SupportDir:      []string{"net.imput.helium"},
+		KeychainAccount: "Helium",
+		KeychainService: "Helium Safe Storage",
+	},
 }
 
 // LookupBrowser returns the browser descriptor for name. Empty name defaults
