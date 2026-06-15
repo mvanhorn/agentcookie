@@ -280,7 +280,7 @@ In short: DBSC narrows one corner of the web (today, mostly Google) and agentcoo
 | [Secrets bus v2 adoption spec](docs/spec-agentcookie-secrets-bus-v2-adoption.md) | `agentcookie.toml` manifest format and discovery rules |
 | [Secrets bus adoption runbook](docs/runbook-secrets-bus-adoption.md) | migrating a CLI from imperative `secret import-from` to manifest-driven sync |
 | [gh shim worked example](docs/runbook-secrets-bus-gh-example.md) | 50-line bash shim consuming the bus from a non-PP CLI |
-| [Install skill](skill/SKILL.md) | Claude Code skill so an agent can drive the install |
+| [Install skill](skill/SKILL.md) | Generic `SKILL.md` installer prompt for Claude Code, Codex, Cursor, OpenClaw, Hermes, or any shell-capable agent |
 
 ## License
 
