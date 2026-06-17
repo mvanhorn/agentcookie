@@ -55,12 +55,13 @@ func TestBuildCookieParams_HostOnly(t *testing.T) {
 }
 
 // TestBuildCookieParams_DomainCookie: a domain cookie (leading dot) keeps
-// Domain with the dot stripped to the CDP-accepted form.
+// Domain WITH its leading dot so CDP stores it as a subdomain-scoped cookie
+// rather than host-only.
 func TestBuildCookieParams_DomainCookie(t *testing.T) {
 	c := chrome.Cookie{HostKey: ".github.com", Name: "_octo", Value: "v", Path: "/", IsSecure: 1}
 	p := BuildCookieParams([]chrome.Cookie{c})[0]
-	if p.Domain != "github.com" {
-		t.Errorf("domain cookie Domain (dot stripped): got %q", p.Domain)
+	if p.Domain != ".github.com" {
+		t.Errorf("domain cookie keeps the leading dot for subdomain scope: got %q", p.Domain)
 	}
 	if p.URL != "https://github.com/" {
 		t.Errorf("domain cookie URL: got %q", p.URL)
