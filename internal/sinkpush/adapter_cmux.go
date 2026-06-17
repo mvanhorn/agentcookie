@@ -57,8 +57,13 @@ var surfaceRefRE = regexp.MustCompile(`surface:\d+`)
 //
 // WebKit cookie semantics (confirmed empirically, differ from Chrome's
 // CDP path):
-//   - Domain is stored VERBATIM. ".example.com" is accepted, so unlike
-//     the CDP injector we do NOT strip the leading dot from host_key.
+//   - Cookie scoping is prefix/host-aware (see cmuxCookieParam). __Host--
+//     prefixed and host-only cookies are scoped by url with NO Domain;
+//     domain cookies (leading-dot host_key) keep Domain verbatim
+//     (".example.com" is accepted; the leading dot is not stripped). A
+//     __Host- cookie carrying ANY Domain attribute is hard-rejected by
+//     WebKit, which silently dropped GitHub's __Host-user_session_same_site
+//     on this lane until the url/no-Domain shaping was added.
 //   - expires is Unix seconds; omit it for session cookies. WebKit
 //     clamps far-future expiries to its ~400-day max (expected).
 //   - Cookie values are passed through VERBATIM. The App-Bound (Chrome
@@ -293,29 +298,90 @@ func cmuxCookiesJSON(surfaceID string, cookies []chrome.Cookie) (string, error) 
 }
 
 // cmuxCookieParam builds one cookie's params. Value and domain pass
-// through verbatim (see the CmuxAdapter doc on why no App-Bound re-strip
-// and no leading-dot strip). expires is omitted for session cookies
-// (ExpiresUTC == 0).
+// through verbatim (see the CmuxAdapter doc on why no App-Bound re-strip).
+// expires is omitted for session cookies (ExpiresUTC == 0).
+//
+// Cookie scoping mirrors the corrected shaping in internal/livecdp.buildParam,
+// translated to cmux's browser.cookies.set fields (a "url" the handler maps to
+// HTTPCookie's originURL, plus an optional "domain"):
+//
+//   - __Host--prefixed cookies carry NO Domain. WebKit hard-rejects a __Host-
+//     cookie that has a Domain attribute, which silently dropped GitHub's
+//     __Host-user_session_same_site on this lane. We send url, force Secure
+//     and Path "/", and omit Domain (host-only via the url's host).
+//   - Domain cookies (host_key with a leading dot) keep Domain verbatim
+//     (WebKit accepts the leading dot) plus url.
+//   - Host-only cookies (host_key without a leading dot) carry no Domain --
+//     scoped to the exact host via url. Setting Domain would widen them to
+//     all subdomains.
+//
+// url is required for the __Host- and host-only cases: with no Domain,
+// cmux's HTTPCookie(properties:) has nothing to scope the cookie to unless
+// originURL is set (the cached about:blank surface has no host to fall back
+// to).
 func cmuxCookieParam(c chrome.Cookie) map[string]any {
 	path := c.Path
 	if path == "" {
 		path = "/"
 	}
+	secure := c.IsSecure == 1
 	m := map[string]any{
 		"name":      c.Name,
-		"value":     c.Value,   // verbatim -- already App-Bound-stripped on the source
-		"domain":    c.HostKey, // verbatim -- WebKit accepts the leading dot
+		"value":     c.Value, // verbatim -- already App-Bound-stripped on the source
 		"path":      path,
-		"secure":    c.IsSecure == 1,
 		"http_only": c.IsHTTPOnly == 1,
 	}
+	if u := cmuxCookieURL(c); u != "" {
+		m["url"] = u
+	}
+	switch {
+	case strings.HasPrefix(c.Name, "__Host-"):
+		// __Host- invariants: Secure, Path "/", host-only (no Domain).
+		secure = true
+		m["path"] = "/"
+	case strings.HasPrefix(c.HostKey, "."):
+		// Domain cookie: valid for subdomains. WebKit accepts the leading dot.
+		m["domain"] = c.HostKey
+	default:
+		// Host-only cookie: scoped to the exact host via url, no Domain.
+	}
+	m["secure"] = secure
 	if ss := cmuxSameSite(c.SameSite); ss != "" {
+		// SameSite=None requires Secure -- a None cookie that isn't Secure is
+		// rejected by spec. Downgrade an insecure None to Lax so it survives
+		// rather than vanishing (mirrors internal/livecdp.buildParam and the
+		// CDP lane). Computed after the switch so a __Host- cookie's forced
+		// Secure keeps None.
+		if ss == "none" && !secure {
+			ss = "lax"
+		}
 		m["same_site"] = ss
 	}
 	if c.ExpiresUTC != 0 {
 		m["expires"] = chromeMicrosToUnixSec(c.ExpiresUTC)
 	}
 	return m
+}
+
+// cmuxCookieURL synthesizes a request-URI for a cookie from its host_key,
+// scheme, and path so cmux's WebKit cookie store scopes the cookie to the
+// right host -- and so __Host-/host-only cookies have an origin even with no
+// Domain attribute. The leading dot of a domain host_key is stripped for the
+// URL hostname.
+func cmuxCookieURL(c chrome.Cookie) string {
+	host := strings.TrimPrefix(c.HostKey, ".")
+	if host == "" {
+		return ""
+	}
+	scheme := "https"
+	if c.IsSecure == 0 {
+		scheme = "http"
+	}
+	path := c.Path
+	if path == "" {
+		path = "/"
+	}
+	return scheme + "://" + host + path
 }
 
 // cmuxSameSite maps Chrome's numeric SameSite (cookies.samesite) to the

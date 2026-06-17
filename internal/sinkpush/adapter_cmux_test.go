@@ -102,6 +102,9 @@ func TestCmuxCookieJSON_FieldMapping(t *testing.T) {
 	if m["domain"] != ".github.com" {
 		t.Errorf("domain should be verbatim with leading dot, got %v", m["domain"])
 	}
+	if m["url"] != "https://github.com/api" {
+		t.Errorf("url should be synthesized from host/path, got %v", m["url"])
+	}
 	if m["name"] != "session" || m["value"] != "abc123" {
 		t.Errorf("name/value: got %v / %v", m["name"], m["value"])
 	}
@@ -132,6 +135,59 @@ func TestCmuxCookieJSON_FieldMapping(t *testing.T) {
 	}
 	if env.SurfaceID != "surface:9" || len(env.Cookies) != 2 {
 		t.Errorf("envelope: surface_id=%q cookies=%d, want surface:9 / 2", env.SurfaceID, len(env.Cookies))
+	}
+}
+
+func TestCmuxCookieParam_HostPrefixIsHostOnly(t *testing.T) {
+	// Regression guard for the GitHub-login bug: a __Host--prefixed cookie
+	// (GitHub's session) is hard-rejected by WebKit if it carries ANY Domain
+	// attribute. It must be sent host-only -- url set, no domain -- with
+	// Secure and Path "/" forced.
+	c := chrome.Cookie{
+		HostKey:  "github.com", // host-only in Chrome's store (no leading dot)
+		Name:     "__Host-user_session_same_site",
+		Value:    "sess",
+		Path:     "/",
+		IsSecure: 1,
+	}
+	m := cmuxCookieParam(c)
+	if _, ok := m["domain"]; ok {
+		t.Errorf("__Host- cookie must NOT carry a domain (WebKit rejects it), got %v", m["domain"])
+	}
+	if m["url"] != "https://github.com/" {
+		t.Errorf("__Host- cookie must be scoped by url, got %v", m["url"])
+	}
+	if m["secure"] != true {
+		t.Errorf("__Host- cookie must force secure=true, got %v", m["secure"])
+	}
+	if m["path"] != "/" {
+		t.Errorf("__Host- cookie must force path=/, got %v", m["path"])
+	}
+}
+
+func TestCmuxCookieParam_HostOnlyNoDomainWidening(t *testing.T) {
+	// A host-only cookie (host_key with no leading dot) must not be widened
+	// to subdomains: no Domain attribute, scoped to the exact host via url.
+	c := chrome.Cookie{HostKey: "github.com", Name: "user_session", Value: "v", Path: "/", IsSecure: 1}
+	m := cmuxCookieParam(c)
+	if _, ok := m["domain"]; ok {
+		t.Errorf("host-only cookie must NOT carry a domain, got %v", m["domain"])
+	}
+	if m["url"] != "https://github.com/" {
+		t.Errorf("host-only cookie must be scoped by url, got %v", m["url"])
+	}
+}
+
+func TestCmuxCookieParam_InsecureNoneDowngradesToLax(t *testing.T) {
+	// A SameSite=None cookie that is not Secure is rejected by spec; downgrade
+	// to Lax so it survives. A secure None cookie keeps None.
+	insecure := chrome.Cookie{HostKey: "example.com", Name: "x", Value: "v", Path: "/", IsSecure: 0, SameSite: 0}
+	if m := cmuxCookieParam(insecure); m["same_site"] != "lax" {
+		t.Errorf("insecure None must downgrade to lax, got %v", m["same_site"])
+	}
+	secure := chrome.Cookie{HostKey: "example.com", Name: "x", Value: "v", Path: "/", IsSecure: 1, SameSite: 0}
+	if m := cmuxCookieParam(secure); m["same_site"] != "none" {
+		t.Errorf("secure None must stay none, got %v", m["same_site"])
 	}
 }
 
