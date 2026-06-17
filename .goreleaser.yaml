@@ -41,7 +41,7 @@ archives:
       - docs/faq.md
       - examples/source.yaml
       - examples/sink.yaml
-      - examples/allowlist.yaml
+      - examples/blocklist.yaml
       - examples/launchd-sink.plist
 
 checksum:
