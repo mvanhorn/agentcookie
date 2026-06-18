@@ -1202,8 +1202,8 @@ func checkCmuxSessionHealthWith(
 		return Check{
 			Name:        name,
 			Severity:    SeverityWarn,
-			Detail:      fmt.Sprintf("%s: cookies delivered but the session is NOT authenticated (the site binds the session to the origin browser)", strings.Join(notAuthed, ", ")),
-			Remediation: "log in to the site once inside the cmux browser to bind a working session; use the gh CLI for git and PR work",
+			Detail:      fmt.Sprintf("%s: cookies delivered but the session did NOT authenticate in the cmux browser", strings.Join(notAuthed, ", ")),
+			Remediation: "if it persists, log in to the site once inside the cmux browser, or use the gh CLI for git and PR work",
 		}
 	}
 	if authed > 0 && unknown == 0 {
