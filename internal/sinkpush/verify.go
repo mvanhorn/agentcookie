@@ -170,6 +170,11 @@ func (a *CmuxAdapter) verifyOne(s VerifySpec) VerifyResult {
 				res.Detail = boundSessionGuidance(s.Host)
 			}
 			return res
+		} else {
+			// Successful eval, page still loading: clear any detail from an
+			// earlier transient error so a later timeout reports the timeout,
+			// not a stale "eval error" from an attempt the page recovered from.
+			res.Detail = ""
 		}
 		if attempt < verifyMaxAttempts-1 {
 			a.sleep(verifyPollInterval)
@@ -227,8 +232,13 @@ func predicateExpr(p Predicate) string {
 	arg, _ := json.Marshal(p.Arg)
 	switch p.Kind {
 	case metaPresent:
-		// non-empty content on <meta name=ARG>
-		return "(document.querySelector('meta[name=' + " + string(arg) + " + ']')||{}).content"
+		// non-empty content on <meta name="ARG">. Build the full selector with
+		// a double-quoted attribute value (e.g. meta[name="user-login"]) and
+		// JSON-encode the whole selector: an unquoted CSS attribute value is
+		// only valid for identifier-shaped names and breaks on values with
+		// hyphens-at-start, colons, dots, etc.
+		sel, _ := json.Marshal("meta[name=" + string(arg) + "]")
+		return "(document.querySelector(" + string(sel) + ")||{}).content"
 	case selectorPresent:
 		return "document.querySelector(" + string(arg) + ")"
 	case selectorAbsent:
