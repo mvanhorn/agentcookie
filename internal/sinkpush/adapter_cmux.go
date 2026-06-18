@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 )
@@ -80,6 +81,10 @@ type CmuxAdapter struct {
 	// run executes a cmux subcommand and returns stdout. Swappable in
 	// tests; defaults to execCmux.
 	run func(args ...string) (string, error)
+
+	// sleep waits between auth-verify poll attempts (see verify.go). Swappable
+	// in tests to avoid real waits; defaults to time.Sleep.
+	sleep func(time.Duration)
 }
 
 // NewCmux returns a cmux delivery adapter. cmuxPath overrides the binary
@@ -89,6 +94,7 @@ type CmuxAdapter struct {
 func NewCmux(cmuxPath string, domainFilter []string) *CmuxAdapter {
 	a := &CmuxAdapter{binary: ResolveCmuxBinary(cmuxPath), domainFilter: domainFilter}
 	a.run = a.execCmux
+	a.sleep = time.Sleep
 	return a
 }
 
@@ -337,8 +343,21 @@ func cmuxCookieParam(c chrome.Cookie) map[string]any {
 	switch {
 	case strings.HasPrefix(c.Name, "__Host-"):
 		// __Host- invariants: Secure, Path "/", host-only (no Domain).
+		// WebKit hard-rejects a __Host- cookie carrying ANY Domain, so we both
+		// refrain from setting one here and defensively delete any Domain a
+		// future edit before this switch might add.
+		//
+		// The host-only scoping relies entirely on url: cmux's handler falls
+		// back to the injection surface's host when no Domain AND no url is
+		// sent, and a navigated/reused surface (host != nil) would re-introduce
+		// a Domain on the __Host- cookie -- the known residual from PR #103.
+		// Guaranteeing url is present (set above from HostKey) neutralizes that
+		// fallback regardless of the surface's current host. A __Host- cookie
+		// with no derivable host (empty url) is unusable and is dropped earlier
+		// by the caller's Validate gate.
 		secure = true
 		m["path"] = "/"
+		delete(m, "domain")
 	case strings.HasPrefix(c.HostKey, "."):
 		// Domain cookie: valid for subdomains. WebKit accepts the leading dot.
 		m["domain"] = c.HostKey

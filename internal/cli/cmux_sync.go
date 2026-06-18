@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"os"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ var (
 	cmuxSyncVerbose  bool
 	cmuxSyncDryRun   bool
 	cmuxSyncSkipDBSC bool
+	cmuxSyncVerify   bool
 	cmuxSyncDomains  []string
 	cmuxSyncCmuxPath string
 	cmuxSyncBrowser  string
@@ -54,6 +56,7 @@ func init() {
 	cmuxSyncCmd.Flags().BoolVar(&cmuxSyncWatch, "watch", false, "long-running fsnotify watcher; re-injects on every Chrome cookie write (debounced)")
 	cmuxSyncCmd.Flags().BoolVar(&cmuxSyncVerbose, "verbose", false, "log per-cycle counts to stderr")
 	cmuxSyncCmd.Flags().BoolVar(&cmuxSyncDryRun, "dry-run", false, "read + filter but do not inject into cmux")
+	cmuxSyncCmd.Flags().BoolVar(&cmuxSyncVerify, "verify", true, "after a --once push, verify each browser-bound-session host (e.g. github.com) actually authenticates and report honestly (delivery != authentication); ignored in --watch")
 	cmuxSyncCmd.Flags().BoolVar(&cmuxSyncSkipDBSC, "skip-dbsc-suspect", false, "drop cookies that look device-bound (DBSC); also honored via AGENTCOOKIE_SKIP_DBSC_SUSPECT=1")
 	cmuxSyncCmd.Flags().StringSliceVar(&cmuxSyncDomains, "domain", nil, "limit to these host_key LIKE patterns (repeatable), e.g. --domain %github.com; overrides cmux.domain_filter")
 	cmuxSyncCmd.Flags().StringVar(&cmuxSyncCmuxPath, "cmux-path", "", "override the cmux CLI path (default: cmux.cmux_path, then the app bundle)")
@@ -181,6 +184,13 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("cmux-sync: %w (if cmux is running, check socketControlMode -- `agentcookie doctor` prints the fix)", err)
 		}
 		fmt.Fprintf(os.Stderr, "agentcookie cmux-sync: injected %d cookies into cmux\n", n)
+		// Delivery is not authentication. For browser-bound-session hosts the
+		// cookies land but the session may still be rejected server-side; verify
+		// empirically and report honestly. Non-fatal: a probe never changes the
+		// exit status of a successful push.
+		if cmuxSyncVerify && !cmuxSyncDryRun {
+			reportCmuxVerify(adapter, domainFilter, os.Stderr)
+		}
 		return nil
 	}
 
@@ -202,6 +212,34 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "agentcookie cmux-sync --watch: watching %s, injecting into cmux\n", cfg.Chrome.DBPath)
 	return w.Run(cmd.Context())
+}
+
+// cmuxVerifier is the subset of CmuxAdapter reportCmuxVerify needs; an
+// interface so the reporting glue is testable without a live cmux.
+type cmuxVerifier interface {
+	Verify(specs []sinkpush.VerifySpec) []sinkpush.VerifyResult
+}
+
+// reportCmuxVerify runs the post-injection auth probe for the browser-bound
+// -session hosts in scope and prints one honest line per host to w. It never
+// errors: a session that cannot be probed reports "unknown" and a
+// delivered-but-not-authenticated session prints the native-login / gh-CLI
+// guidance.
+func reportCmuxVerify(v cmuxVerifier, domainFilter []string, w io.Writer) {
+	specs := sinkpush.VerifySpecsForHosts(domainFilter)
+	if len(specs) == 0 {
+		return
+	}
+	for _, r := range v.Verify(specs) {
+		switch r.State {
+		case sinkpush.AuthYes:
+			fmt.Fprintf(w, "agentcookie cmux-sync: session check: %s authenticated\n", r.Host)
+		case sinkpush.AuthNo:
+			fmt.Fprintf(w, "agentcookie cmux-sync: session check: %s NOT authenticated -- %s\n", r.Host, r.Detail)
+		default:
+			fmt.Fprintf(w, "agentcookie cmux-sync: session check: %s unknown (%s)\n", r.Host, r.Detail)
+		}
+	}
 }
 
 // cmuxCookieKey identifies a cookie across sync cycles. Host+name+path is

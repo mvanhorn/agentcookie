@@ -74,6 +74,12 @@ type doctorDeps struct {
 	SourceAdapterCookiesExists func(path string) error
 	SourceAdapterPassword      func(chrome.Browser) (string, error)
 	SourceAdapterDecrypt       func(path string, key []byte) error
+
+	// CmuxSessionHealth verifies that browser-bound-session hosts (e.g.
+	// github.com) actually authenticate in the live cmux browser. Injected so
+	// tests don't open a real browser surface; nil falls back to the live
+	// checkCmuxSessionHealth.
+	CmuxSessionHealth func(config.CmuxRef) Check
 }
 
 var doctorCmd = &cobra.Command{
@@ -265,9 +271,23 @@ func buildReport(d doctorDeps) DoctorReport {
 	// applied (not still cmuxOnly, which means a restart is pending).
 	if srcCfg != nil {
 		checks = append(checks, checkCmuxLocalLoop(srcCfg.Cmux))
+		// 10d. cmux session health -- delivery is not authentication. Empirically
+		// verify that browser-bound-session hosts (github.com) actually
+		// authenticate in the cmux browser. Self-skips fast when cmux is not
+		// running, so it adds cost only when there is a live browser to probe.
+		sessionHealth := d.CmuxSessionHealth
+		if sessionHealth == nil {
+			sessionHealth = checkCmuxSessionHealth
+		}
+		checks = append(checks, sessionHealth(srcCfg.Cmux))
 	} else {
 		checks = append(checks, Check{
 			Name:     "cmux local loop",
+			Severity: SeveritySkipped,
+			Detail:   "sink-only install",
+		})
+		checks = append(checks, Check{
+			Name:     "cmux session health",
 			Severity: SeveritySkipped,
 			Detail:   "sink-only install",
 		})
@@ -1128,6 +1148,68 @@ func probeCmuxAccessMode(binary string) (string, error) {
 		return "", fmt.Errorf("parse capabilities: %w", err)
 	}
 	return caps.AccessMode, nil
+}
+
+// checkCmuxSessionHealth verifies, empirically, that delivered sessions for
+// browser-bound-session hosts (e.g. github.com) actually authenticate in the
+// cmux browser. Delivery is not authentication: GitHub binds the session to the
+// origin browser and rejects a transplanted one, so a "healthy" push can still
+// leave the cmux browser logged out. OK means authenticated; WARN means
+// delivered-but-not-authenticated (with the native-login fix); skipped means
+// cmux is not running or the probe was inconclusive (never a FAIL -- a flaky
+// probe must not fail doctor).
+func checkCmuxSessionHealth(cmux config.CmuxRef) Check {
+	verify := func(specs []sinkpush.VerifySpec) []sinkpush.VerifyResult {
+		return sinkpush.NewCmux(cmux.CmuxPath, nil).Verify(specs)
+	}
+	return checkCmuxSessionHealthWith(cmux, probeCmuxAccessMode, verify)
+}
+
+func checkCmuxSessionHealthWith(
+	cmux config.CmuxRef,
+	probe func(string) (string, error),
+	verify func([]sinkpush.VerifySpec) []sinkpush.VerifyResult,
+) Check {
+	const name = "cmux session health"
+	binary := sinkpush.ResolveCmuxBinary(cmux.CmuxPath)
+	info, statErr := os.Stat(binary)
+	if statErr != nil || info.IsDir() {
+		return Check{Name: name, Severity: SeveritySkipped, Detail: "cmux not installed"}
+	}
+	if _, err := probe(binary); err != nil {
+		return Check{Name: name, Severity: SeveritySkipped, Detail: "cmux not running; cannot check session health"}
+	}
+	specs := sinkpush.BuiltinVerifySpecs()
+	if len(specs) == 0 {
+		return Check{Name: name, Severity: SeveritySkipped, Detail: "no browser-bound-session hosts to check"}
+	}
+
+	results := verify(specs)
+	var notAuthed []string
+	authed := 0
+	unknown := 0
+	for _, r := range results {
+		switch r.State {
+		case sinkpush.AuthNo:
+			notAuthed = append(notAuthed, r.Host)
+		case sinkpush.AuthYes:
+			authed++
+		default:
+			unknown++
+		}
+	}
+	if len(notAuthed) > 0 {
+		return Check{
+			Name:        name,
+			Severity:    SeverityWarn,
+			Detail:      fmt.Sprintf("%s: cookies delivered but the session is NOT authenticated (the site binds the session to the origin browser)", strings.Join(notAuthed, ", ")),
+			Remediation: "log in to the site once inside the cmux browser to bind a working session; use the gh CLI for git and PR work",
+		}
+	}
+	if authed > 0 && unknown == 0 {
+		return Check{Name: name, Severity: SeverityOK, Detail: fmt.Sprintf("%d browser-bound-session host(s) authenticated", authed)}
+	}
+	return Check{Name: name, Severity: SeveritySkipped, Detail: "session-health probe was inconclusive (page did not load or cmux did not answer)"}
 }
 
 func checkCDPInjector(sinkCfg *config.SinkConfig) Check {

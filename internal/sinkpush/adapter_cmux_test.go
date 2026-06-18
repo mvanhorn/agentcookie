@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 )
@@ -22,6 +23,12 @@ type fakeCmux struct {
 	listErr  error
 	setErrs  []error // consumed in order, one per browser.cookies.set call
 	setCalls int
+
+	// Auth-verify (verify.go) scripting.
+	evalOuts   []string // browser.eval responses, consumed in order; last repeats
+	evalErrs   []error  // browser.eval errors, consumed in order; last repeats
+	evalIdx    int
+	closeCalls int // count of rpc surface.close calls
 }
 
 func (f *fakeCmux) run(args ...string) (string, error) {
@@ -58,7 +65,42 @@ func (f *fakeCmux) run(args ...string) (string, error) {
 		}
 		return `{"set":1}`, nil
 	}
+	if len(args) >= 2 && args[0] == "rpc" && args[1] == "browser.eval" {
+		i := f.evalIdx
+		f.evalIdx++
+		if e := pickAt(f.evalErrs, i); e != nil {
+			return "", e
+		}
+		return pickStrAt(f.evalOuts, i), nil
+	}
+	if len(args) >= 2 && args[0] == "rpc" && args[1] == "surface.close" {
+		f.closeCalls++
+		return `{"closed":1}`, nil
+	}
 	return "", nil
+}
+
+// pickAt returns errs[i], or the last element when i is past the end, or nil
+// when empty. Lets a fake script "then this forever" with one trailing entry.
+func pickAt(errs []error, i int) error {
+	if len(errs) == 0 {
+		return nil
+	}
+	if i >= len(errs) {
+		i = len(errs) - 1
+	}
+	return errs[i]
+}
+
+// pickStrAt is pickAt for strings (returns "" when empty).
+func pickStrAt(s []string, i int) string {
+	if len(s) == 0 {
+		return ""
+	}
+	if i >= len(s) {
+		i = len(s) - 1
+	}
+	return s[i]
 }
 
 // flagValue returns the value following flag in args, or "".
@@ -74,6 +116,7 @@ func flagValue(args []string, flag string) string {
 func newTestCmux(f *fakeCmux, filter []string) *CmuxAdapter {
 	a := &CmuxAdapter{binary: "/fake/cmux", domainFilter: filter}
 	a.run = f.run
+	a.sleep = func(time.Duration) {} // no real waits in tests
 	return a
 }
 
@@ -162,6 +205,29 @@ func TestCmuxCookieParam_HostPrefixIsHostOnly(t *testing.T) {
 	}
 	if m["path"] != "/" {
 		t.Errorf("__Host- cookie must force path=/, got %v", m["path"])
+	}
+}
+
+func TestCmuxCookieParam_HostPrefixForcedHostOnlyDespiteDotHostKey(t *testing.T) {
+	// Hardening for PR #103's known residual: the __Host- invariant must hold
+	// regardless of upstream state. Even if a __Host- cookie arrives with a
+	// leading-dot host_key (which would otherwise take the domain-cookie
+	// branch), the __Host- guard must win -- no Domain emitted, url present --
+	// so cmux's handler never has to fall back to a navigated surface's host
+	// (which would re-add a Domain and get the cookie dropped by WebKit).
+	c := chrome.Cookie{
+		HostKey:  ".github.com", // leading dot would normally set Domain
+		Name:     "__Host-user_session_same_site",
+		Value:    "sess",
+		Path:     "/",
+		IsSecure: 1,
+	}
+	m := cmuxCookieParam(c)
+	if _, ok := m["domain"]; ok {
+		t.Errorf("__Host- cookie must never carry a domain even with a dot host_key, got %v", m["domain"])
+	}
+	if m["url"] != "https://github.com/" {
+		t.Errorf("__Host- cookie must always carry a url so cmux never falls back to the surface host, got %v", m["url"])
 	}
 }
 

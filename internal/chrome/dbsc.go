@@ -153,13 +153,9 @@ func chromeTimeToUnix(micros int64) time.Time {
 	return time.UnixMicro(micros - chromeEpochOffsetMicros).UTC()
 }
 
-// matchesKnownDBSCHost reports whether host (leading dot already trimmed,
-// lower-cased) equals or is a subdomain of a known DBSC host.
+// matchesKnownDBSCHost reports whether host equals or is a subdomain of a known
+// DBSC host. Shares hostMatchesSuffix (boundsession.go) with the bound-session
+// classifier so the two host matchers cannot drift apart.
 func matchesKnownDBSCHost(host string) bool {
-	for _, k := range dbscKnownHosts {
-		if host == k || strings.HasSuffix(host, "."+k) {
-			return true
-		}
-	}
-	return false
+	return hostMatchesSuffix(host, dbscKnownHosts)
 }

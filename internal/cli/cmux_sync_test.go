@@ -1,13 +1,83 @@
 package cli
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
+	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 )
+
+// fakeVerifier returns scripted verify results without a live cmux.
+type fakeVerifier struct {
+	results []sinkpush.VerifyResult
+	called  bool
+}
+
+func (f *fakeVerifier) Verify(specs []sinkpush.VerifySpec) []sinkpush.VerifyResult {
+	f.called = true
+	return f.results
+}
+
+func TestReportCmuxVerify_Output(t *testing.T) {
+	cases := []struct {
+		name    string
+		result  sinkpush.VerifyResult
+		want    string
+		notWant string
+	}{
+		{
+			name:    "authenticated",
+			result:  sinkpush.VerifyResult{Host: "github.com", State: sinkpush.AuthYes},
+			want:    "github.com authenticated",
+			notWant: "NOT authenticated",
+		},
+		{
+			name:   "not authenticated carries guidance",
+			result: sinkpush.VerifyResult{Host: "github.com", State: sinkpush.AuthNo, Detail: "log in to github.com once inside the cmux browser"},
+			want:   "NOT authenticated -- log in to github.com once inside the cmux browser",
+		},
+		{
+			name:   "unknown is non-scary",
+			result: sinkpush.VerifyResult{Host: "github.com", State: sinkpush.AuthUnknown, Detail: "eval error: boom"},
+			want:   "github.com unknown (eval error: boom)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := &fakeVerifier{results: []sinkpush.VerifyResult{tc.result}}
+			var buf bytes.Buffer
+			// nil filter -> builtin specs are non-empty, so Verify is invoked.
+			reportCmuxVerify(v, nil, &buf)
+			if !v.called {
+				t.Fatal("Verify should have been called")
+			}
+			got := buf.String()
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("output %q missing %q", got, tc.want)
+			}
+			if tc.notWant != "" && strings.Contains(got, tc.notWant) {
+				t.Errorf("output %q should not contain %q", got, tc.notWant)
+			}
+		})
+	}
+}
+
+func TestReportCmuxVerify_NoSpecsNoProbe(t *testing.T) {
+	// A domain filter that matches no bound-session host means no probe at all.
+	v := &fakeVerifier{}
+	var buf bytes.Buffer
+	reportCmuxVerify(v, []string{"%example.com"}, &buf)
+	if v.called {
+		t.Error("Verify must not be called when no bound-session host is in scope")
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no output, got %q", buf.String())
+	}
+}
 
 // runCmuxSync validates the mode flags before any Chrome/keychain/cmux I/O,
 // mirroring `source`. These cases exercise that gate without touching the

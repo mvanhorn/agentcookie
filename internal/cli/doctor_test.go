@@ -738,6 +738,10 @@ peer:
 		SourceAdapterCookiesExists: func(string) error { return nil },
 		SourceAdapterPassword:      func(chrome.Browser) (string, error) { return "safe-storage-password", nil },
 		SourceAdapterDecrypt:       func(string, []byte) error { return nil },
+		// Stub so the envelope test never opens a live cmux browser surface.
+		CmuxSessionHealth: func(config.CmuxRef) Check {
+			return Check{Name: "cmux session health", Severity: SeveritySkipped, Detail: "stub"}
+		},
 	})
 
 	// v0.12.0-beta.3 added two checks: Adapter coverage + CDP injector.
@@ -746,9 +750,11 @@ peer:
 	// The consumption bridge added the Secret coverage + Binary install checks.
 	// Universal cookie delivery added the Cookie delivery check. Source browser
 	// adapters added the Source adapter check. The cmux delivery surface added
-	// the cmux delivery check.
-	if got := len(report.Checks); got != 19 {
-		t.Fatalf("got %d checks, want 19", got)
+	// the cmux delivery check. Browser-bound-session honesty added the cmux
+	// session health check (source role only; present here since this fixture
+	// is source).
+	if got := len(report.Checks); got != 20 {
+		t.Fatalf("got %d checks, want 20", got)
 	}
 
 	// Serialize the envelope and confirm it round-trips.
@@ -860,6 +866,71 @@ func TestCheckCmuxLocalLoop(t *testing.T) {
 		c := checkCmuxLocalLoopWith(cfg, agentUp, okProbe)
 		if c.Severity != SeverityOK || !strings.Contains(c.Detail, "loop active") {
 			t.Fatalf("got %q / %q, want OK + loop active", c.Severity, c.Detail)
+		}
+	})
+}
+
+func TestCheckCmuxSessionHealth(t *testing.T) {
+	okProbe := func(string) (string, error) { return "allowAll", nil }
+	downProbe := func(string) (string, error) { return "", errors.New("connection refused") }
+	authedVerify := func([]sinkpush.VerifySpec) []sinkpush.VerifyResult {
+		return []sinkpush.VerifyResult{{Host: "github.com", State: sinkpush.AuthYes}}
+	}
+	notAuthedVerify := func([]sinkpush.VerifySpec) []sinkpush.VerifyResult {
+		return []sinkpush.VerifyResult{{Host: "github.com", State: sinkpush.AuthNo, Detail: "bound"}}
+	}
+	unknownVerify := func([]sinkpush.VerifySpec) []sinkpush.VerifyResult {
+		return []sinkpush.VerifyResult{{Host: "github.com", State: sinkpush.AuthUnknown, Detail: "timeout"}}
+	}
+	mustNotVerify := func([]sinkpush.VerifySpec) []sinkpush.VerifyResult {
+		t.Helper()
+		t.Fatal("verify should not run when cmux is absent or unreachable")
+		return nil
+	}
+
+	t.Run("cmux absent = skipped, no probe", func(t *testing.T) {
+		cfg := config.CmuxRef{CmuxPath: filepath.Join(t.TempDir(), "no-cmux")}
+		c := checkCmuxSessionHealthWith(cfg, func(string) (string, error) {
+			t.Fatal("probe should not run when cmux is absent")
+			return "", nil
+		}, mustNotVerify)
+		if c.Severity != SeveritySkipped {
+			t.Fatalf("got %q, want SKIPPED", c.Severity)
+		}
+	})
+
+	t.Run("cmux not running = skipped, no verify", func(t *testing.T) {
+		cfg := config.CmuxRef{CmuxPath: writeExecutable(t)}
+		c := checkCmuxSessionHealthWith(cfg, downProbe, mustNotVerify)
+		if c.Severity != SeveritySkipped || !strings.Contains(c.Detail, "not running") {
+			t.Fatalf("got %q / %q, want SKIPPED + not running", c.Severity, c.Detail)
+		}
+	})
+
+	t.Run("authenticated = OK", func(t *testing.T) {
+		cfg := config.CmuxRef{CmuxPath: writeExecutable(t)}
+		c := checkCmuxSessionHealthWith(cfg, okProbe, authedVerify)
+		if c.Severity != SeverityOK {
+			t.Fatalf("got %q / %q, want OK", c.Severity, c.Detail)
+		}
+	})
+
+	t.Run("not authenticated = WARN with native-login fix", func(t *testing.T) {
+		cfg := config.CmuxRef{CmuxPath: writeExecutable(t)}
+		c := checkCmuxSessionHealthWith(cfg, okProbe, notAuthedVerify)
+		if c.Severity != SeverityWarn {
+			t.Fatalf("got %q, want WARN", c.Severity)
+		}
+		if !strings.Contains(c.Detail, "github.com") || !strings.Contains(c.Remediation, "log in") {
+			t.Fatalf("WARN must name the host and the native-login fix, got %q / %q", c.Detail, c.Remediation)
+		}
+	})
+
+	t.Run("inconclusive probe = skipped, never FAIL", func(t *testing.T) {
+		cfg := config.CmuxRef{CmuxPath: writeExecutable(t)}
+		c := checkCmuxSessionHealthWith(cfg, okProbe, unknownVerify)
+		if c.Severity != SeveritySkipped {
+			t.Fatalf("got %q, want SKIPPED (a flaky probe must never FAIL doctor)", c.Severity)
 		}
 	})
 }
