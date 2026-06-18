@@ -155,7 +155,7 @@ func (a *CmuxAdapter) verifyOne(s VerifySpec) VerifyResult {
 	defer a.closeProbeSurface(sid)
 
 	script := probeScript(s.Predicate)
-	for attempt := 0; attempt < verifyMaxAttempts; attempt++ {
+	for attempt := range verifyMaxAttempts {
 		raw, err := a.run("rpc", "browser.eval", probeEvalParams(sid, script))
 		if err != nil {
 			res.Detail = fmt.Sprintf("eval error: %v", err)
