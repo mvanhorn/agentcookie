@@ -342,27 +342,29 @@ func cmuxCookieParam(c chrome.Cookie) map[string]any {
 	}
 	switch {
 	case strings.HasPrefix(c.Name, "__Host-"):
-		// __Host- invariants: Secure, Path "/", host-only (no Domain).
-		// WebKit hard-rejects a __Host- cookie carrying ANY Domain, so we both
-		// refrain from setting one here and defensively delete any Domain a
-		// future edit before this switch might add.
-		//
-		// The host-only scoping relies entirely on url: cmux's handler falls
-		// back to the injection surface's host when no Domain AND no url is
-		// sent, and a navigated/reused surface (host != nil) would re-introduce
-		// a Domain on the __Host- cookie -- the known residual from PR #103.
-		// Guaranteeing url is present (set above from HostKey) neutralizes that
-		// fallback regardless of the surface's current host. A __Host- cookie
-		// with no derivable host (empty url) is unusable and is dropped earlier
-		// by the caller's Validate gate.
+		// __Host- MUST be host-only with NO Domain: WebKit hard-rejects a
+		// __Host- cookie carrying ANY Domain, which silently dropped GitHub's
+		// __Host-user_session_same_site. Scope it host-only via url (set above
+		// from HostKey), force Secure + Path "/", and defensively delete any
+		// Domain a future edit before this switch might add.
 		secure = true
 		m["path"] = "/"
 		delete(m, "domain")
-	case strings.HasPrefix(c.HostKey, "."):
-		// Domain cookie: valid for subdomains. WebKit accepts the leading dot.
-		m["domain"] = c.HostKey
 	default:
-		// Host-only cookie: scoped to the exact host via url, no Domain.
+		// Every other cookie -- domain cookies (leading-dot host_key) AND
+		// host-only cookies (bare host) -- carries Domain = host_key so cmux's
+		// WebKit actually SENDS it on requests.
+		//
+		// REGRESSION FIX (was PR #103): scoping host-only cookies by url alone
+		// with NO Domain stores them in WebKit's cookie jar (cookies.get sees
+		// them) but they are NOT sent on a real navigation, so GitHub's
+		// user_session / _gh_sess were delivered yet never authenticated --
+		// the cmux pane stayed logged out. Restoring Domain = host_key makes
+		// WebKit send them (verified: GitHub logs in). A bare host_key is sent
+		// to that host; a leading-dot host_key is a subdomain-valid domain
+		// cookie (WebKit accepts the dot). url stays set above (harmless
+		// alongside Domain, and the scoping anchor for the __Host- case).
+		m["domain"] = c.HostKey
 	}
 	m["secure"] = secure
 	if ss := cmuxSameSite(c.SameSite); ss != "" {

@@ -147,14 +147,28 @@ func (a *CmuxAdapter) Verify(specs []VerifySpec) []VerifyResult {
 func (a *CmuxAdapter) verifyOne(s VerifySpec) VerifyResult {
 	res := VerifyResult{Host: s.Host, State: AuthUnknown}
 
-	sid, err := a.openProbeSurface(s.URL)
+	// Open the probe surface on about:blank FIRST, then navigate to the target
+	// in a separate step. Creating the surface with --url loads the page as
+	// part of surface creation, which races cookie propagation into the new
+	// webview's network context -- the page can finish loading logged-out
+	// before the shared cookie store is attached, a false negative. about:blank
+	// then an explicit navigate gives the webview its cookie store before the
+	// request goes out (verified: navigate-after-create authenticates where
+	// navigate-at-create does not).
+	sid, err := a.openProbeSurface()
 	if err != nil {
 		res.Detail = fmt.Sprintf("could not open probe surface: %v", err)
 		return res
 	}
 	defer a.closeProbeSurface(sid)
 
-	script := probeScript(s.Predicate)
+	navParams, _ := json.Marshal(map[string]any{"surface_id": sid, "url": s.URL})
+	if _, err := a.run("rpc", "browser.navigate", string(navParams)); err != nil {
+		res.Detail = fmt.Sprintf("navigate error: %v", err)
+		return res
+	}
+
+	script := probeScript(s.Predicate, s.Host)
 	for attempt := range verifyMaxAttempts {
 		raw, err := a.run("rpc", "browser.eval", probeEvalParams(sid, script))
 		if err != nil {
@@ -186,11 +200,12 @@ func (a *CmuxAdapter) verifyOne(s VerifySpec) VerifyResult {
 	return res
 }
 
-// openProbeSurface creates a dedicated hidden browser surface already navigated
-// to url, and returns its surface:N ref. Distinct from the cached injection
-// surface so the probe can be closed without disturbing injection.
-func (a *CmuxAdapter) openProbeSurface(url string) (string, error) {
-	out, err := a.run("new-surface", "--type", "browser", "--url", url, "--focus", "false")
+// openProbeSurface creates a dedicated hidden about:blank browser surface and
+// returns its surface:N ref. The caller navigates it separately (see verifyOne
+// on why navigate-at-create races cookie propagation). Distinct from the cached
+// injection surface so the probe can be closed without disturbing injection.
+func (a *CmuxAdapter) openProbeSurface() (string, error) {
+	out, err := a.run("new-surface", "--type", "browser", "--url", "about:blank", "--focus", "false")
 	if err != nil {
 		return "", err
 	}
@@ -218,12 +233,18 @@ func probeEvalParams(sid, script string) string {
 }
 
 // probeScript returns a synchronous JS expression that evaluates to a JSON
-// string {"ready":bool,"authed":bool}. ready gates on document.readyState so a
-// not-yet-loaded page is retried rather than reported as logged-out. The
-// predicate runs in the isolated content world (shares the DOM); only DOM
-// queries are used, never page-world globals.
-func probeScript(p Predicate) string {
-	return "JSON.stringify({ready: document.readyState === 'complete', authed: !!(" + predicateExpr(p) + ")})"
+// string {"ready":bool,"authed":bool}. ready gates on BOTH document.readyState
+// AND being on the target host: browser.navigate is async, so a poll right
+// after it can still see about:blank (readyState 'complete', no marker) and
+// would falsely report logged-out. Requiring location.hostname to match host
+// makes the poll wait for the real page. The predicate runs in the isolated
+// content world (shares the DOM); only DOM queries are used, never page-world
+// globals.
+func probeScript(p Predicate, host string) string {
+	h, _ := json.Marshal(host)
+	onHost := "(location.hostname === " + string(h) + " || location.hostname.endsWith('.' + " + string(h) + "))"
+	ready := "(document.readyState === 'complete' && " + onHost + ")"
+	return "JSON.stringify({ready: " + ready + ", authed: !!(" + predicateExpr(p) + ")})"
 }
 
 // predicateExpr renders one Predicate as a boolean JS expression. Args are
@@ -272,8 +293,11 @@ func parseProbeResult(raw string) (ready, authed bool, err error) {
 }
 
 // boundSessionGuidance is the actionable message for a delivered-but-not
-// -authenticated session: cookie copy cannot reconstruct a server-bound
-// session; log in natively in the cmux browser, or use gh CLI for git work.
+// -authenticated session. It states the FACT (delivered, not authenticated)
+// without asserting a cause -- the cause varies (stale/rotated cookies, a
+// genuinely device-bound site like Google/DBSC, or a shaping bug) and an
+// earlier version wrongly blamed "browser binding" for what was actually a
+// cmux cookie-shaping regression. The remediation is generic and safe.
 func boundSessionGuidance(host string) string {
-	return fmt.Sprintf("cookies delivered, but %s binds the session to the origin browser and rejects the transplant; log in to %s once inside the cmux browser, or use the gh CLI for git and PR work", host, host)
+	return fmt.Sprintf("cookies for %s were delivered but the session did not authenticate; if it persists, log in to %s once inside the cmux browser, or use the gh CLI for git and PR work", host, host)
 }

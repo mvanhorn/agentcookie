@@ -159,9 +159,12 @@ func TestBuiltinVerifySpecsCoverAllBoundSessionHosts(t *testing.T) {
 }
 
 func TestProbeScript_UsesPredicate(t *testing.T) {
-	s := probeScript(Predicate{Kind: metaPresent, Arg: "user-login"})
+	s := probeScript(Predicate{Kind: metaPresent, Arg: "user-login"}, "github.com")
 	if !strings.Contains(s, "document.readyState") {
 		t.Error("probe script must gate on readyState")
+	}
+	if !strings.Contains(s, "location.hostname") {
+		t.Error("probe script must gate on being on the target host (navigate is async)")
 	}
 	if !strings.Contains(s, "user-login") {
 		t.Error("probe script must embed the predicate arg")

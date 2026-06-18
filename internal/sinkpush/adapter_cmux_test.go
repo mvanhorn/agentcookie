@@ -231,16 +231,24 @@ func TestCmuxCookieParam_HostPrefixForcedHostOnlyDespiteDotHostKey(t *testing.T)
 	}
 }
 
-func TestCmuxCookieParam_HostOnlyNoDomainWidening(t *testing.T) {
-	// A host-only cookie (host_key with no leading dot) must not be widened
-	// to subdomains: no Domain attribute, scoped to the exact host via url.
+func TestCmuxCookieParam_HostOnlyCarriesDomainSoWebKitSendsIt(t *testing.T) {
+	// REGRESSION GUARD (PR #103 -> fix): a host-only cookie (host_key with no
+	// leading dot, e.g. GitHub's user_session) MUST carry Domain = host_key.
+	// Scoping it by url alone stores it but WebKit does not send it on a real
+	// navigation, so GitHub's session was delivered yet never authenticated.
+	// Domain = host_key makes WebKit send it (verified: GitHub logs in).
 	c := chrome.Cookie{HostKey: "github.com", Name: "user_session", Value: "v", Path: "/", IsSecure: 1}
 	m := cmuxCookieParam(c)
-	if _, ok := m["domain"]; ok {
-		t.Errorf("host-only cookie must NOT carry a domain, got %v", m["domain"])
+	if m["domain"] != "github.com" {
+		t.Errorf("host-only cookie must carry Domain=host_key so WebKit sends it, got %v", m["domain"])
 	}
 	if m["url"] != "https://github.com/" {
-		t.Errorf("host-only cookie must be scoped by url, got %v", m["url"])
+		t.Errorf("host-only cookie should still carry url, got %v", m["url"])
+	}
+	// __Host- is the ONLY case that must stay Domain-less.
+	h := chrome.Cookie{HostKey: "github.com", Name: "__Host-user_session_same_site", Value: "v", Path: "/", IsSecure: 1}
+	if _, ok := cmuxCookieParam(h)["domain"]; ok {
+		t.Error("__Host- cookie must NOT carry a domain (WebKit rejects it)")
 	}
 }
 

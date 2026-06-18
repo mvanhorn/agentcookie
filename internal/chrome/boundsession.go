@@ -2,35 +2,32 @@ package chrome
 
 import "strings"
 
-// This file models browser-bound web sessions: sites whose logged-in session
-// is bound by the SERVER to the originating browser, distinct from DBSC.
+// This file lists the hosts whose post-injection login is worth VERIFYING,
+// because for them "cookies delivered" has not always meant "session
+// authenticated" and a silent failure is costly to debug.
 //
-// DBSC (see dbsc.go) is a Chrome mechanism that binds a session key to the
-// source machine's secure hardware; a copied DBSC cookie works until its
-// short-lived refresh fails. A browser-bound session is different: the server
-// gates the logged-in response on a SameSite/site-context cookie and the
-// originating browser, and rejects a transplanted session presented from a
-// DIFFERENT browser engine even on the same machine and IP. GitHub is the
-// known case (its __Host-user_session_same_site cookie and a
-// `vary: Sec-Fetch-Site` response): the cookies copy in and are even sent on
-// requests, but the session never authenticates in cmux's WebKit browser.
+// CORRECTION: an earlier version claimed GitHub's session is bound by the
+// server to the originating browser and cannot be transplanted. That was WRONG.
+// GitHub authenticates fine from transplanted cookies once they are shaped so
+// the sink browser actually SENDS them. A cmux regression had stripped the
+// Domain from host-only cookies (cmuxCookieParam), so WebKit STORED
+// user_session but never sent it -- delivered yet not authenticated. Verified
+// by injecting the same cookies into both Chromium (agent-sync) and cmux's
+// WebKit and watching GitHub log in. It is not browser-bound, not DBSC.
 //
-// Cookie copying cannot reconstruct a browser-bound session. The honest fix is
-// a native login in the target browser (which binds a fresh session to it), or
-// gh CLI for git work. This classification exists ONLY to phrase that guidance
-// accurately -- it never gates shipping, and bound-session cookies still ship
-// (the non-session cookies remain useful, and a later native login benefits
-// from the preference/analytics cookies already present).
+// The list still earns its keep: these hosts get an empirical auth probe after
+// a push (internal/sinkpush.Verify) so a future shaping/send regression is
+// caught loudly instead of silently leaving the pane logged out. It never gates
+// shipping; all cookies still ship.
 
-// boundSessionHosts are registrable-domain suffixes whose web session is
-// server-bound to the originating browser. Kept separate from dbscKnownHosts so
-// messaging never mislabels a browser-bound session as DBSC.
+// boundSessionHosts (historical name) are registrable-domain suffixes whose
+// post-push login is verified empirically. Kept separate from dbscKnownHosts.
 var boundSessionHosts = []string{
 	"github.com",
 }
 
-// BoundSessionHosts returns the known browser-bound-session hosts. Callers use
-// it to drive post-injection auth verification (see internal/sinkpush.Verify).
+// BoundSessionHosts returns the hosts whose post-push login is verified. Callers
+// use it to drive post-injection auth verification (see internal/sinkpush.Verify).
 func BoundSessionHosts() []string {
 	out := make([]string, len(boundSessionHosts))
 	copy(out, boundSessionHosts)
