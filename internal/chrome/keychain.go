@@ -58,11 +58,22 @@ func SafeStoragePassword() (string, error) {
 	return SafeStoragePasswordFor(b)
 }
 
+// safeStorageViaKeybaseRunner is the SecItemCopyMatching path; a package var
+// so tests can stub it without a real Keychain.
+var safeStorageViaKeybaseRunner = safeStoragePasswordViaKeybaseFor
+
 // SafeStoragePasswordFor returns b's Safe Storage password from the macOS
 // Keychain using b's account/service pair.
 func SafeStoragePasswordFor(b Browser) (string, error) {
-	if pw, err := safeStoragePasswordViaKeybaseFor(b.KeychainService, b.KeychainAccount); err == nil {
-		return pw, nil
+	// ad-hoc build: SecItemCopyMatching always prompts for unsigned binaries,
+	// leaving a goroutine-leaked dialog open before the security CLI fallback
+	// opens a second one. Skip to the CLI path when there is no team ID.
+	exe, _ := os.Executable()
+	teamID, _ := BinaryTeamID(exe)
+	if teamID != "" {
+		if pw, err := safeStorageViaKeybaseRunner(b.KeychainService, b.KeychainAccount); err == nil {
+			return pw, nil
+		}
 	}
 	remediation := safeStorageRemediationFor(b)
 	// Fall back to `security` CLI shell-out, bounded by a timeout so a
@@ -325,4 +336,21 @@ func IsKeychainLocked(err error) bool {
 	}
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "25308") || strings.Contains(s, "interaction is not allowed")
+}
+
+// IsKeychainAccessError reports whether err came from SafeStoragePasswordFor
+// and indicates a missing or locked grant — as opposed to a transient
+// operational failure (e.g., cmux socket error). Launch agents use this to
+// decide between exiting 0 (no launchd restart) and exiting non-zero (launchd
+// retries).
+func IsKeychainAccessError(err error) bool {
+	if IsKeychainLocked(err) {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "did you grant access?") ||
+		strings.Contains(s, "not yet in the Safe Storage partition")
 }

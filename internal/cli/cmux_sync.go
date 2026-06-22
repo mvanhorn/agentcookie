@@ -29,6 +29,14 @@ var (
 	cmuxSyncBrowser  string
 )
 
+// cmuxSyncPasswordFor is the Keychain reader seam; tests stub it to avoid real
+// Keychain calls when exercising flag-validation and exit-0 paths.
+var cmuxSyncPasswordFor = chrome.SafeStoragePasswordFor
+
+// cmuxExitFunc is os.Exit; tests override it to intercept clean exits without
+// terminating the test process.
+var cmuxExitFunc = os.Exit
+
 var cmuxSyncCmd = &cobra.Command{
 	Use:   "cmux-sync",
 	Short: "Local loop: read this machine's Chrome and inject the session into this machine's cmux browser",
@@ -91,8 +99,17 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	password, err := chrome.SafeStoragePasswordFor(sourceBrowser)
+	password, err := cmuxSyncPasswordFor(sourceBrowser)
 	if err != nil {
+		if cmuxSyncWatch && chrome.IsKeychainAccessError(err) {
+			// In watch mode, a Keychain access failure means the binary has no
+			// grant yet. Exit 0 so launchd's KeepAlive does not restart the
+			// agent into a prompt storm. The operator must run wizard
+			// set-keychain-access before re-enabling the loop.
+			fmt.Fprintf(os.Stderr, "agentcookie cmux-sync --watch: Keychain not accessible; exiting cleanly so launchd does not restart.\nFix: %s\n", chrome.SafeStorageRemediation)
+			cmuxExitFunc(0)
+			return nil // unreachable in production; allows test assertions
+		}
 		return err
 	}
 	key, err := chrome.DeriveAESKey(password)

@@ -1,9 +1,111 @@
 package chrome
 
 import (
+	"errors"
 	"slices"
 	"testing"
 )
+
+func TestSafeStoragePasswordFor_SkipsCGOForUnsignedBinary(t *testing.T) {
+	origCodesign := codesignRunner
+	origKeybase := safeStorageViaKeybaseRunner
+	t.Cleanup(func() {
+		codesignRunner = origCodesign
+		safeStorageViaKeybaseRunner = origKeybase
+	})
+
+	codesignRunner = func(string) (string, error) {
+		return "path/to/bin: code object is not signed at all", nil
+	}
+	keybaseCalled := false
+	safeStorageViaKeybaseRunner = func(_, _ string) (string, error) {
+		keybaseCalled = true
+		return "", nil
+	}
+
+	b, _ := LookupBrowser("")
+	SafeStoragePasswordFor(b) //nolint:errcheck
+	if keybaseCalled {
+		t.Error("safeStorageViaKeybaseRunner must not be called for unsigned binaries")
+	}
+}
+
+func TestSafeStoragePasswordFor_UsesCGOForSignedBinary(t *testing.T) {
+	origCodesign := codesignRunner
+	origKeybase := safeStorageViaKeybaseRunner
+	t.Cleanup(func() {
+		codesignRunner = origCodesign
+		safeStorageViaKeybaseRunner = origKeybase
+	})
+
+	codesignRunner = func(string) (string, error) {
+		return "TeamIdentifier=ABC1234DEF", nil
+	}
+	keybaseCalled := false
+	safeStorageViaKeybaseRunner = func(_, _ string) (string, error) {
+		keybaseCalled = true
+		return "test-password", nil
+	}
+
+	b, _ := LookupBrowser("")
+	pw, err := SafeStoragePasswordFor(b)
+	if err != nil {
+		t.Fatalf("expected success from keybase stub, got: %v", err)
+	}
+	if !keybaseCalled {
+		t.Error("safeStorageViaKeybaseRunner must be called for signed binaries")
+	}
+	if pw != "test-password" {
+		t.Errorf("password = %q, want %q", pw, "test-password")
+	}
+}
+
+func TestSafeStoragePasswordFor_BinaryTeamIDErrorTreatedAsUnsigned(t *testing.T) {
+	origCodesign := codesignRunner
+	origKeybase := safeStorageViaKeybaseRunner
+	t.Cleanup(func() {
+		codesignRunner = origCodesign
+		safeStorageViaKeybaseRunner = origKeybase
+	})
+
+	// Non-unsigned codesign error (e.g., binary not found) → treat as unsigned.
+	codesignRunner = func(string) (string, error) {
+		return "", errors.New("codesign: no such file")
+	}
+	keybaseCalled := false
+	safeStorageViaKeybaseRunner = func(_, _ string) (string, error) {
+		keybaseCalled = true
+		return "", nil
+	}
+
+	b, _ := LookupBrowser("")
+	SafeStoragePasswordFor(b) //nolint:errcheck
+	if keybaseCalled {
+		t.Error("safeStorageViaKeybaseRunner must not be called when BinaryTeamID errors")
+	}
+}
+
+func TestIsKeychainAccessError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"generic error", errors.New("network timeout"), false},
+		{"did you grant access", errors.New("read Chrome Safe Storage from Keychain (did you grant access?): exit status 1"), true},
+		{"not yet in partition", errors.New("read Chrome Safe Storage from Keychain timed out after 10s; this binary is not yet in the Safe Storage partition."), true},
+		{"keychain locked 25308", errors.New("error -25308: User interaction is not allowed"), true},
+		{"keychain locked phrase", errors.New("interaction is not allowed"), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsKeychainAccessError(tc.err); got != tc.want {
+				t.Errorf("IsKeychainAccessError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestBuildPartitionListArgv_DefaultsToDefaultPartitionList(t *testing.T) {
 	got := buildPartitionListArgv("", "")

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
@@ -104,6 +105,77 @@ func TestCmuxSyncFlagValidation(t *testing.T) {
 			t.Fatalf("expected mutual-exclusion error, got %v", err)
 		}
 	})
+}
+
+// keychainAccessErr is a representative Keychain access failure string matching
+// what SafeStoragePasswordFor returns when access is denied.
+const keychainAccessErr = "read Chrome Safe Storage from Keychain (did you grant access?): exit status 1"
+
+func stubCmuxSyncPassword(t *testing.T, pw string, err error) {
+	t.Helper()
+	orig := cmuxSyncPasswordFor
+	cmuxSyncPasswordFor = func(chrome.Browser) (string, error) { return pw, err }
+	t.Cleanup(func() { cmuxSyncPasswordFor = orig })
+}
+
+func stubCmuxExitFunc(t *testing.T) *int {
+	t.Helper()
+	code := -1
+	orig := cmuxExitFunc
+	cmuxExitFunc = func(c int) { code = c }
+	t.Cleanup(func() { cmuxExitFunc = orig })
+	return &code
+}
+
+func TestRunCmuxSync_ExitsZeroOnKeychainFailureInWatchMode(t *testing.T) {
+	cmuxSyncOnce = false
+	cmuxSyncWatch = true
+	t.Cleanup(func() { cmuxSyncOnce = false; cmuxSyncWatch = false })
+
+	stubCmuxSyncPassword(t, "", errors.New(keychainAccessErr))
+	exitCode := stubCmuxExitFunc(t)
+
+	err := runCmuxSync(&cobra.Command{}, nil)
+	if err != nil {
+		t.Errorf("runCmuxSync should not return error on Keychain access failure in --watch, got: %v", err)
+	}
+	if *exitCode != 0 {
+		t.Errorf("exitFunc called with %d, want 0", *exitCode)
+	}
+}
+
+func TestRunCmuxSync_ReturnsErrorOnKeychainFailureInOnceMode(t *testing.T) {
+	cmuxSyncOnce = true
+	cmuxSyncWatch = false
+	t.Cleanup(func() { cmuxSyncOnce = false; cmuxSyncWatch = false })
+
+	stubCmuxSyncPassword(t, "", errors.New(keychainAccessErr))
+	exitCode := stubCmuxExitFunc(t)
+
+	err := runCmuxSync(&cobra.Command{}, nil)
+	if err == nil {
+		t.Error("runCmuxSync should return error on Keychain failure in --once mode")
+	}
+	if *exitCode != -1 {
+		t.Errorf("exitFunc must not be called in --once mode, got %d", *exitCode)
+	}
+}
+
+func TestRunCmuxSync_ReturnsErrorOnNonKeychainFailureInWatchMode(t *testing.T) {
+	cmuxSyncOnce = false
+	cmuxSyncWatch = true
+	t.Cleanup(func() { cmuxSyncOnce = false; cmuxSyncWatch = false })
+
+	stubCmuxSyncPassword(t, "", errors.New("network timeout: connection refused"))
+	exitCode := stubCmuxExitFunc(t)
+
+	err := runCmuxSync(&cobra.Command{}, nil)
+	if err == nil {
+		t.Error("runCmuxSync should return error on non-Keychain failure even in --watch mode")
+	}
+	if *exitCode != -1 {
+		t.Errorf("exitFunc must not be called for non-Keychain errors, got %d", *exitCode)
+	}
 }
 
 func TestDeltaCookies(t *testing.T) {
