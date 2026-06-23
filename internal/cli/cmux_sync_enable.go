@@ -28,6 +28,14 @@ var (
 		_, err := chrome.SafeStoragePasswordFor(b)
 		return err
 	}
+	// cmuxSyncConfigExists reports whether cmux's config file is present. It lets
+	// enableCmuxLoop run the Keychain pre-flight BEFORE mutating cmux.json while
+	// still surfacing the "launch cmux once" no-op first -- a stubbable seam so
+	// tests don't depend on a real cmux.json on disk.
+	cmuxSyncConfigExists = func(path string) bool {
+		info, err := os.Stat(path)
+		return err == nil && !info.IsDir()
+	}
 )
 
 var cmuxSyncEnableCmuxPath string
@@ -103,8 +111,30 @@ func enableCmuxLoop(cmuxPath string, quiet bool) error {
 	if err != nil {
 		return err
 	}
+
+	// cmux.json-missing no-op: surface "launch cmux once" before anything else
+	// so a never-launched cmux gets the relevant remediation, not a Keychain one.
+	if !cmuxSyncConfigExists(cfgPath) {
+		logf("agentcookie cmux-sync: cmux is installed but %s is missing; launch cmux once, then re-run `agentcookie cmux-sync enable`", cfgPath)
+		return nil
+	}
+
+	// Keychain pre-flight runs BEFORE mutating cmux.json. A go install binary is
+	// ad-hoc signed and always needs a first-run grant; failing here prevents the
+	// KeepAlive restart loop before it starts AND leaves cmux.json untouched (no
+	// orphaned socketControlMode=allowAll on an aborted enable). It runs after the
+	// cmux-absent / cmux.json-missing no-ops so those surface first.
+	defaultBrowser, _ := chrome.LookupBrowser("")
+	if err := cmuxSyncKeychainCheck(defaultBrowser); err != nil {
+		fmt.Fprintf(os.Stderr, "agentcookie cmux-sync enable: Keychain pre-flight failed — %v\n", err)
+		fmt.Fprintf(os.Stderr, "agentcookie cmux-sync enable: fix first: %s\n", chrome.SafeStorageRemediation)
+		return fmt.Errorf("cmux-sync enable: Keychain not accessible; run `agentcookie wizard set-keychain-access` first")
+	}
+
 	bak, err := cmuxSyncSetMode(cfgPath, "allowAll", "", time.Now())
 	if errors.Is(err, cmuxconfig.ErrNotFound) {
+		// cmux.json vanished between the existence check and the write (TOCTOU);
+		// no mutation happened, so this is still a clean no-op.
 		logf("agentcookie cmux-sync: cmux is installed but %s is missing; launch cmux once, then re-run `agentcookie cmux-sync enable`", cfgPath)
 		return nil
 	}
@@ -112,18 +142,6 @@ func enableCmuxLoop(cmuxPath string, quiet bool) error {
 		return fmt.Errorf("set cmux socketControlMode: %w", err)
 	}
 	logf("agentcookie cmux-sync: set socketControlMode=allowAll in %s (backup: %s)", cfgPath, bak)
-
-	// Keychain pre-flight: verify Keychain access before installing the agent.
-	// A go install binary is ad-hoc signed and always needs a first-run grant;
-	// failing here prevents the KeepAlive restart loop before it starts. Runs
-	// after the cmux-absent / cmux.json-missing no-ops so those surface their
-	// own (more relevant) remediation first.
-	defaultBrowser, _ := chrome.LookupBrowser("")
-	if err := cmuxSyncKeychainCheck(defaultBrowser); err != nil {
-		fmt.Fprintf(os.Stderr, "agentcookie cmux-sync enable: Keychain pre-flight failed — %v\n", err)
-		fmt.Fprintf(os.Stderr, "agentcookie cmux-sync enable: fix first: %s\n", chrome.SafeStorageRemediation)
-		return fmt.Errorf("cmux-sync enable: Keychain not accessible; run `agentcookie wizard set-keychain-access` first")
-	}
 
 	binPath, err := os.Executable()
 	if err != nil {
