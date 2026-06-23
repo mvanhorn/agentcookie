@@ -43,7 +43,7 @@ func TestSafeStoragePasswordFor_LockedKeychainShortCircuitsBeforeCLI(t *testing.
 	})
 
 	codesignRunner = func(string) (string, error) { return "code object is not signed at all", nil } // unsigned: skip CGO
-	keychainLockedCheck = func() (bool, error) { return true, nil }                                   // keychain is locked
+	keychainLockedCheck = func() (bool, error) { return true, nil }                                  // keychain is locked
 	cliCalled := false
 	securityCLIRead = func(_ context.Context, _, _ string) ([]byte, []byte, error) {
 		cliCalled = true

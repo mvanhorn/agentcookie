@@ -67,9 +67,17 @@ func safeStoragePasswordViaKeybaseFor(service, account string) (string, error) {
 		interactionMu.Unlock()
 	}()
 
+	// CFStringCreateWithBytes / CFDictionaryCreate return NULL on allocation
+	// failure; CFRelease(NULL) is undefined behavior, so guard before deferring.
 	svc := cfString(service)
+	if svc == 0 {
+		return "", errors.New("CFStringCreateWithBytes returned NULL for service")
+	}
 	defer C.CFRelease(C.CFTypeRef(svc))
 	acc := cfString(account)
+	if acc == 0 {
+		return "", errors.New("CFStringCreateWithBytes returned NULL for account")
+	}
 	defer C.CFRelease(C.CFTypeRef(acc))
 
 	keys := []C.CFTypeRef{
@@ -96,6 +104,9 @@ func safeStoragePasswordViaKeybaseFor(service, account string) (string, error) {
 		&C.kCFTypeDictionaryKeyCallBacks,
 		&C.kCFTypeDictionaryValueCallBacks,
 	)
+	if query == 0 {
+		return "", errors.New("CFDictionaryCreate returned NULL")
+	}
 	defer C.CFRelease(C.CFTypeRef(query))
 
 	var result C.CFTypeRef
