@@ -95,8 +95,10 @@ func TestIsKeychainAccessError(t *testing.T) {
 		{"generic error", errors.New("network timeout"), false},
 		{"did you grant access", errors.New("read Chrome Safe Storage from Keychain (did you grant access?): exit status 1"), true},
 		{"not yet in partition", errors.New("read Chrome Safe Storage from Keychain timed out after 10s; this binary is not yet in the Safe Storage partition."), true},
-		{"keychain locked 25308", errors.New("error -25308: User interaction is not allowed"), true},
-		{"keychain locked phrase", errors.New("interaction is not allowed"), true},
+		// Locked keychain (-25308) is transient, not a missing grant: launchd
+		// should retry, so this must NOT be classified as an access error.
+		{"keychain locked 25308 is not access error", errors.New("error -25308: User interaction is not allowed"), false},
+		{"keychain locked phrase is not access error", errors.New("interaction is not allowed"), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

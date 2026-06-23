@@ -339,14 +339,17 @@ func IsKeychainLocked(err error) bool {
 }
 
 // IsKeychainAccessError reports whether err came from SafeStoragePasswordFor
-// and indicates a missing or locked grant — as opposed to a transient
-// operational failure (e.g., cmux socket error). Launch agents use this to
-// decide between exiting 0 (no launchd restart) and exiting non-zero (launchd
-// retries).
+// and indicates a *missing grant* — the binary is not in the Safe Storage
+// partition / ACL and never will be without operator action. Launch agents use
+// this to exit 0 (no launchd restart) instead of looping prompts.
+//
+// It deliberately does NOT match a locked-keychain error (-25308 "User
+// interaction is not allowed"): that is a transient GUI condition (e.g., a
+// screen-lock or sleep-wake while the login keychain is momentarily relocking)
+// that resolves on its own, so the agent should exit non-zero and let launchd's
+// KeepAlive retry rather than stop the sync permanently. Use IsKeychainLocked
+// for that case.
 func IsKeychainAccessError(err error) bool {
-	if IsKeychainLocked(err) {
-		return true
-	}
 	if err == nil {
 		return false
 	}

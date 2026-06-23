@@ -84,7 +84,8 @@ func TestEnableCmuxLoop_NoAgentWhenCmuxConfigMissing(t *testing.T) {
 		installed = append(installed, spec)
 		return nil
 	}
-	cmuxSyncKeychainCheck = func(chrome.Browser) error { return nil }
+	checkCalled := false
+	cmuxSyncKeychainCheck = func(chrome.Browser) error { checkCalled = true; return nil }
 	t.Cleanup(func() {
 		cmuxSyncSetMode, cmuxSyncInstallAgent, cmuxSyncKeychainCheck = origSet, origInstall, origCheck
 	})
@@ -94,6 +95,11 @@ func TestEnableCmuxLoop_NoAgentWhenCmuxConfigMissing(t *testing.T) {
 	}
 	if len(installed) != 0 {
 		t.Errorf("no agent should be installed when cmux.json is missing, got %d", len(installed))
+	}
+	// P2: the Keychain pre-flight must not run when cmux.json is missing, so the
+	// user sees "launch cmux once" rather than a misleading Keychain message.
+	if checkCalled {
+		t.Error("Keychain pre-flight must not run when cmux.json is missing (ErrNotFound)")
 	}
 }
 
@@ -121,11 +127,12 @@ func TestEnableCmuxLoop_AbortsWhenKeychainPreflightFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("enable should abort when Keychain pre-flight fails")
 	}
+	// The agent is what starts the restart loop; it must never be installed
+	// when the pre-flight fails. (socketControlMode may already be set — the
+	// pre-flight runs after the cmux.json ErrNotFound guard so a never-launched
+	// cmux gets the correct "launch cmux once" message instead of a Keychain one.)
 	if len(installed) != 0 {
 		t.Errorf("no agent should be installed when pre-flight fails, got %d", len(installed))
-	}
-	if len(setCalls) != 0 {
-		t.Errorf("socketControlMode must not be changed when pre-flight fails, got %v", setCalls)
 	}
 }
 
