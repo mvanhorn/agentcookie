@@ -2,65 +2,115 @@
 
 package chrome
 
-import (
-	"context"
-	"errors"
-	"time"
+/*
+#cgo LDFLAGS: -framework CoreFoundation -framework Security
+#include <CoreFoundation/CoreFoundation.h>
+#include <Security/Security.h>
 
-	keychain "github.com/keybase/go-keychain"
+// SecKeychainSetUserInteractionAllowed is deprecated but is the only API that
+// suppresses the legacy keychain ACL-confirmation dialog (the "agentcookie
+// wants to use the Chrome Safe Storage key" prompt). kSecUseAuthenticationUI
+// only governs LocalAuthentication UI, not this ACL gate. Silence the
+// deprecation warning so the build stays clean.
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+*/
+import "C"
+
+import (
+	"errors"
+	"fmt"
+	"unsafe"
 )
 
-// keybaseReadTimeout caps how long safeStoragePasswordViaKeybase will
-// wait for the modern Apple Security API (SecItemCopyMatching) before
-// giving up and letting the caller fall through to the security CLI
-// path. Three seconds is well past the call's normal success time
-// (sub-millisecond when the keychain is unlocked and the binary is in
-// the trust list) but well under the user's tolerance for "is it
-// hung?" -- if the keybase path is going to prompt, we want to abandon
-// it and let the legacy CLI succeed instead of blocking forever on a
-// SecurityAgent prompt nobody is going to answer.
-const keybaseReadTimeout = 3 * time.Second
+// ErrKeychainInteractionRequired means SecItemCopyMatching would have needed a
+// GUI prompt to satisfy the read -- the calling binary is not in the item's
+// ACL / Safe Storage partition, or the keychain is locked. Because user
+// interaction is disabled for the call (SecKeychainSetUserInteractionAllowed),
+// the API returns errSecInteractionNotAllowed (-25308) immediately instead of
+// presenting a SecurityAgent dialog. Callers fall through to the `security` CLI
+// lane, where locked-vs-missing-grant is classified (see SafeStoragePasswordFor).
+var ErrKeychainInteractionRequired = errors.New("keychain read requires interaction (binary not in Safe Storage partition or keychain locked); fall back to the security CLI")
 
-// ErrKeybaseTimedOut means the keybase/go-keychain call did not return
-// within keybaseReadTimeout. Almost always indicates a hung
-// SecurityAgent prompt: the modern SecItemCopyMatching API requires the
-// calling binary to be in the keychain item's per-app trust list AND
-// signed by a recognized identity. Ad-hoc-signed Go binaries
-// (`go install` output) fail both conditions, so SecItem blocks
-// waiting for a UI prompt that no one is going to dismiss.
-var ErrKeybaseTimedOut = errors.New("keybase keychain GetGenericPassword timed out (likely a SecurityAgent prompt waiting that no one can dismiss; fall back to the security CLI)")
-
-// safeStoragePasswordViaKeybase reads Chrome Safe Storage via the
-// modern SecItem API path. Used as the fast path on darwin+CGO builds;
-// callers fall back to the security CLI if this returns an error.
+// safeStoragePasswordViaKeybaseFor reads Chrome Safe Storage via the modern
+// SecItem API path. Used as the no-prompt fast path on darwin+CGO builds;
+// callers fall back to the `security` CLI on any error.
 //
-// The CGO call is run in a goroutine and capped by keybaseReadTimeout
-// so a hung SecurityAgent prompt does not stall the entire process.
-// In practice this happens often on Mac mini sinks where agentcookie
-// is the only ad-hoc-signed binary the user re-deploys frequently --
-// each rebuild invalidates the cdhash that the per-app trust list
-// pinned, so subsequent SecItem calls hit a prompt that no one will
-// answer.
+// User interaction is disabled around the call via
+// SecKeychainSetUserInteractionAllowed(false), so SecItemCopyMatching never
+// opens the keychain ACL-confirmation dialog: when the binary is in the item's
+// trust list / Safe Storage partition the read succeeds without a prompt, and
+// otherwise it returns errSecInteractionNotAllowed (-25308) right away. That is
+// what lets the call be synchronous -- there is no GUI prompt to hang on, so
+// there is no goroutine to abandon and no orphaned dialog to leak (the bug
+// behind the #106 prompt storm on signed binaries that lost their grant). The
+// historical goroutine + timeout dance is gone by construction.
+//
+// kSecUseAuthenticationUIFail is set as well to cover the (unused here)
+// LocalAuthentication path; the interaction toggle is what suppresses the
+// legacy ACL dialog this code actually hits.
 func safeStoragePasswordViaKeybaseFor(service, account string) (string, error) {
-	type result struct {
-		pw  []byte
-		err error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		password, err := keychain.GetGenericPassword(service, account, "", "")
-		ch <- result{pw: password, err: err}
-	}()
+	// Process-global toggle; restore on return. This read path is the only
+	// place that disables interaction, and it is not run concurrently with an
+	// interactive keychain read, so the global flip is safe here.
+	C.SecKeychainSetUserInteractionAllowed(C.Boolean(0))
+	defer C.SecKeychainSetUserInteractionAllowed(C.Boolean(1))
 
-	ctx, cancel := context.WithTimeout(context.Background(), keybaseReadTimeout)
-	defer cancel()
-	select {
-	case r := <-ch:
-		if r.err != nil {
-			return "", r.err
-		}
-		return string(r.pw), nil
-	case <-ctx.Done():
-		return "", ErrKeybaseTimedOut
+	svc := cfString(service)
+	defer C.CFRelease(C.CFTypeRef(svc))
+	acc := cfString(account)
+	defer C.CFRelease(C.CFTypeRef(acc))
+
+	keys := []C.CFTypeRef{
+		C.CFTypeRef(C.kSecClass),
+		C.CFTypeRef(C.kSecAttrService),
+		C.CFTypeRef(C.kSecAttrAccount),
+		C.CFTypeRef(C.kSecMatchLimit),
+		C.CFTypeRef(C.kSecReturnData),
+		C.CFTypeRef(C.kSecUseAuthenticationUI),
 	}
+	vals := []C.CFTypeRef{
+		C.CFTypeRef(C.kSecClassGenericPassword),
+		C.CFTypeRef(svc),
+		C.CFTypeRef(acc),
+		C.CFTypeRef(C.kSecMatchLimitOne),
+		C.CFTypeRef(C.kCFBooleanTrue),
+		C.CFTypeRef(C.kSecUseAuthenticationUIFail),
+	}
+	query := C.CFDictionaryCreate(
+		C.kCFAllocatorDefault,
+		(*unsafe.Pointer)(unsafe.Pointer(&keys[0])),
+		(*unsafe.Pointer)(unsafe.Pointer(&vals[0])),
+		C.CFIndex(len(keys)),
+		&C.kCFTypeDictionaryKeyCallBacks,
+		&C.kCFTypeDictionaryValueCallBacks,
+	)
+	defer C.CFRelease(C.CFTypeRef(query))
+
+	var result C.CFTypeRef
+	status := C.SecItemCopyMatching(C.CFDictionaryRef(query), &result)
+	if status == C.errSecInteractionNotAllowed {
+		return "", ErrKeychainInteractionRequired
+	}
+	if status != C.errSecSuccess {
+		return "", fmt.Errorf("SecItemCopyMatching: OSStatus %d", int(status))
+	}
+	defer C.CFRelease(result)
+
+	data := C.CFDataRef(result)
+	length := C.CFDataGetLength(data)
+	if length == 0 {
+		return "", nil
+	}
+	return string(C.GoBytes(unsafe.Pointer(C.CFDataGetBytePtr(data)), C.int(length))), nil
+}
+
+// cfString builds an immutable CFStringRef from a Go string (UTF-8). The caller
+// owns the result and must CFRelease it.
+func cfString(s string) C.CFStringRef {
+	b := []byte(s)
+	var p *C.UInt8
+	if len(b) > 0 {
+		p = (*C.UInt8)(unsafe.Pointer(&b[0]))
+	}
+	return C.CFStringCreateWithBytes(C.kCFAllocatorDefault, p, C.CFIndex(len(b)), C.kCFStringEncodingUTF8, C.Boolean(0))
 }
