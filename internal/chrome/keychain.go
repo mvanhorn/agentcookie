@@ -3,6 +3,7 @@
 package chrome
 
 import (
+	"bytes"
 	"context"
 	"crypto/pbkdf2"
 	"crypto/sha1"
@@ -62,12 +63,62 @@ func SafeStoragePassword() (string, error) {
 // so tests can stub it without a real Keychain.
 var safeStorageViaKeybaseRunner = safeStoragePasswordViaKeybaseFor
 
+// Keychain read failure sentinels. SafeStoragePasswordFor wraps its error with
+// one of these via %w, and IsKeychainLocked / IsKeychainAccessError classify by
+// errors.Is rather than substring-matching the human-readable wrapper prose.
+// Classifying at the source is what keeps a transient locked-keychain error
+// from being misread as a permanent missing grant after it is wrapped (the bug
+// that survived PR #107's string-based check).
+var (
+	// ErrKeychainNoGrant: the binary is not in the Safe Storage partition / ACL
+	// and will not be without operator action (wizard set-keychain-access). A
+	// --watch agent exits 0 on this (no launchd restart).
+	ErrKeychainNoGrant = errors.New("keychain: binary not in Safe Storage partition (missing grant)")
+	// ErrKeychainLocked: the login keychain is locked -- transient (sleep-wake,
+	// screen-lock, SSH session). A --watch agent exits non-zero so launchd's
+	// KeepAlive retries once the keychain unlocks.
+	ErrKeychainLocked = errors.New("keychain: login keychain is locked")
+	// ErrKeychainTimeout: the security CLI read exceeded safeStorageReadTimeout.
+	// Treated as a missing grant (exit 0) -- an unattended agent cannot resolve
+	// a hung read, and U3's enable pre-flight prevents installing an agent
+	// without a grant in the first place.
+	ErrKeychainTimeout = errors.New("keychain: read timed out")
+)
+
+// securityCLIRead runs the `security` CLI Safe Storage read and returns stdout,
+// stderr, and the exec error separately. A package var so tests can classify
+// without a real Keychain. stderr is captured explicitly (rather than relying on
+// exec.ExitError.Stderr) so the locked-vs-missing-grant decision has a clean,
+// stubbable signal.
+var securityCLIRead = func(ctx context.Context, account, service string) (stdout, stderr []byte, err error) {
+	cmd := exec.CommandContext(ctx, "security",
+		"find-generic-password",
+		"-a", account,
+		"-s", service,
+		"-w",
+	)
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	out, e := cmd.Output()
+	return out, errBuf.Bytes(), e
+}
+
+// keychainLockedSignal reports whether security-CLI stderr indicates a locked
+// keychain (-25308 "User interaction is not allowed") rather than a missing
+// grant. Shared by classification and the IsKeychainLocked legacy fallback.
+func keychainLockedSignal(s string) bool {
+	s = strings.ToLower(s)
+	return strings.Contains(s, "25308") || strings.Contains(s, "interaction is not allowed")
+}
+
 // SafeStoragePasswordFor returns b's Safe Storage password from the macOS
 // Keychain using b's account/service pair.
 func SafeStoragePasswordFor(b Browser) (string, error) {
-	// ad-hoc build: SecItemCopyMatching always prompts for unsigned binaries,
-	// leaving a goroutine-leaked dialog open before the security CLI fallback
-	// opens a second one. Skip to the CLI path when there is no team ID.
+	// Signed binary: try the no-prompt SecItem fast path first. It never opens a
+	// dialog (interaction is disabled), so a miss just falls through cheaply.
+	// Unsigned (go install) binaries skip it -- they are never in the per-app
+	// trust list, so the CLI lane (apple-tool: partition) is the only one that
+	// can succeed without a prompt.
 	exe, _ := os.Executable()
 	teamID, _ := BinaryTeamID(exe)
 	if teamID != "" {
@@ -80,18 +131,18 @@ func SafeStoragePasswordFor(b Browser) (string, error) {
 	// hung GUI Keychain prompt fails loud instead of blocking forever.
 	ctx, cancel := context.WithTimeout(context.Background(), safeStorageReadTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "security",
-		"find-generic-password",
-		"-a", b.KeychainAccount,
-		"-s", b.KeychainService,
-		"-w",
-	)
-	out, err := cmd.Output()
+	out, errOut, err := securityCLIRead(ctx, b.KeychainAccount, b.KeychainService)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return "", fmt.Errorf("read %s from Keychain timed out after %s; this binary is not yet in the Safe Storage partition. %s", b.KeychainService, safeStorageReadTimeout, remediation)
+		return "", fmt.Errorf("read %s from Keychain timed out after %s; this binary is not yet in the Safe Storage partition. %s: %w", b.KeychainService, safeStorageReadTimeout, remediation, ErrKeychainTimeout)
 	}
 	if err != nil {
-		return "", fmt.Errorf("read %s from Keychain (did you grant access?): %w; %s", b.KeychainService, err, remediation)
+		// Classify at the source so the sentinel -- not the wrapper prose --
+		// drives the --watch exit decision. A locked keychain is transient
+		// (retry); a missing grant is permanent (exit 0).
+		if keychainLockedSignal(string(errOut)) {
+			return "", fmt.Errorf("read %s from Keychain: login keychain is locked (%s); %s: %w", b.KeychainService, strings.TrimSpace(string(errOut)), remediation, ErrKeychainLocked)
+		}
+		return "", fmt.Errorf("read %s from Keychain (did you grant access?): %v; %s: %w", b.KeychainService, err, remediation, ErrKeychainNoGrant)
 	}
 	return strings.TrimRight(string(out), "\n"), nil
 }
@@ -334,8 +385,13 @@ func IsKeychainLocked(err error) bool {
 	if err == nil {
 		return false
 	}
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "25308") || strings.Contains(s, "interaction is not allowed")
+	// Sentinel is authoritative for errors from SafeStoragePasswordFor; the
+	// legacy string match keeps foreign callers (doctor probe, SSH-context
+	// reads that surface a raw -25308) working without a sentinel wrap.
+	if errors.Is(err, ErrKeychainLocked) {
+		return true
+	}
+	return keychainLockedSignal(err.Error())
 }
 
 // IsKeychainAccessError reports whether err came from SafeStoragePasswordFor
@@ -350,10 +406,9 @@ func IsKeychainLocked(err error) bool {
 // KeepAlive retry rather than stop the sync permanently. Use IsKeychainLocked
 // for that case.
 func IsKeychainAccessError(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "did you grant access?") ||
-		strings.Contains(s, "not yet in the Safe Storage partition")
+	// Pure errors.Is: a locked-keychain error wrapped in "did you grant access?"
+	// prose must NOT match here (that was the PR #107 bug). Only the missing-grant
+	// and timeout sentinels count as access errors. A locked error carries
+	// ErrKeychainLocked instead and is excluded.
+	return errors.Is(err, ErrKeychainNoGrant) || errors.Is(err, ErrKeychainTimeout)
 }

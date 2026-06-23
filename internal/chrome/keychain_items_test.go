@@ -2,6 +2,7 @@ package chrome
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -77,6 +78,9 @@ func TestIsKeychainLocked(t *testing.T) {
 		{"explicit -25308 code", errors.New("keybase keychain GetGenericPassword: ... (-25308)"), true},
 		{"interaction-not-allowed text", errors.New("User interaction is not allowed."), true},
 		{"unrelated error is not locked", errors.New("not readable by this process"), false},
+		// Sentinel is authoritative even when wrapped without the -25308 string.
+		{"locked sentinel", fmt.Errorf("read Keychain: %w", ErrKeychainLocked), true},
+		{"missing-grant sentinel is not locked", fmt.Errorf("read Keychain: %w", ErrKeychainNoGrant), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -2,6 +2,7 @@ package chrome
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 )
@@ -93,12 +94,16 @@ func TestIsKeychainAccessError(t *testing.T) {
 	}{
 		{"nil", nil, false},
 		{"generic error", errors.New("network timeout"), false},
-		{"did you grant access", errors.New("read Chrome Safe Storage from Keychain (did you grant access?): exit status 1"), true},
-		{"not yet in partition", errors.New("read Chrome Safe Storage from Keychain timed out after 10s; this binary is not yet in the Safe Storage partition."), true},
-		// Locked keychain (-25308) is transient, not a missing grant: launchd
-		// should retry, so this must NOT be classified as an access error.
-		{"keychain locked 25308 is not access error", errors.New("error -25308: User interaction is not allowed"), false},
-		{"keychain locked phrase is not access error", errors.New("interaction is not allowed"), false},
+		{"missing grant sentinel", fmt.Errorf("read Keychain (did you grant access?): %w", ErrKeychainNoGrant), true},
+		{"timeout sentinel", fmt.Errorf("read Keychain timed out: %w", ErrKeychainTimeout), true},
+		// Sentinel survives an extra wrap layer -- the boundary the old string
+		// match defeated: classification holds even after re-wrapping.
+		{"missing grant wrapped twice", fmt.Errorf("cmux-sync: %w", fmt.Errorf("read Keychain: %w", ErrKeychainNoGrant)), true},
+		// The PR #107 regression guard: a LOCKED error wrapped in the
+		// "did you grant access?" prose must NOT be classified as an access
+		// error -- it carries ErrKeychainLocked, so launchd should retry.
+		{"locked wrapped in grant prose is not access error", fmt.Errorf("read Keychain (did you grant access?): login keychain is locked: %w", ErrKeychainLocked), false},
+		{"raw locked string is not access error", errors.New("error -25308: User interaction is not allowed"), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

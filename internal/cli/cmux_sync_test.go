@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -107,9 +108,10 @@ func TestCmuxSyncFlagValidation(t *testing.T) {
 	})
 }
 
-// keychainAccessErr is a representative Keychain access failure string matching
-// what SafeStoragePasswordFor returns when access is denied.
-const keychainAccessErr = "read Chrome Safe Storage from Keychain (did you grant access?): exit status 1"
+// keychainAccessErr is a representative missing-grant failure matching what
+// SafeStoragePasswordFor returns when access is denied: the operator-facing
+// prose plus the ErrKeychainNoGrant sentinel that drives classification.
+var keychainAccessErr = fmt.Errorf("read Chrome Safe Storage from Keychain (did you grant access?): exit status 1: %w", chrome.ErrKeychainNoGrant)
 
 func stubCmuxSyncPassword(t *testing.T, pw string, err error) {
 	t.Helper()
@@ -132,7 +134,7 @@ func TestRunCmuxSync_ExitsZeroOnKeychainFailureInWatchMode(t *testing.T) {
 	cmuxSyncWatch = true
 	t.Cleanup(func() { cmuxSyncOnce = false; cmuxSyncWatch = false })
 
-	stubCmuxSyncPassword(t, "", errors.New(keychainAccessErr))
+	stubCmuxSyncPassword(t, "", keychainAccessErr)
 	exitCode := stubCmuxExitFunc(t)
 
 	err := runCmuxSync(&cobra.Command{}, nil)
@@ -149,7 +151,7 @@ func TestRunCmuxSync_ReturnsErrorOnKeychainFailureInOnceMode(t *testing.T) {
 	cmuxSyncWatch = false
 	t.Cleanup(func() { cmuxSyncOnce = false; cmuxSyncWatch = false })
 
-	stubCmuxSyncPassword(t, "", errors.New(keychainAccessErr))
+	stubCmuxSyncPassword(t, "", keychainAccessErr)
 	exitCode := stubCmuxExitFunc(t)
 
 	err := runCmuxSync(&cobra.Command{}, nil)
@@ -175,6 +177,29 @@ func TestRunCmuxSync_ReturnsErrorOnNonKeychainFailureInWatchMode(t *testing.T) {
 	}
 	if *exitCode != -1 {
 		t.Errorf("exitFunc must not be called for non-Keychain errors, got %d", *exitCode)
+	}
+}
+
+func TestRunCmuxSync_ReturnsErrorOnLockedKeychainInWatchMode(t *testing.T) {
+	// A locked keychain is transient: --watch must exit non-zero so launchd's
+	// KeepAlive retries once it unlocks, NOT exit 0 (which would stop the sync
+	// permanently). This is the PR #107 misclassification fix at the call site:
+	// the error carries ErrKeychainLocked even though it reads as an access
+	// failure, so IsKeychainAccessError is false and exitFunc is never called.
+	cmuxSyncOnce = false
+	cmuxSyncWatch = true
+	t.Cleanup(func() { cmuxSyncOnce = false; cmuxSyncWatch = false })
+
+	lockedErr := fmt.Errorf("read Keychain (did you grant access?): login keychain is locked: %w", chrome.ErrKeychainLocked)
+	stubCmuxSyncPassword(t, "", lockedErr)
+	exitCode := stubCmuxExitFunc(t)
+
+	err := runCmuxSync(&cobra.Command{}, nil)
+	if err == nil {
+		t.Error("runCmuxSync should return error (non-zero) on a locked keychain in --watch mode")
+	}
+	if *exitCode != -1 {
+		t.Errorf("exitFunc must not be called for a locked keychain, got %d", *exitCode)
 	}
 }
 
