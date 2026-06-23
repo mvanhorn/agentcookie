@@ -19,6 +19,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"unsafe"
 )
 
@@ -30,6 +31,12 @@ import (
 // presenting a SecurityAgent dialog. Callers fall through to the `security` CLI
 // lane, where locked-vs-missing-grant is classified (see SafeStoragePasswordFor).
 var ErrKeychainInteractionRequired = errors.New("keychain read requires interaction (binary not in Safe Storage partition or keychain locked); fall back to the security CLI")
+
+// interactionMu serializes the process-global
+// SecKeychainSetUserInteractionAllowed flip so a concurrent in-process keychain
+// caller never observes interaction in a half-flipped state. This package is the
+// sole owner of that flag.
+var interactionMu sync.Mutex
 
 // safeStoragePasswordViaKeybaseFor reads Chrome Safe Storage via the modern
 // SecItem API path. Used as the no-prompt fast path on darwin+CGO builds;
@@ -49,11 +56,16 @@ var ErrKeychainInteractionRequired = errors.New("keychain read requires interact
 // LocalAuthentication path; the interaction toggle is what suppresses the
 // legacy ACL dialog this code actually hits.
 func safeStoragePasswordViaKeybaseFor(service, account string) (string, error) {
-	// Process-global toggle; restore on return. This read path is the only
-	// place that disables interaction, and it is not run concurrently with an
-	// interactive keychain read, so the global flip is safe here.
+	// Process-global toggle; serialized and restored on return so a concurrent
+	// in-process keychain caller never sees it half-flipped. This package is the
+	// sole owner of the flag, so restoring to enabled (the macOS default) is
+	// correct.
+	interactionMu.Lock()
 	C.SecKeychainSetUserInteractionAllowed(C.Boolean(0))
-	defer C.SecKeychainSetUserInteractionAllowed(C.Boolean(1))
+	defer func() {
+		C.SecKeychainSetUserInteractionAllowed(C.Boolean(1))
+		interactionMu.Unlock()
+	}()
 
 	svc := cfString(service)
 	defer C.CFRelease(C.CFTypeRef(svc))
@@ -113,4 +125,24 @@ func cfString(s string) C.CFStringRef {
 		p = (*C.UInt8)(unsafe.Pointer(&b[0]))
 	}
 	return C.CFStringCreateWithBytes(C.kCFAllocatorDefault, p, C.CFIndex(len(b)), C.kCFStringEncodingUTF8, C.Boolean(0))
+}
+
+// keychainDefaultLocked reports whether the default (login) keychain is locked.
+// Chrome Safe Storage lives in the login keychain, so this distinguishes a
+// transient locked keychain (retry) from a permanent missing grant. Querying
+// status does not require unlocking and never prompts. It is consulted before
+// the `security` CLI read so a locked keychain short-circuits to a transient
+// error instead of hanging the CLI on an unlock prompt until the timeout.
+func keychainDefaultLocked() (bool, error) {
+	var kc C.SecKeychainRef
+	if st := C.SecKeychainCopyDefault(&kc); st != C.errSecSuccess {
+		return false, fmt.Errorf("SecKeychainCopyDefault: OSStatus %d", int(st))
+	}
+	defer C.CFRelease(C.CFTypeRef(kc))
+	var status C.SecKeychainStatus
+	if st := C.SecKeychainGetStatus(kc, &status); st != C.errSecSuccess {
+		return false, fmt.Errorf("SecKeychainGetStatus: OSStatus %d", int(st))
+	}
+	// kSecUnlockStateStatus set => unlocked; absent => locked.
+	return status&C.kSecUnlockStateStatus == 0, nil
 }

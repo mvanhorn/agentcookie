@@ -1,6 +1,7 @@
 package chrome
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -28,6 +29,66 @@ func TestSafeStoragePasswordFor_SkipsCGOForUnsignedBinary(t *testing.T) {
 	SafeStoragePasswordFor(b) //nolint:errcheck
 	if keybaseCalled {
 		t.Error("safeStorageViaKeybaseRunner must not be called for unsigned binaries")
+	}
+}
+
+func TestSafeStoragePasswordFor_LockedKeychainShortCircuitsBeforeCLI(t *testing.T) {
+	// A locked login keychain must short-circuit to ErrKeychainLocked BEFORE the
+	// `security` CLI runs -- otherwise the CLI hangs on an unlock prompt until the
+	// timeout and the error gets misclassified as a missing grant (exit 0). The
+	// transient lock must let a --watch agent exit non-zero so launchd retries.
+	origCodesign, origKeybase, origLocked, origCLI := codesignRunner, safeStorageViaKeybaseRunner, keychainLockedCheck, securityCLIRead
+	t.Cleanup(func() {
+		codesignRunner, safeStorageViaKeybaseRunner, keychainLockedCheck, securityCLIRead = origCodesign, origKeybase, origLocked, origCLI
+	})
+
+	codesignRunner = func(string) (string, error) { return "code object is not signed at all", nil } // unsigned: skip CGO
+	keychainLockedCheck = func() (bool, error) { return true, nil }                                   // keychain is locked
+	cliCalled := false
+	securityCLIRead = func(_ context.Context, _, _ string) ([]byte, []byte, error) {
+		cliCalled = true
+		return nil, nil, nil
+	}
+
+	b, _ := LookupBrowser("")
+	_, err := SafeStoragePasswordFor(b)
+	if !errors.Is(err, ErrKeychainLocked) {
+		t.Errorf("locked keychain should return ErrKeychainLocked, got: %v", err)
+	}
+	if IsKeychainAccessError(err) {
+		t.Error("a locked keychain must not be classified as an access error (it should retry)")
+	}
+	if cliCalled {
+		t.Error("security CLI must not run when the keychain is locked (avoids hang/unlock-prompt storm)")
+	}
+}
+
+func TestSafeStoragePasswordFor_UnknownLockStateFallsThroughToCLI(t *testing.T) {
+	// When lock state is unknown (status error, or non-darwin/cgo build), do not
+	// short-circuit -- fall through to the CLI lane.
+	origCodesign, origKeybase, origLocked, origCLI := codesignRunner, safeStorageViaKeybaseRunner, keychainLockedCheck, securityCLIRead
+	t.Cleanup(func() {
+		codesignRunner, safeStorageViaKeybaseRunner, keychainLockedCheck, securityCLIRead = origCodesign, origKeybase, origLocked, origCLI
+	})
+
+	codesignRunner = func(string) (string, error) { return "code object is not signed at all", nil }
+	keychainLockedCheck = func() (bool, error) { return false, errors.New("status unavailable") }
+	cliCalled := false
+	securityCLIRead = func(_ context.Context, _, _ string) ([]byte, []byte, error) {
+		cliCalled = true
+		return []byte("pw\n"), nil, nil
+	}
+
+	b, _ := LookupBrowser("")
+	pw, err := SafeStoragePasswordFor(b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pw != "pw" {
+		t.Errorf("password = %q, want %q", pw, "pw")
+	}
+	if !cliCalled {
+		t.Error("unknown lock state should fall through to the security CLI")
 	}
 }
 

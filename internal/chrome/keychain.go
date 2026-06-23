@@ -63,6 +63,11 @@ func SafeStoragePassword() (string, error) {
 // so tests can stub it without a real Keychain.
 var safeStorageViaKeybaseRunner = safeStoragePasswordViaKeybaseFor
 
+// keychainLockedCheck reports whether the login keychain is locked; a package
+// var so tests can stub it. On non-darwin/cgo builds it returns an error, which
+// SafeStoragePasswordFor treats as "lock state unknown" (does not short-circuit).
+var keychainLockedCheck = keychainDefaultLocked
+
 // Keychain read failure sentinels. SafeStoragePasswordFor wraps its error with
 // one of these via %w, and IsKeychainLocked / IsKeychainAccessError classify by
 // errors.Is rather than substring-matching the human-readable wrapper prose.
@@ -108,7 +113,7 @@ var securityCLIRead = func(ctx context.Context, account, service string) (stdout
 // grant. Shared by classification and the IsKeychainLocked legacy fallback.
 func keychainLockedSignal(s string) bool {
 	s = strings.ToLower(s)
-	return strings.Contains(s, "25308") || strings.Contains(s, "interaction is not allowed")
+	return strings.Contains(s, "-25308") || strings.Contains(s, "interaction is not allowed")
 }
 
 // SafeStoragePasswordFor returns b's Safe Storage password from the macOS
@@ -127,6 +132,15 @@ func SafeStoragePasswordFor(b Browser) (string, error) {
 		}
 	}
 	remediation := safeStorageRemediationFor(b)
+	// If the login keychain is locked, the `security` CLI would hang on an unlock
+	// prompt until the timeout (then misclassify as a missing grant). Detect it
+	// up front and report a transient locked error so a --watch agent exits
+	// non-zero and launchd's KeepAlive retries once it unlocks -- and because we
+	// short-circuit before the CLI, retries fail fast instead of stacking unlock
+	// prompts. Lock state unknown (non-darwin/cgo, or status error) falls through.
+	if locked, lerr := keychainLockedCheck(); lerr == nil && locked {
+		return "", fmt.Errorf("read %s from Keychain: login keychain is locked; %s: %w", b.KeychainService, remediation, ErrKeychainLocked)
+	}
 	// Fall back to `security` CLI shell-out, bounded by a timeout so a
 	// hung GUI Keychain prompt fails loud instead of blocking forever.
 	ctx, cancel := context.WithTimeout(context.Background(), safeStorageReadTimeout)
