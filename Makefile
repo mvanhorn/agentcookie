@@ -28,6 +28,18 @@ BIN_DIR := bin
 BINARY := $(BIN_DIR)/agentcookie
 PKG := ./cmd/agentcookie
 
+# Inject the version at link time so `make build` / `make install` -- and the
+# CI release build, which runs `make` (see the comment above) -- report the
+# real tag instead of the "0.0.1-dev" default baked into internal/cli.Version.
+# Mirrors the -X ldflag in .goreleaser.yaml. `git describe` yields e.g. 0.17.1
+# on a tagged build or 0.17.1-2-gfe6f405 between tags; the leading v is stripped
+# to match goreleaser's {{ .Version }}. Falls back to the in-source default when
+# git is unavailable (e.g. building from a release tarball).
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//')
+ifneq ($(VERSION),)
+LDFLAGS := -X github.com/mvanhorn/agentcookie/internal/cli.Version=$(VERSION)
+endif
+
 GOBIN := $(shell go env GOBIN)
 ifeq ($(GOBIN),)
 GOBIN := $(shell go env GOPATH)/bin
@@ -41,13 +53,13 @@ release: build sign notarize
 
 build:
 	@mkdir -p $(BIN_DIR)
-	go build -o $(BINARY) $(PKG)
+	go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(PKG)
 
 # Install to $(GOBIN)/agentcookie and sign in place so steady-state
 # `make install` produces a signed binary with the same designated
 # requirement as the local build.
 install:
-	go install $(PKG)
+	go install -ldflags "$(LDFLAGS)" $(PKG)
 	scripts/sign.sh "$(GOBIN)/agentcookie"
 
 sign:
