@@ -927,7 +927,7 @@ func checkSealingWith(masterKeyExists func() bool) Check {
 	return Check{
 		Name:     "Sealing",
 		Severity: SeverityOK,
-		Detail:   "disabled (default in v0.12 closed beta)",
+		Detail:   "disabled (agentcookie-master Keychain item not present)",
 	}
 }
 
