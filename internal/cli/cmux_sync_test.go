@@ -108,10 +108,10 @@ func TestCmuxSyncFlagValidation(t *testing.T) {
 	})
 }
 
-// keychainAccessErr is a representative missing-grant failure matching what
+// errKeychainAccess is a representative missing-grant failure matching what
 // SafeStoragePasswordFor returns when access is denied: the operator-facing
 // prose plus the ErrKeychainNoGrant sentinel that drives classification.
-var keychainAccessErr = fmt.Errorf("read Chrome Safe Storage from Keychain (did you grant access?): exit status 1: %w", chrome.ErrKeychainNoGrant)
+var errKeychainAccess = fmt.Errorf("read Chrome Safe Storage from Keychain (did you grant access?): exit status 1: %w", chrome.ErrKeychainNoGrant)
 
 func stubCmuxSyncPassword(t *testing.T, pw string, err error) {
 	t.Helper()
@@ -134,7 +134,7 @@ func TestRunCmuxSync_ExitsZeroOnKeychainFailureInWatchMode(t *testing.T) {
 	cmuxSyncWatch = true
 	t.Cleanup(func() { cmuxSyncOnce = false; cmuxSyncWatch = false })
 
-	stubCmuxSyncPassword(t, "", keychainAccessErr)
+	stubCmuxSyncPassword(t, "", errKeychainAccess)
 	exitCode := stubCmuxExitFunc(t)
 
 	err := runCmuxSync(&cobra.Command{}, nil)
@@ -151,7 +151,7 @@ func TestRunCmuxSync_ReturnsErrorOnKeychainFailureInOnceMode(t *testing.T) {
 	cmuxSyncWatch = false
 	t.Cleanup(func() { cmuxSyncOnce = false; cmuxSyncWatch = false })
 
-	stubCmuxSyncPassword(t, "", keychainAccessErr)
+	stubCmuxSyncPassword(t, "", errKeychainAccess)
 	exitCode := stubCmuxExitFunc(t)
 
 	err := runCmuxSync(&cobra.Command{}, nil)
