@@ -912,10 +912,9 @@ func checkDBSCFrom(st *state.SourceState) Check {
 	}
 }
 
-// checkSealingWith is informational: in v0.12 closed beta the master
-// key Keychain item is off by default. Doctor reports the state so
-// agents downstream can branch on it, but never WARN/FAIL on either
-// branch -- the user-facing default is "disabled" for this release.
+// checkSealingWith is informational. It reports whether the
+// agentcookie-master Keychain item is present; when the item is missing,
+// Doctor reports Sealing as disabled, but never WARN/FAIL on either state.
 func checkSealingWith(masterKeyExists func() bool) Check {
 	if masterKeyExists() {
 		return Check{
@@ -927,7 +926,7 @@ func checkSealingWith(masterKeyExists func() bool) Check {
 	return Check{
 		Name:     "Sealing",
 		Severity: SeverityOK,
-		Detail:   "disabled (default in v0.12 closed beta)",
+		Detail:   "disabled (agentcookie-master Keychain item not present)",
 	}
 }
 
