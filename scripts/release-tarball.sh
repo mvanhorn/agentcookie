@@ -11,7 +11,11 @@
 # Where <version> matches the release tag (e.g. v0.12.0-beta.1). The
 # script produces:
 #
-#   dist/agentcookie-<version>-darwin-arm64.tar.gz
+#   dist/agentcookie-<version>-darwin-universal.tar.gz   (arm64 + x86_64)
+#
+# When bin/agentcookie is a single-arch binary (e.g. a `make build` dev
+# build rather than `make build-universal`), the tarball is named for that
+# lone arch instead (darwin-arm64 / darwin-amd64).
 #
 # Prereqs:
 #   1. bin/agentcookie exists, signed and notarized (run `make release`
@@ -54,11 +58,22 @@ if ! codesign -d -r- "$BIN" >/dev/null 2>&1; then
   exit 2
 fi
 
-ARCH="$(uname -m)"
-if [[ "$ARCH" == "arm64" ]]; then
+# Name the tarball for the binary's actual architecture(s). A Universal 2
+# binary (make build-universal) carries both slices and ships as
+# "darwin-universal"; a single-arch dev build ships as darwin-amd64 /
+# darwin-arm64. lipo -archs reports "x86_64" (Go's amd64) and/or "arm64".
+BIN_ARCHS="$(lipo -archs "$BIN" 2>/dev/null || true)"
+if [[ "$BIN_ARCHS" == *arm64* && "$BIN_ARCHS" == *x86_64* ]]; then
+  TARBALL_ARCH="darwin-universal"
+elif [[ "$BIN_ARCHS" == *x86_64* ]]; then
+  TARBALL_ARCH="darwin-amd64"
+elif [[ "$BIN_ARCHS" == *arm64* ]]; then
   TARBALL_ARCH="darwin-arm64"
 else
-  TARBALL_ARCH="darwin-$ARCH"
+  # lipo unavailable or silent; fall back to the build host arch.
+  HOST_ARCH="$(uname -m)"
+  [[ "$HOST_ARCH" == "x86_64" ]] && HOST_ARCH="amd64"
+  TARBALL_ARCH="darwin-$HOST_ARCH"
 fi
 
 OUT_NAME="agentcookie-${VERSION}-${TARBALL_ARCH}"

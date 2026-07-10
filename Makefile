@@ -2,14 +2,19 @@
 #
 # Targets:
 #   make            - build and sign bin/agentcookie (default; not notarized)
-#   make build      - go build ./cmd/agentcookie -> bin/agentcookie
+#   make build      - go build ./cmd/agentcookie -> bin/agentcookie (native arch)
+#   make build-universal
+#                   - build a Universal 2 (arm64 + x86_64) bin/agentcookie
+#                     via lipo, so one signed binary runs on both Apple
+#                     Silicon and Intel Macs
 #   make install    - go install ./cmd/agentcookie, then sign $(GOBIN)/agentcookie
 #   make sign       - sign bin/agentcookie with the Developer ID identity
 #   make notarize   - submit bin/agentcookie to Apple's notary service
 #                     (5-30 min; required before deploying to a Mac other
 #                     than the one this build ran on)
-#   make release    - build + sign + notarize in one shot (a fully-portable
-#                     binary that launches on any Mac without prompts)
+#   make release    - build-universal + sign + notarize in one shot (a
+#                     fully-portable Universal 2 binary that launches on any
+#                     Intel or Apple Silicon Mac without prompts)
 #   make verify     - print the designated requirement of bin/agentcookie
 #   make test       - go test -race ./...
 #   make vet        - go vet ./...
@@ -45,15 +50,32 @@ ifeq ($(GOBIN),)
 GOBIN := $(shell go env GOPATH)/bin
 endif
 
-.PHONY: all build install sign notarize release verify test vet clean
+.PHONY: all build build-universal install sign notarize release verify test vet clean
 
 all: build sign
 
-release: build sign notarize
+release: build-universal sign notarize
 
 build:
 	@mkdir -p $(BIN_DIR)
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(PKG)
+
+# build-universal - Produce a Universal 2 (arm64 + x86_64) binary at
+# bin/agentcookie via lipo so a single signed + notarized release runs
+# natively on both Apple Silicon and Intel Macs. CGO must stay enabled
+# (the codebase links C for SQLite + the macOS Keychain), so each slice is
+# built separately with the target arch pinned through the C compiler
+# (CC="clang -arch ..."). Pinning CC per slice makes the build host
+# irrelevant: it works whether run on an arm64 or an x86_64 Mac.
+build-universal:
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 CC="clang -arch arm64" \
+	  go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/agentcookie-arm64 $(PKG)
+	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 CC="clang -arch x86_64" \
+	  go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/agentcookie-amd64 $(PKG)
+	lipo -create $(BIN_DIR)/agentcookie-arm64 $(BIN_DIR)/agentcookie-amd64 -output $(BINARY)
+	@rm -f $(BIN_DIR)/agentcookie-arm64 $(BIN_DIR)/agentcookie-amd64
+	@echo "make build-universal: wrote $(BINARY) (archs: $$(lipo -archs $(BINARY)))"
 
 # Install to $(GOBIN)/agentcookie and sign in place so steady-state
 # `make install` produces a signed binary with the same designated

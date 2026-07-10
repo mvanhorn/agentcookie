@@ -4,11 +4,11 @@ Closed-beta release. Invitation only.
 
 ## Install
 
-Download `agentcookie-{{VERSION}}-darwin-arm64.tar.gz` from the assets below, then:
+Download `agentcookie-{{VERSION}}-darwin-universal.tar.gz` from the assets below, then:
 
 ```
-tar -xzf agentcookie-{{VERSION}}-darwin-arm64.tar.gz
-cd agentcookie-{{VERSION}}-darwin-arm64
+tar -xzf agentcookie-{{VERSION}}-darwin-universal.tar.gz
+cd agentcookie-{{VERSION}}-darwin-universal
 ./install-beta.sh --as source     # on your MacBook
 # or
 ./install-beta.sh --as sink       # on your second Mac

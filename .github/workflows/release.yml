@@ -71,9 +71,10 @@ jobs:
             --team-id NM8VT393AR \
             --password "${{ secrets.AC_NOTARY_PASSWORD }}"
 
-      # Build, sign, notarize the agentcookie binary. After this step
-      # bin/agentcookie is fully launchable on any Mac without
-      # Gatekeeper interactive approval.
+      # Build, sign, notarize the agentcookie binary. `make release` now
+      # builds a Universal 2 (arm64 + x86_64) binary, so after this step
+      # bin/agentcookie is fully launchable on any Intel or Apple Silicon
+      # Mac without Gatekeeper interactive approval.
       - name: make release
         run: make release
 
@@ -102,7 +103,7 @@ jobs:
       - name: attach beta bundle to release
         run: |
           gh release upload "${{ github.ref_name }}" \
-            dist/agentcookie-*-darwin-arm64.tar.gz \
+            dist/agentcookie-*-darwin-universal.tar.gz \
             --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

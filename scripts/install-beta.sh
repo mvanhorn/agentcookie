@@ -148,7 +148,15 @@ if [[ -z "$TARBALL" ]]; then
   fi
   step "downloading latest beta release from $REPO"
   TMP_DL="$(mktemp -d -t agentcookie-beta.XXXXXX)"
-  gh release download --repo "$REPO" --pattern '*darwin-arm64.tar.gz' --dir "$TMP_DL" --clobber
+  # Prefer the Universal 2 asset (one binary for both Apple Silicon and
+  # Intel). Fall back to an arch-specific asset for older releases that
+  # predate the universal binary; map uname -m (x86_64) to Go's amd64.
+  HOST_ARCH="$(uname -m)"
+  [[ "$HOST_ARCH" == "x86_64" ]] && HOST_ARCH="amd64"
+  if ! gh release download --repo "$REPO" --pattern '*darwin-universal.tar.gz' --dir "$TMP_DL" --clobber 2>/dev/null; then
+    step "no universal asset found; falling back to darwin-$HOST_ARCH"
+    gh release download --repo "$REPO" --pattern "*darwin-${HOST_ARCH}.tar.gz" --dir "$TMP_DL" --clobber
+  fi
   TARBALL="$(ls -1 "$TMP_DL"/*.tar.gz | head -n1)"
   if [[ -z "$TARBALL" || ! -f "$TARBALL" ]]; then
     die "release tarball not found after download (looked in $TMP_DL)"
@@ -161,7 +169,8 @@ fi
 WORK="$(mktemp -d -t agentcookie-install.XXXXXX)"
 tar -xzf "$TARBALL" -C "$WORK"
 # The release tarball wraps everything in a versioned directory
-# (agentcookie-${VERSION}-darwin-arm64/), so the binary is one level
+# (agentcookie-${VERSION}-darwin-universal/, or -darwin-arm64/ /
+# -darwin-amd64/ for single-arch builds), so the binary is one level
 # deep. find tolerates both shapes (wrapped + flat).
 NEW_BIN="$(find "$WORK" -name agentcookie -type f -perm -u+x 2>/dev/null | head -n1)"
 if [[ -z "$NEW_BIN" || ! -x "$NEW_BIN" ]]; then

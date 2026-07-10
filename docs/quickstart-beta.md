@@ -23,7 +23,7 @@ with no `auth login`, no Keychain prompt, no copy-paste-the-cookie ritual.
 
 ## Prereqs
 
-- Two Macs running macOS 14 or later. Apple silicon recommended. One you browse on (we'll call it source); one your agents run on (sink). Many people use a Mac mini for the sink.
+- Two Macs running macOS 14 or later. Both Apple Silicon and Intel are supported (the release ships a Universal 2 binary). One you browse on (we'll call it source); one your agents run on (sink). Many people use a Mac mini for the sink.
 - Both Macs on the same Tailscale tailnet. Run `tailscale status` on each; both should appear in each other's list. If not, set up Tailscale first.
 - Google Chrome installed on the source. Sign in to whatever sites you want your agents to act on.
 - The release tarball (your invite includes a link or `gh release download` instructions).
@@ -32,8 +32,8 @@ Optional: Go 1.22+ if you want to build from source. Not required when using the
 
 ## Install the source side (your MacBook)
 
-1. Download `agentcookie-v0.12.0-beta.1-darwin-arm64.tar.gz` from the release link in your invite.
-2. Extract: `tar -xzf agentcookie-v0.12.0-beta.1-darwin-arm64.tar.gz`. The bundle contains `agentcookie`, `install-beta.sh`, and this guide.
+1. Download `agentcookie-v0.12.0-beta.1-darwin-universal.tar.gz` from the release link in your invite.
+2. Extract: `tar -xzf agentcookie-v0.12.0-beta.1-darwin-universal.tar.gz`. The bundle contains `agentcookie`, `install-beta.sh`, and this guide.
 3. Run the install script: `./install-beta.sh --as source`. It will:
    - Verify your binary is notarized (so macOS doesn't block it)
    - Place it at `/usr/local/bin/agentcookie` (or `~/bin/agentcookie` if you don't have admin)
