@@ -3,6 +3,8 @@
 
 sink:
   # URL of the sink machine's /sync endpoint over your tailnet.
+  # Use the MagicDNS hostname (not a 100.x IP) so the source follows
+  # the sink after Tailscale re-auth gives it a new IP.
   url: http://my-mac-mini.tailnet.ts.net:9999/sync
 
 chrome:

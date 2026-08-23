@@ -129,7 +129,9 @@ mkdir -p ~/.config/agentcookie
 # 3. Write sink.yaml
 cat > ~/.config/agentcookie/sink.yaml << 'EOF'
 listen:
-  addr: 100.x.y.z:9999  # Your Linux box's Tailscale IP
+  # Use your current Tailscale IP. After Tailscale re-auth, if this IP
+  # becomes stale, the sink auto-rebinds to the new 100.x address.
+  addr: 100.x.y.z:9999
 
 peer:
   hostname: your-mac.tailnet  # Mac's Tailscale hostname
@@ -156,7 +158,7 @@ agentcookie pair --as sink \
 ```
 
 Replace:
-- `100.x.y.z` with your Linux box's Tailscale IP (`tailscale ip -4`)
+- `100.x.y.z` with your current Tailscale IP (`tailscale ip -4`). If Tailscale re-auth gives the sink a new IP, the sink auto-rebinds to it on next start.
 - `your-mac.tailnet` with your Mac's Tailscale hostname (`tailscale status` on either machine)
 - The pairing code and URL with the values printed by the Mac source wizard
 

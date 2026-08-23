@@ -22,6 +22,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/secretsbus"
 	"github.com/mvanhorn/agentcookie/internal/state"
 	"github.com/mvanhorn/agentcookie/internal/transport"
+	"github.com/mvanhorn/agentcookie/internal/tsclient"
 	"github.com/mvanhorn/agentcookie/internal/watcher"
 )
 
@@ -378,6 +379,23 @@ func pushOnce(
 		return 0, dbsc, fmt.Errorf("seal payload: %w", err)
 	}
 
+	// Resolve sink URL hostname to IP via Tailscale if needed. This allows
+	// sink.url to use MagicDNS hostnames (e.g., http://grok-bot:9999/sync)
+	// instead of frozen 100.x IPs that break after Tailscale re-auth.
+	// If resolution fails (Tailscale not available, peer offline), fall back
+	// to the original URL and let the HTTP layer report the connection error.
+	sinkURL := cfg.Sink.URL
+	if resolved, resolveErr := tsclient.ResolveSinkURL(ctx, sinkURL); resolveErr != nil {
+		if verbose {
+			fmt.Fprintf(os.Stderr, "agentcookie source: sink URL resolution failed (%v); using original %s\n", resolveErr, sinkURL)
+		}
+	} else if resolved != sinkURL {
+		if verbose {
+			fmt.Fprintf(os.Stderr, "agentcookie source: resolved sink URL %s -> %s\n", sinkURL, resolved)
+		}
+		sinkURL = resolved
+	}
+
 	// Bound the POST by the SyncClient profile's timeout (5 minutes
 	// in v0.12) so a heavy LocalStorage / IndexedDB payload over a
 	// slow tailnet link does not get cut off at the pre-v0.12 30s
@@ -386,14 +404,14 @@ func pushOnce(
 	// cancellation.
 	postCtx, cancel := context.WithTimeout(ctx, httpserver.Defaults(httpserver.SyncClient).ClientTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(postCtx, "POST", cfg.Sink.URL, bytes.NewReader(sealed))
+	req, err := http.NewRequestWithContext(postCtx, "POST", sinkURL, bytes.NewReader(sealed))
 	if err != nil {
 		return 0, dbsc, fmt.Errorf("new request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	resp, err := httpserver.Client(httpserver.SyncClient).Do(req)
 	if err != nil {
-		return 0, dbsc, fmt.Errorf("POST to sink %s: %w", cfg.Sink.URL, err)
+		return 0, dbsc, fmt.Errorf("POST to sink %s: %w", sinkURL, err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
