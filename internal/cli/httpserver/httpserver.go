@@ -59,8 +59,8 @@ func Defaults(p Profile) Settings {
 	case SinkSync:
 		return Settings{
 			ReadHeaderTimeout: 5 * time.Second,
-			ReadTimeout:       60 * time.Second,
-			WriteTimeout:      60 * time.Second,
+			ReadTimeout:       5 * time.Minute, // Match SyncClient; first full sync (16k+ cookies) needs time over Tailscale
+			WriteTimeout:      5 * time.Minute, // Response can also be slow on congested links
 			IdleTimeout:       120 * time.Second,
 			MaxHeaderBytes:    16 * 1024,
 			MaxBodyBytes:      256 * 1024 * 1024,

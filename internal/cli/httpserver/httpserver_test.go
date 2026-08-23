@@ -44,11 +44,13 @@ func TestConfigure_AppliesTimeouts(t *testing.T) {
 	if srv.ReadHeaderTimeout != 5*time.Second {
 		t.Errorf("ReadHeaderTimeout: got %v want 5s", srv.ReadHeaderTimeout)
 	}
-	if srv.ReadTimeout != 60*time.Second {
-		t.Errorf("ReadTimeout: got %v want 60s", srv.ReadTimeout)
+	// ReadTimeout and WriteTimeout are 5 minutes to match SyncClient and
+	// accommodate large first syncs (16k+ cookies) over slow Tailscale links.
+	if srv.ReadTimeout != 5*time.Minute {
+		t.Errorf("ReadTimeout: got %v want 5m", srv.ReadTimeout)
 	}
-	if srv.WriteTimeout != 60*time.Second {
-		t.Errorf("WriteTimeout: got %v want 60s", srv.WriteTimeout)
+	if srv.WriteTimeout != 5*time.Minute {
+		t.Errorf("WriteTimeout: got %v want 5m", srv.WriteTimeout)
 	}
 	if srv.MaxHeaderBytes != 16*1024 {
 		t.Errorf("MaxHeaderBytes: got %d want 16384", srv.MaxHeaderBytes)
