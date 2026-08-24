@@ -34,6 +34,19 @@ var (
 	sourceSkipDBSC bool
 )
 
+// resolveSinkURL is the sink URL resolver used by pushOnce. Production
+// wires it to tsclient.ResolveSinkURL; tests can override it to inject
+// specific resolution behaviors (e.g., ErrAmbiguousPeer).
+var resolveSinkURL = tsclient.ResolveSinkURL
+
+// SetResolveSinkURLForTesting replaces resolveSinkURL with the given
+// function and returns a restore func. Test-only seam.
+func SetResolveSinkURLForTesting(f func(ctx context.Context, rawURL string) (string, error)) func() {
+	prev := resolveSinkURL
+	resolveSinkURL = f
+	return func() { resolveSinkURL = prev }
+}
+
 // dbscSummary carries the DBSC-suspect tally from one push back to the caller
 // so it can be recorded in SourceState for `doctor` / `status`.
 type dbscSummary struct {
@@ -382,10 +395,18 @@ func pushOnce(
 	// Resolve sink URL hostname to IP via Tailscale if needed. This allows
 	// sink.url to use MagicDNS hostnames (e.g., http://grok-bot:9999/sync)
 	// instead of frozen 100.x IPs that break after Tailscale re-auth.
-	// If resolution fails (Tailscale not available, peer offline), fall back
-	// to the original URL and let the HTTP layer report the connection error.
+	//
+	// Fail-closed errors (ErrAmbiguousPeer) abort the push — falling back to
+	// the hostname URL would hand selection to MagicDNS and undo fail-closed.
+	// Soft failures (Tailscale CLI missing, peer not found, peer offline) fall
+	// back to the original URL so HTTP can report the connection error.
 	sinkURL := cfg.Sink.URL
-	if resolved, resolveErr := tsclient.ResolveSinkURL(ctx, sinkURL); resolveErr != nil {
+	if resolved, resolveErr := resolveSinkURL(ctx, sinkURL); resolveErr != nil {
+		if errors.Is(resolveErr, tsclient.ErrAmbiguousPeer) {
+			return 0, dbsc, fmt.Errorf("resolve sink URL: %w", resolveErr)
+		}
+		// Soft failure: Tailscale not available, peer offline, etc.
+		// Fall back to the original URL and let HTTP report the error.
 		if verbose {
 			fmt.Fprintf(os.Stderr, "agentcookie source: sink URL resolution failed (%v); using original %s\n", resolveErr, sinkURL)
 		}

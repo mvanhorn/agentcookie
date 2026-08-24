@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -22,6 +24,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"github.com/mvanhorn/agentcookie/internal/state"
 	"github.com/mvanhorn/agentcookie/internal/transport"
+	"github.com/mvanhorn/agentcookie/internal/tsclient"
 )
 
 func TestSourcePushReloadsBlocklistBetweenPushes(t *testing.T) {
@@ -359,3 +362,67 @@ CREATE UNIQUE INDEX IF NOT EXISTS cookies_unique_index ON cookies(
 	host_key, top_frame_site_key, has_cross_site_ancestor, name, path, source_scheme, source_port
 );
 `
+
+// TestSourcePushAmbiguousPeerAbortsWithoutPOST verifies that when ResolveSinkURL
+// returns ErrAmbiguousPeer (multiple online peers share the hostname), the push
+// fails closed and does NOT fall back to the hostname URL. Falling back would
+// hand selection to MagicDNS and undo the fail-closed behavior.
+func TestSourcePushAmbiguousPeerAbortsWithoutPOST(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "session", Value: "xyz", Path: "/"},
+	})
+
+	// Override the resolver to return ErrAmbiguousPeer.
+	restore := SetResolveSinkURLForTesting(func(ctx context.Context, rawURL string) (string, error) {
+		return rawURL, fmt.Errorf("%w: \"grok-bot\" has 2 online nodes with IPs [100.87.49.2 100.124.19.34]; pin sink.url to one 100.x IP or delete the leftover node from Tailscale admin",
+			tsclient.ErrAmbiguousPeer)
+	})
+	defer restore()
+
+	n, err := fx.push()
+	if err == nil {
+		t.Fatal("ambiguous peer should fail closed, got nil error")
+	}
+	if !errors.Is(err, tsclient.ErrAmbiguousPeer) {
+		t.Errorf("error should wrap ErrAmbiguousPeer, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "resolve sink URL") {
+		t.Errorf("error should mention 'resolve sink URL', got: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("ambiguous peer push count = %d, want 0", n)
+	}
+	if got := fx.batchCount(); got != 0 {
+		t.Fatalf("ambiguous peer should NOT send any HTTP request, got %d batches", got)
+	}
+	if fx.srcState.TotalFailures != 1 {
+		t.Errorf("TotalFailures = %d, want 1", fx.srcState.TotalFailures)
+	}
+}
+
+// TestSourcePushSoftResolveErrorFallsBackToHostname verifies that soft failures
+// (Tailscale CLI missing, peer not found, peer offline) fall back to the original
+// URL and proceed with the POST, letting HTTP report the connection error.
+func TestSourcePushSoftResolveErrorFallsBackToHostname(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "session", Value: "xyz", Path: "/"},
+	})
+
+	// Override the resolver to return ErrPeerNotFound (a soft failure).
+	restore := SetResolveSinkURLForTesting(func(ctx context.Context, rawURL string) (string, error) {
+		return rawURL, fmt.Errorf("%w: \"unknown-host\"", tsclient.ErrPeerNotFound)
+	})
+	defer restore()
+
+	// Push should succeed (fall back to original URL, HTTP capture accepts it).
+	n, err := fx.push()
+	if err != nil {
+		t.Fatalf("soft resolve error should fall back to original URL, got: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("push count = %d, want 1", n)
+	}
+	if got := fx.batchCount(); got != 1 {
+		t.Fatalf("soft resolve error should still POST, got %d batches", got)
+	}
+}
