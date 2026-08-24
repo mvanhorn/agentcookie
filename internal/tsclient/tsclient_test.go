@@ -137,6 +137,15 @@ func TestResolvePeerIP(t *testing.T) {
 			wantErr:  ErrPeerOffline,
 		},
 		{
+			name: "ambiguous: multiple online peers same hostname",
+			status: &Status{Peer: map[string]*PeerStatus{
+				"node1": {HostName: "grok-bot", DNSName: "grok-bot.tail-xxxx.ts.net.", TailscaleIPs: []string{"100.87.49.2"}, Online: true},
+				"node2": {HostName: "grok-bot", DNSName: "grok-bot-2.tail-xxxx.ts.net.", TailscaleIPs: []string{"100.124.19.34"}, Online: true},
+			}},
+			hostname: "grok-bot",
+			wantErr:  ErrAmbiguousPeer,
+		},
+		{
 			name: "peer not found",
 			status: &Status{Peer: map[string]*PeerStatus{
 				"a": {HostName: "alpha", DNSName: "alpha.tail-xxxx.ts.net.", TailscaleIPs: []string{"100.80.229.80"}, Online: true},

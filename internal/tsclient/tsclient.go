@@ -138,6 +138,11 @@ var ErrPeerOffline = errors.New("tsclient: peer is offline")
 // ErrPeerNoIPv4 is returned when a peer has no IPv4 address in TailscaleIPs.
 var ErrPeerNoIPv4 = errors.New("tsclient: peer has no IPv4 address")
 
+// ErrAmbiguousPeer is returned when multiple Online peers share the same
+// hostname. The caller should pin sink.url to a specific 100.x IP or delete
+// the leftover node from the Tailscale admin console.
+var ErrAmbiguousPeer = errors.New("tsclient: multiple online peers match hostname")
+
 // ResolvePeerIP resolves a Tailscale hostname to its 100.x IPv4 address.
 // When multiple peers share the same hostname (a common scenario after
 // Tailscale re-auth creates a new node while the old offline node lingers),
@@ -149,7 +154,9 @@ var ErrPeerNoIPv4 = errors.New("tsclient: peer has no IPv4 address")
 //   - HostName field value: "grok-bot-1"
 //
 // Returns ErrPeerNotFound if no peer matches, ErrPeerOffline if all matches
-// are offline, or ErrPeerNoIPv4 if the peer lacks an IPv4 address.
+// are offline, ErrAmbiguousPeer if multiple Online peers match (caller should
+// pin sink.url to a 100.x IP or delete the leftover node), or ErrPeerNoIPv4
+// if the peer lacks an IPv4 address.
 func (s *Status) ResolvePeerIP(hostname string) (string, error) {
 	if s == nil {
 		return "", ErrPeerNotFound
@@ -186,18 +193,38 @@ func (s *Status) ResolvePeerIP(hostname string) (string, error) {
 		return "", fmt.Errorf("%w: %q", ErrPeerNotFound, hostname)
 	}
 
-	// Prefer Online peers. If multiple are online, take the first one.
-	// If none are online, return ErrPeerOffline.
-	var best *PeerStatus
+	// Collect Online peers. If exactly one is online, use it. If multiple
+	// are online, fail closed (nondeterministic map iteration order would
+	// pick arbitrarily). If none are online, return ErrPeerOffline.
+	var onlinePeers []*PeerStatus
 	for _, p := range matches {
 		if p.Online {
-			best = p
-			break
+			onlinePeers = append(onlinePeers, p)
 		}
 	}
-	if best == nil {
+
+	if len(onlinePeers) == 0 {
 		return "", fmt.Errorf("%w: %q (all %d matching nodes are offline; check `tailscale status`)", ErrPeerOffline, hostname, len(matches))
 	}
+
+	if len(onlinePeers) > 1 {
+		// Multiple online peers with the same hostname. Collect their IPs
+		// for the error message so the operator can pick one.
+		var ips []string
+		for _, p := range onlinePeers {
+			for _, ip := range p.TailscaleIPs {
+				if IsTailnetIP(ip) {
+					ips = append(ips, ip)
+					break
+				}
+			}
+		}
+		return "", fmt.Errorf("%w: %q has %d online nodes with IPs %v; pin sink.url to one 100.x IP or delete the leftover node from Tailscale admin",
+			ErrAmbiguousPeer, hostname, len(onlinePeers), ips)
+	}
+
+	// Exactly one online peer - use it
+	best := onlinePeers[0]
 
 	// Extract IPv4 from TailscaleIPs
 	for _, ip := range best.TailscaleIPs {
