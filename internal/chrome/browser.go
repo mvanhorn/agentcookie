@@ -97,6 +97,15 @@ var browserRegistry = map[string]Browser{
 		KeychainAccount: "Arc",
 		KeychainService: "Arc Safe Storage",
 	},
+	// Dia (The Browser Company) follows the same "User Data" layout as Arc.
+	// Profile paths verified on disk 2026-08-24; keychain account/service
+	// follow the standard macOS Chromium-fork convention.
+	"dia": {
+		Name:            "dia",
+		SupportDir:      []string{"Dia", "User Data"},
+		KeychainAccount: "Dia",
+		KeychainService: "Dia Safe Storage",
+	},
 }
 
 // LookupBrowser returns the browser descriptor for name. Empty name defaults

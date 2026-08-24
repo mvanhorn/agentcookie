@@ -151,6 +151,7 @@ var sourceBrowserPaths = map[string]browserPathRef{
 	"brave":            {SupportDir: []string{"BraveSoftware", "Brave-Browser"}},
 	"edge":             {SupportDir: []string{"Microsoft Edge"}},
 	"arc":              {SupportDir: []string{"Arc", "User Data"}},
+	"dia":              {SupportDir: []string{"Dia", "User Data"}},
 }
 
 // SecurityRef holds transport credentials. SharedSecret is the pre-pairing
