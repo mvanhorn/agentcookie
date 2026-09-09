@@ -46,6 +46,7 @@ var (
 	wizardWriteChromeSQLite bool
 	wizardNoCDP             bool
 	wizardNoCmux            bool
+	wizardAddSink           bool
 )
 
 var wizardCmd = &cobra.Command{
@@ -108,6 +109,7 @@ func init() {
 	wizardInstallCmd.Flags().BoolVar(&wizardWriteChromeSQLite, "write-chrome-sqlite", false, "[sink] force universal delivery (write the real Default Chrome profile) and honor it even if the one-password keychain open cannot complete; does not silently downgrade to degraded")
 	wizardInstallCmd.Flags().BoolVar(&wizardNoCDP, "no-cdp", false, "[sink] do not enable CDP injection alongside skip_chrome_sqlite. By default, headless installs enable CDP injection so Chrome on the sink still sees synced cookies. Pass --no-cdp for sidecar+adapter-only mode.")
 	wizardInstallCmd.Flags().BoolVar(&wizardNoCmux, "no-cmux", false, "do not auto-enable the cmux local loop even if cmux is installed (by default, install wires Chrome->cmux delivery when cmux is present)")
+	wizardInstallCmd.Flags().BoolVar(&wizardAddSink, "add-sink", false, "[source] pair an ADDITIONAL sink and append it to an existing source.yaml (multi-sink fan-out) instead of overwriting; requires an existing source config")
 
 	wizardUninstallCmd.Flags().StringVar(&wizardRole, "as", "", "source | sink (required)")
 	wizardUninstallCmd.Flags().BoolVar(&wizardForce, "purge", false, "also delete configs and paired keys")
@@ -155,6 +157,14 @@ func runWizardInstall(cmd *cobra.Command, args []string) error {
 func wizardInstallSource(ctx context.Context, binPath, logDir string) error {
 	if err := os.MkdirAll(common.ConfigDir, 0o755); err != nil {
 		return err
+	}
+
+	// --add-sink: pair an ADDITIONAL peer and append it to an existing
+	// source.yaml as a multi-sink fan-out target, instead of the default
+	// overwrite-or-create flow. The running --watch daemon picks up the
+	// new sink on its next push, so no LaunchAgent reinstall is needed.
+	if wizardAddSink {
+		return wizardAddSinkToSource(ctx, binPath, logDir)
 	}
 
 	// Step 1: drop source.yaml + blocklist.yaml if missing or force.
@@ -507,6 +517,67 @@ func runWizardUninstall(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// wizardAddSinkToSource pairs an additional peer and appends it to an
+// existing source.yaml as a multi-sink fan-out target. It requires an
+// existing source config, validates the new sink is not a duplicate before
+// pairing, files the new key under the operator --peer name (via
+// beginSourcePairing), then rewrites source.yaml with the appended sinks
+// list. The running --watch daemon fans out to it on the next push.
+func wizardAddSinkToSource(ctx context.Context, binPath, logDir string) error {
+	sourcePath := filepath.Join(common.ConfigDir, "source.yaml")
+	if !fileExists(sourcePath) {
+		return fmt.Errorf("--add-sink needs an existing source.yaml; run `agentcookie wizard install --as source` first")
+	}
+	if wizardPeer == "" {
+		return fmt.Errorf("--add-sink requires --peer (the new sink's hostname)")
+	}
+	cfg, err := config.LoadSource(common.ConfigDir)
+	if err != nil {
+		return fmt.Errorf("load existing source.yaml: %w", err)
+	}
+	newURL := wizardSinkURL
+	if newURL == "" {
+		newURL = fmt.Sprintf("http://%s:9999/sync", wizardPeer)
+	}
+	// Validate (reject duplicate peer/URL) BEFORE pairing so a bad add
+	// does not leave an orphaned key behind.
+	newYAML, err := buildAddSinkYAML(cfg, newURL, wizardPeer)
+	if err != nil {
+		return err
+	}
+
+	// Pair the new peer. beginSourcePairing files the key under the
+	// operator --peer name (with the announced hostname recorded
+	// separately), which is the name buildAddSinkYAML wrote into sinks.
+	keyPath, _ := keystore.Path(common.ConfigDir, wizardPeer)
+	if fileExists(keyPath) && !wizardRepair {
+		fmt.Fprintf(os.Stderr, "agentcookie wizard: existing paired key for %q found; skipping pairing (use --repair to force)\n", wizardPeer)
+	} else {
+		listen := wizardListen
+		if listen == "" {
+			ip, err := tsclient.RequireTailnetIP(ctx)
+			if err != nil {
+				return fmt.Errorf("detect Tailscale 100.x address for pair listener: %w", err)
+			}
+			listen = fmt.Sprintf("%s:9998", ip)
+		} else if err := validateListenAddr(listen); err != nil {
+			return fmt.Errorf("--listen %q: %w", listen, err)
+		}
+		pairingInfo, code, err := beginSourcePairing(ctx, listen, wizardLocalName, binPath, logDir)
+		if err != nil {
+			return fmt.Errorf("pairing: %w", err)
+		}
+		fmt.Fprintln(os.Stderr, pairingInfo)
+		fmt.Fprintf(os.Stderr, "agentcookie wizard: paired additional sink %q (code was %s)\n", wizardPeer, code)
+	}
+
+	if err := os.WriteFile(sourcePath, []byte(newYAML), 0o600); err != nil {
+		return fmt.Errorf("write updated source.yaml: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "agentcookie wizard: appended sink %s (peer %q) to source.yaml; the --watch daemon will fan out to it on the next push\n", newURL, wizardPeer)
+	return nil
+}
+
 // beginSourcePairing starts a source-side pairing listener and waits for the
 // sink to connect. Returns a human-readable instruction block (which is also
 // the content of ~/.agentcookie/pairing.json) plus the code, blocking until
@@ -679,6 +750,71 @@ chrome:
 peer:
   hostname: %s
 `, sinkURL, peer)
+}
+
+// renderSourceYAMLSinks renders a multi-sink source.yaml body, always as an
+// explicit sinks: list (never the legacy scalar sink:/peer:), preserving the
+// loaded config's chrome / browser / security / cmux settings. Written via
+// template rather than yaml.Marshal on purpose: yaml.v3 does not omit a
+// zero-value legacy Sink struct even with omitempty, so marshaling a
+// sinks-only config would emit a stray empty sink: block.
+func renderSourceYAMLSinks(cfg *config.SourceConfig, sinks []config.SinkTarget) string {
+	var b strings.Builder
+	b.WriteString("sinks:\n")
+	for _, s := range sinks {
+		b.WriteString(fmt.Sprintf("  - url: %s\n", s.URL))
+		if s.Peer != "" {
+			b.WriteString(fmt.Sprintf("    peer: %s\n", s.Peer))
+		}
+	}
+	dbPath := cfg.Chrome.DBPath
+	if dbPath == "" {
+		dbPath = "~/Library/Application Support/Google/Chrome/Default/Cookies"
+	}
+	b.WriteString("chrome:\n")
+	b.WriteString(fmt.Sprintf("  db_path: %s\n", dbPath))
+	if cfg.Browser.Name != "" || cfg.Browser.Profile != "" {
+		b.WriteString("browser:\n")
+		if cfg.Browser.Name != "" {
+			b.WriteString(fmt.Sprintf("  name: %s\n", cfg.Browser.Name))
+		}
+		if cfg.Browser.Profile != "" {
+			b.WriteString(fmt.Sprintf("  profile: %s\n", cfg.Browser.Profile))
+		}
+	}
+	if cfg.Security.SharedSecret != "" {
+		b.WriteString("security:\n")
+		b.WriteString(fmt.Sprintf("  shared_secret: %s\n", cfg.Security.SharedSecret))
+	}
+	if cfg.Cmux.Enabled {
+		b.WriteString("cmux:\n")
+		b.WriteString(fmt.Sprintf("  enabled: %v\n", cfg.Cmux.Enabled))
+		if cfg.Cmux.CmuxPath != "" {
+			b.WriteString(fmt.Sprintf("  cmux_path: %s\n", cfg.Cmux.CmuxPath))
+		}
+	}
+	return b.String()
+}
+
+// buildAddSinkYAML computes the new source.yaml body when adding a sink to an
+// already-loaded source config. It migrates a legacy single-sink config into
+// an explicit sinks: list and appends the new target, rejecting a duplicate
+// peer or URL so --add-sink is idempotent-safe.
+func buildAddSinkYAML(cfg *config.SourceConfig, newURL, newPeer string) (string, error) {
+	if newURL == "" {
+		return "", fmt.Errorf("a sink URL is required (set --sink-url or it defaults from --peer)")
+	}
+	sinks := append([]config.SinkTarget(nil), cfg.ResolvedSinks()...)
+	for _, s := range sinks {
+		if newPeer != "" && s.Peer == newPeer {
+			return "", fmt.Errorf("a sink for peer %q is already configured", newPeer)
+		}
+		if s.URL == newURL {
+			return "", fmt.Errorf("a sink with URL %q is already configured", newURL)
+		}
+	}
+	sinks = append(sinks, config.SinkTarget{URL: newURL, Peer: newPeer})
+	return renderSourceYAMLSinks(cfg, sinks), nil
 }
 
 // renderSinkYAML formats sink.yaml with a caller-resolved listen
