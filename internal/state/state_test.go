@@ -1,6 +1,7 @@
 package state
 
 import (
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -94,4 +95,45 @@ func TestWriterIsConcurrencySafe(t *testing.T) {
 		t.Fatal("LoadSource returned nil after writes")
 	}
 	// Any save's value is acceptable; just confirm the file is valid JSON.
+}
+
+func TestSinkForKeysByPeerAndRefreshesURL(t *testing.T) {
+	s := &SourceState{Role: "source"}
+	a := s.SinkFor("alpha", "http://a.test/sync")
+	a.TotalPushes = 3
+	// Same peer, changed URL: same record, URL refreshed, history kept.
+	again := s.SinkFor("alpha", "http://a-new.test/sync")
+	if again.TotalPushes != 3 {
+		t.Fatalf("expected history preserved across URL change, got %+v", again)
+	}
+	if again.URL != "http://a-new.test/sync" {
+		t.Errorf("URL should refresh to current, got %q", again.URL)
+	}
+	if len(s.Sinks) != 1 {
+		t.Fatalf("URL change must not orphan the record, got %d records", len(s.Sinks))
+	}
+	// A different peer is a distinct record.
+	s.SinkFor("bravo", "http://b.test/sync")
+	if len(s.Sinks) != 2 {
+		t.Fatalf("distinct peer should add a record, got %d", len(s.Sinks))
+	}
+}
+
+func TestLoadSourceLegacySinkURLDecodesWithoutError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "source-state.json")
+	// A pre-multi-sink state file: sink_url present, no sinks array.
+	if err := os.WriteFile(path, []byte(`{"role":"source","sink_url":"http://legacy.test/sync","total_pushes":5}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	st, err := LoadSource(path)
+	if err != nil {
+		t.Fatalf("legacy state should decode without error: %v", err)
+	}
+	if st.SinkURL != "http://legacy.test/sync" || st.TotalPushes != 5 {
+		t.Errorf("legacy fields lost: %+v", st)
+	}
+	if len(st.Sinks) != 0 {
+		t.Errorf("legacy file has no per-sink records, got %d", len(st.Sinks))
+	}
 }
