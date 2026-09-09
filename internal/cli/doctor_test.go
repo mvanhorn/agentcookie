@@ -324,6 +324,39 @@ func TestCheckSourceState(t *testing.T) {
 			t.Fatalf("got %q", c.Severity)
 		}
 	})
+	t.Run("per-sink failure names the failing sink", func(t *testing.T) {
+		st := &state.SourceState{
+			LastPush:      time.Now(),
+			TotalFailures: 1,
+			Sinks: []state.SinkPushState{
+				{Peer: "alpha", URL: "http://a.test/sync", TotalPushes: 4},
+				{Peer: "bravo", URL: "http://b.test/sync", TotalFailures: 1, LastError: "connection refused"},
+			},
+		}
+		c := checkSourceStateFrom(st, nil)
+		if c.Severity != SeverityWarn {
+			t.Fatalf("got %q", c.Severity)
+		}
+		if !strings.Contains(c.Detail, "bravo") {
+			t.Errorf("detail should name the failing sink, got %q", c.Detail)
+		}
+	})
+	t.Run("healthy multi-sink notes sink count", func(t *testing.T) {
+		st := &state.SourceState{
+			LastPush: time.Now(),
+			Sinks: []state.SinkPushState{
+				{Peer: "alpha", URL: "http://a.test/sync", TotalPushes: 4},
+				{Peer: "bravo", URL: "http://b.test/sync", TotalPushes: 4},
+			},
+		}
+		c := checkSourceStateFrom(st, nil)
+		if c.Severity != SeverityOK {
+			t.Fatalf("got %q (%q)", c.Severity, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "2 sinks") {
+			t.Errorf("detail should note the sink count, got %q", c.Detail)
+		}
+	})
 }
 
 func TestCheckDBSC(t *testing.T) {

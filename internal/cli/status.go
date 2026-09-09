@@ -138,6 +138,24 @@ var statusCmd = &cobra.Command{
 			}
 			fmt.Printf("  source daemon: %d pushes, %d failures, last push %s\n",
 				st.SourceState.TotalPushes, st.SourceState.TotalFailures, ago)
+			// Per-sink breakdown (multi-sink fan-out). Absent for a
+			// single legacy sink or an old state file, where the
+			// aggregate line above is the whole story.
+			for _, sink := range st.SourceState.Sinks {
+				label := sink.URL
+				if sink.Peer != "" {
+					label = fmt.Sprintf("%s (%s)", sink.Peer, sink.URL)
+				}
+				sinkAgo := "never"
+				if !sink.LastPush.IsZero() {
+					sinkAgo = time.Since(sink.LastPush).Round(time.Second).String() + " ago"
+				}
+				fmt.Printf("    sink %s: %d pushes, %d failures, last push %s\n",
+					label, sink.TotalPushes, sink.TotalFailures, sinkAgo)
+				if sink.LastError != "" {
+					fmt.Printf("      last error: %s\n", sink.LastError)
+				}
+			}
 		}
 		if st.SinkState != nil {
 			ago := "never"

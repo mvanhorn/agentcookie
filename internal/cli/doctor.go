@@ -985,18 +985,42 @@ func checkSourceStateFrom(st *state.SourceState, err error) Check {
 		}
 	}
 	if st.TotalFailures > 0 {
+		detail := fmt.Sprintf("last push %s ago, %d total failures", age, st.TotalFailures)
+		if failing := failingSinkLabels(st); failing != "" {
+			detail += fmt.Sprintf(" (failing sink(s): %s)", failing)
+		}
 		return Check{
 			Name:        "Source state",
 			Severity:    SeverityWarn,
-			Detail:      fmt.Sprintf("last push %s ago, %d total failures", age, st.TotalFailures),
+			Detail:      detail,
 			Remediation: "inspect `agentcookie status` for the most recent error",
 		}
+	}
+	detail := fmt.Sprintf("last push %s ago, 0 failures", age)
+	if n := len(st.Sinks); n > 1 {
+		detail += fmt.Sprintf(", %d sinks all healthy", n)
 	}
 	return Check{
 		Name:     "Source state",
 		Severity: SeverityOK,
-		Detail:   fmt.Sprintf("last push %s ago, 0 failures", age),
+		Detail:   detail,
 	}
+}
+
+// failingSinkLabels lists the peer/URL of each fan-out sink whose most
+// recent push failed, for the per-sink detail on the source-state WARN.
+func failingSinkLabels(st *state.SourceState) string {
+	var labels []string
+	for _, s := range st.Sinks {
+		if s.TotalFailures > 0 && s.LastError != "" {
+			label := s.URL
+			if s.Peer != "" {
+				label = s.Peer
+			}
+			labels = append(labels, label)
+		}
+	}
+	return strings.Join(labels, ", ")
 }
 
 // checkDBSCFrom is informational: it surfaces how many cookies the last push
