@@ -19,11 +19,19 @@ import (
 // legacy Security.SharedSecret field is kept for backwards compat with v0
 // configs that predate pairing.
 type SourceConfig struct {
-	Sink     SinkRef     `yaml:"sink" json:"sink"`
-	Chrome   ChromeRef   `yaml:"chrome" json:"chrome"`
-	Browser  BrowserRef  `yaml:"browser,omitempty" json:"browser,omitempty"`
-	Peer     PeerRef     `yaml:"peer,omitempty" json:"peer,omitempty"`
-	Security SecurityRef `yaml:"security,omitempty" json:"security,omitempty"`
+	// Sinks is the multi-sink fan-out list: each entry carries its own
+	// URL and peer (key). When non-empty it is authoritative and the
+	// legacy scalar Sink/Peer fields below are ignored. When empty, a
+	// legacy single-sink config is synthesized into a one-element list
+	// from Sink+Peer (see ResolvedSinks), so every pre-multi-sink
+	// source.yaml keeps working with no migration. omitempty keeps a
+	// legacy-only config from emitting an empty sinks: key.
+	Sinks    []SinkTarget `yaml:"sinks,omitempty" json:"sinks,omitempty"`
+	Sink     SinkRef      `yaml:"sink,omitempty" json:"sink,omitempty"`
+	Chrome   ChromeRef    `yaml:"chrome" json:"chrome"`
+	Browser  BrowserRef   `yaml:"browser,omitempty" json:"browser,omitempty"`
+	Peer     PeerRef      `yaml:"peer,omitempty" json:"peer,omitempty"`
+	Security SecurityRef  `yaml:"security,omitempty" json:"security,omitempty"`
 	// Cmux configures the same-machine local loop: `agentcookie cmux-sync`
 	// reads this machine's Chrome and injects into this machine's cmux
 	// browser. Independent of the sink/peer push path; absent = loop off.
@@ -119,6 +127,33 @@ type SinkRef struct {
 	URL string `yaml:"url" json:"url"`
 }
 
+// SinkTarget is one entry in the multi-sink fan-out list: a sink URL plus
+// the peer hostname naming its key under keys/. A push seals the payload
+// once per SinkTarget with that peer's key and POSTs it to URL. Peer may
+// be empty only for a legacy single-sink config synthesized from the
+// scalar Sink/Peer fields, in which case the transport falls back to the
+// legacy Security.SharedSecret (see ResolvedSinks and LoadSource).
+type SinkTarget struct {
+	URL  string `yaml:"url" json:"url"`
+	Peer string `yaml:"peer,omitempty" json:"peer,omitempty"`
+}
+
+// ResolvedSinks returns the effective fan-out list. Sinks wins when
+// present; otherwise a legacy scalar Sink.URL is synthesized into a
+// one-element list carrying the scalar Peer.Hostname. When neither is set
+// it returns nil (no delivery), so a mis-written config fails visibly at
+// the caller rather than POSTing to an empty URL. Every consumer resolves
+// sinks through this method so the legacy fallback lives in one place.
+func (c *SourceConfig) ResolvedSinks() []SinkTarget {
+	if len(c.Sinks) > 0 {
+		return c.Sinks
+	}
+	if c.Sink.URL != "" {
+		return []SinkTarget{{URL: c.Sink.URL, Peer: c.Peer.Hostname}}
+	}
+	return nil
+}
+
 type ListenRef struct {
 	Addr string `yaml:"addr" json:"addr"`
 }
@@ -167,11 +202,22 @@ func LoadSource(dir string) (*SourceConfig, error) {
 	if err := loadYAML(path, &cfg); err != nil {
 		return nil, err
 	}
-	if cfg.Sink.URL == "" {
-		return nil, fmt.Errorf("%s: sink.url is required", path)
+	sinks := cfg.ResolvedSinks()
+	if len(sinks) == 0 {
+		return nil, fmt.Errorf("%s: at least one sink is required (set sink.url, or a sinks: list)", path)
 	}
-	if cfg.Peer.Hostname == "" && cfg.Security.SharedSecret == "" {
-		return nil, fmt.Errorf("%s: either peer.hostname (paired key) or security.shared_secret (legacy) is required", path)
+	for i, s := range sinks {
+		if s.URL == "" {
+			return nil, fmt.Errorf("%s: sinks[%d].url is required", path, i)
+		}
+		// Each sink needs a credential: its own peer key, or the legacy
+		// shared secret when the sink carries no peer (the synthesized
+		// legacy single-sink case). A sink with no peer and no shared
+		// secret has no way to seal, so reject it rather than silently
+		// producing an unsealable push.
+		if s.Peer == "" && cfg.Security.SharedSecret == "" {
+			return nil, fmt.Errorf("%s: sink %q needs either a peer (paired key) or security.shared_secret (legacy)", path, s.URL)
+		}
 	}
 	if err := validateSharedSecret(path, cfg.Security.SharedSecret); err != nil {
 		return nil, err
