@@ -824,3 +824,23 @@ chrome:
 		t.Fatalf("shared secret should cover a peerless sink: %v", err)
 	}
 }
+
+func TestExampleMultiSinkConfigDecodes(t *testing.T) {
+	// The shipped multi-sink example must load through the strict loader,
+	// so the docs never drift from the accepted schema.
+	dir := t.TempDir()
+	data, err := os.ReadFile(filepath.Join("..", "..", "examples", "source-multi-sink.yaml"))
+	if err != nil {
+		t.Fatalf("read example: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "source.yaml"), data, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := LoadSource(dir)
+	if err != nil {
+		t.Fatalf("example source-multi-sink.yaml should load: %v", err)
+	}
+	if got := len(cfg.ResolvedSinks()); got != 2 {
+		t.Fatalf("example should declare 2 sinks, got %d", got)
+	}
+}
