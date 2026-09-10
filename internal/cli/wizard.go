@@ -762,9 +762,9 @@ func renderSourceYAMLSinks(cfg *config.SourceConfig, sinks []config.SinkTarget) 
 	var b strings.Builder
 	b.WriteString("sinks:\n")
 	for _, s := range sinks {
-		b.WriteString(fmt.Sprintf("  - url: %s\n", s.URL))
+		fmt.Fprintf(&b, "  - url: %s\n", s.URL)
 		if s.Peer != "" {
-			b.WriteString(fmt.Sprintf("    peer: %s\n", s.Peer))
+			fmt.Fprintf(&b, "    peer: %s\n", s.Peer)
 		}
 	}
 	dbPath := cfg.Chrome.DBPath
@@ -772,25 +772,25 @@ func renderSourceYAMLSinks(cfg *config.SourceConfig, sinks []config.SinkTarget) 
 		dbPath = "~/Library/Application Support/Google/Chrome/Default/Cookies"
 	}
 	b.WriteString("chrome:\n")
-	b.WriteString(fmt.Sprintf("  db_path: %s\n", dbPath))
+	fmt.Fprintf(&b, "  db_path: %s\n", dbPath)
 	if cfg.Browser.Name != "" || cfg.Browser.Profile != "" {
 		b.WriteString("browser:\n")
 		if cfg.Browser.Name != "" {
-			b.WriteString(fmt.Sprintf("  name: %s\n", cfg.Browser.Name))
+			fmt.Fprintf(&b, "  name: %s\n", cfg.Browser.Name)
 		}
 		if cfg.Browser.Profile != "" {
-			b.WriteString(fmt.Sprintf("  profile: %s\n", cfg.Browser.Profile))
+			fmt.Fprintf(&b, "  profile: %s\n", cfg.Browser.Profile)
 		}
 	}
 	if cfg.Security.SharedSecret != "" {
 		b.WriteString("security:\n")
-		b.WriteString(fmt.Sprintf("  shared_secret: %s\n", cfg.Security.SharedSecret))
+		fmt.Fprintf(&b, "  shared_secret: %s\n", cfg.Security.SharedSecret)
 	}
 	if cfg.Cmux.Enabled {
 		b.WriteString("cmux:\n")
-		b.WriteString(fmt.Sprintf("  enabled: %v\n", cfg.Cmux.Enabled))
+		fmt.Fprintf(&b, "  enabled: %v\n", cfg.Cmux.Enabled)
 		if cfg.Cmux.CmuxPath != "" {
-			b.WriteString(fmt.Sprintf("  cmux_path: %s\n", cfg.Cmux.CmuxPath))
+			fmt.Fprintf(&b, "  cmux_path: %s\n", cfg.Cmux.CmuxPath)
 		}
 	}
 	return b.String()

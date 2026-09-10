@@ -150,10 +150,7 @@ func runSource(cmd *cobra.Command, args []string) error {
 		// timeout must not exhaust the shared deadline and starve later
 		// healthy sinks (which would defeat per-sink isolation). One
 		// per-sink ClientTimeout per sink, plus slack.
-		nSinks := len(sinks)
-		if nSinks < 1 {
-			nSinks = 1
-		}
+		nSinks := max(len(sinks), 1)
 		perSink := httpserver.Defaults(httpserver.SyncClient).ClientTimeout
 		ctx, cancel := context.WithTimeout(cmd.Context(), time.Duration(nSinks)*perSink+30*time.Second)
 		defer cancel()
