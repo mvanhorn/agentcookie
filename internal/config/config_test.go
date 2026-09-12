@@ -74,6 +74,35 @@ security:
 	}
 }
 
+func TestLoadSourceBrowserDiaDerivesUserDataPath(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "source.yaml", `
+sink:
+  url: http://example.test:9999/sync
+browser:
+  name: dia
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+	cfg, err := LoadSource(dir)
+	if err != nil {
+		t.Fatalf("LoadSource: %v", err)
+	}
+	if cfg.Browser.Name != "dia" {
+		t.Errorf("browser name: got %q, want dia", cfg.Browser.Name)
+	}
+	home, _ := os.UserHomeDir()
+	var want string
+	if runtime.GOOS == "linux" {
+		want = filepath.Join(home, ".config", "Dia", "User Data", "Default", "Cookies")
+	} else {
+		want = filepath.Join(home, "Library", "Application Support", "Dia", "User Data", "Default", "Cookies")
+	}
+	if cfg.Chrome.DBPath != want {
+		t.Errorf("derived DBPath: got %q, want %q", cfg.Chrome.DBPath, want)
+	}
+}
+
 func TestLoadSourceDBPathOverridesBrowserDerivedPath(t *testing.T) {
 	dir := t.TempDir()
 	explicit := filepath.Join(dir, "Custom", "Cookies")
@@ -123,7 +152,7 @@ func TestLoadSourceUnknownBrowserFailsWithSupportedNames(t *testing.T) {
 sink:
   url: http://example.test:9999/sync
 browser:
-  name: dia
+  name: vivaldi
 security:
   shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 `)

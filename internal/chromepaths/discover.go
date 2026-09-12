@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 )
 
@@ -99,6 +100,10 @@ func chromeRoots() []string {
 			filepath.Join(appSupport, "Chromium"),
 			filepath.Join(appSupport, "BraveSoftware", "Brave-Browser"),
 			filepath.Join(appSupport, "Microsoft Edge"),
+			// Dia uses Arc's User Data layout. Scan the user-data-dir itself
+			// (profiles live under Dia/User Data/<profile>/), not the Dia
+			// support dir, or Default/Profile N would not be found.
+			filepath.Join(appSupport, "Dia", "User Data"),
 		)
 	case "linux":
 		configDir := filepath.Join(home, ".config")
@@ -142,7 +147,7 @@ func osDefaultChromeRoot() string {
 
 // browserForRoot returns a browser identifier based on the root path.
 func browserForRoot(root string) string {
-	lower := strings.ToLower(root)
+	lower := strings.ToLower(filepath.ToSlash(root))
 	switch {
 	case strings.Contains(lower, "brave"):
 		return "brave"
@@ -150,9 +155,20 @@ func browserForRoot(root string) string {
 		return "edge"
 	case strings.Contains(lower, "chromium"):
 		return "chromium"
+	case pathHasComponent(lower, "dia"):
+		// Path-component match: strings.Contains("media", "dia") is true, so
+		// a substring check would mislabel any root whose path includes
+		// "media" as Dia and then look up Dia Safe Storage.
+		return "dia"
 	default:
 		return "chrome"
 	}
+}
+
+// pathHasComponent reports whether name is a path element of slashPath.
+// slashPath must already use forward slashes (filepath.ToSlash).
+func pathHasComponent(slashPath, name string) bool {
+	return slices.Contains(strings.Split(slashPath, "/"), name)
 }
 
 // Discover scans known Chrome user-data-dirs and returns all usable

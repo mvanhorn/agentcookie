@@ -705,7 +705,7 @@ func TestCheckSourceAdapter(t *testing.T) {
 	t.Run("unknown browser lists supported names", func(t *testing.T) {
 		cfg := &config.SourceConfig{
 			Chrome:  config.ChromeRef{DBPath: "/tmp/Cookies"},
-			Browser: config.BrowserRef{Name: "dia"},
+			Browser: config.BrowserRef{Name: "vivaldi"},
 		}
 		c := checkSourceAdapter(cfg, exists, password, decryptOK)
 		if c.Severity != SeverityFail {

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Dia source-browser support
+
+Dia (The Browser Company) is a Chromium-family source adapter using the same Safe Storage model as Arc, Brave, and Edge. Set `browser.name: dia` in `source.yaml`. Discovery labels Dia's `User Data` root as `dia` so key lookup uses `Dia Safe Storage` rather than Chrome's.
+
 ### Multi-sink fan-out
 
 One source can now push the same cookies and secrets to several sinks.

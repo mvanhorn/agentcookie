@@ -186,6 +186,7 @@ var sourceBrowserPaths = map[string]browserPathRef{
 	"brave":            {SupportDir: []string{"BraveSoftware", "Brave-Browser"}},
 	"edge":             {SupportDir: []string{"Microsoft Edge"}},
 	"arc":              {SupportDir: []string{"Arc", "User Data"}},
+	"dia":              {SupportDir: []string{"Dia", "User Data"}},
 }
 
 // SecurityRef holds transport credentials. SharedSecret is the pre-pairing
@@ -437,8 +438,8 @@ func linuxSupportDir(macDirs []string) []string {
 		return []string{"microsoft-edge"}
 	case "com.openai.atlas":
 		return macDirs // Atlas is macOS-only
-	case "Arc":
-		return macDirs // Arc is macOS-only
+	case "Arc", "Dia":
+		return macDirs // Arc and Dia are macOS-only
 	default:
 		return macDirs
 	}

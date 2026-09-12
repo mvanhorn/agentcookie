@@ -515,6 +515,8 @@ func TestBrowserForRoot(t *testing.T) {
 		{"/home/me/.config/microsoft-edge", "edge"},
 		{"/home/me/chrome-profile", "chrome"},
 		{"/some/random/path", "chrome"}, // Default
+		{"/Users/me/Library/Application Support/Dia/User Data", "dia"},
+		{"/Users/me/Library/Application Support/some-media-app", "chrome"}, // "media" contains "dia"
 	}
 
 	for _, tc := range cases {
@@ -522,5 +524,32 @@ func TestBrowserForRoot(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("browserForRoot(%q) = %q, want %q", tc.root, got, tc.want)
 		}
+	}
+}
+
+// TestDiscoverForConfig_DiaUserDataKeepsDiaIdentity is the #120 discovery
+// guard: a Dia User Data root must stay labeled "dia" so key lookup uses
+// Dia Safe Storage, not Chrome Safe Storage.
+func TestDiscoverForConfig_DiaUserDataKeepsDiaIdentity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	diaRoot := filepath.Join(home, "Library", "Application Support", "Dia", "User Data")
+	if err := os.MkdirAll(diaRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	makeProfile(t, diaRoot, "Default", true, false)
+
+	result := DiscoverForConfig(diaRoot)
+
+	found := false
+	for _, s := range result.Stores {
+		if s.Profile == "Default" && s.Browser == "dia" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected dia/Default store from Dia User Data root, got %+v", result.Stores)
 	}
 }
