@@ -3,6 +3,7 @@ package secretsbus
 import (
 	"bufio"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,6 +45,13 @@ const fileEnvKeyPrefix = "_FILEENV_"
 func CarryFileEnvKey(payloadKey string) string {
 	return fileEnvKeyPrefix + payloadKey
 }
+
+// ErrCarrySourceMissing marks a carry failure caused solely by the source file
+// not existing, as distinct from a source that exists but cannot be read. A
+// caller that synthesized the source path by convention (rather than reading it
+// from a hand-written manifest) can treat this as a quiet skip; see
+// LoadPayloadWithDiscovery.
+var ErrCarrySourceMissing = errors.New("source missing")
 
 // maxCarriedFileBytes caps a single carried file at 256 KB (decoded), matching
 // the v1 secrets.env size cap. Oversized payloads are refused, not written, so
@@ -92,7 +100,7 @@ func CarryFiles(files []ManifestV2File, enabled map[string]bool, homeDir string)
 		info, err := os.Stat(src)
 		if err != nil {
 			if os.IsNotExist(err) {
-				errs = append(errs, fmt.Errorf("file item %q: source missing: %s", f.Key, src))
+				errs = append(errs, fmt.Errorf("file item %q: %w: %s", f.Key, ErrCarrySourceMissing, src))
 			} else {
 				errs = append(errs, fmt.Errorf("file item %q: stat %s: %w", f.Key, src, err))
 			}

@@ -253,7 +253,8 @@ The discovery loop synthesizes an in-memory v2 manifest from `.printing-press.js
 | `description` | `.printing-press.json` `description` |
 | `project_kind` | Always `"cli"` |
 | `homepage` | Omitted (not present in PP metadata) |
-| `[secrets.file].path` | `~/.config/<cli_name>/config.toml` (PP CLI canonical location per [PP audit](audits/2026-05-22-pp-cli-auth-inventory.md)) |
+| `[secrets.file]` | **Never set.** The PP CLI canonical auth location is TOML, and `[secrets.file]` is env-shaped (§5.1), read by the strict `KEY=VALUE` parser. See §7.4 |
+| `[[files]]` | One item, but only when at least one key is sensitive (§7.4): `source = ~/.config/<cli_name>/config.toml` (PP CLI canonical location per [PP audit](audits/2026-05-22-pp-cli-auth-inventory.md)), `target = <cli_name>/config.toml`, `optional = false`, `key` = the slug upper-cased with non-alphanumerics folded to `_`, suffixed `_CONFIG_TOML` |
 | `[sync.keys]` (per key) | For each `auth_env_var_specs[i]` entry: if `sensitive = true`, key is default-shipped; if `sensitive = false`, `[sync.keys].<name> = false` |
 
 ### 7.2 Override
@@ -262,7 +263,18 @@ A PP CLI may ship an explicit `agentcookie.toml` (recommended for tier-A integra
 
 ### 7.3 Adapter authority
 
-The adapter never reads the actual secrets file. It only synthesizes a manifest pointing at where the secrets live. The read-in-place step at push time is identical to any other v2 manifest.
+The adapter never reads the actual secrets file. It only synthesizes a manifest pointing at where the secrets live. The carriage step at push time is identical to any other v2 manifest's `[[files]]` item.
+
+### 7.4 Why carriage, not read-in-place
+
+A PP CLI's `config.toml` is TOML: values carry whitespace around `=`, and some CLIs open with a `[table]` header. `[secrets.file]` is env-shaped by contract (§5.1) and is read by the strict `KEY=VALUE` parser, which rejects both. Pointing the adapter at that slot meant every discovered PP CLI failed to sync — configured ones on a parse error, unconfigured ones as a missing file. This is the case §5.4 already anticipated: "a TOML `config.toml` cannot ride as a single `KEY=VALUE` value."
+
+Two consequences follow from carrying the whole file:
+
+- **Sensitivity gate.** Whole-file carriage has no per-key filter, so `[sync.keys]` cannot drop anything once the file ships. The adapter therefore emits no `[[files]]` item at all unless at least one declared key is `sensitive = true`. A CLI whose config holds only preferences (espn: a `[favorites]` list, no credentials) carries nothing.
+- **Consumption is a separate step.** Carried files materialize under `~/.agentcookie/` (§5.4 invariant), but a PP CLI reads `~/.config/<slug>/config.toml`. Only binaries built after roughly 2026-07 honor `XDG_CONFIG_HOME` or `<envName(api_name)>_CONFIG_DIR`, so an env pointer does not reach the installed fleet. Rather than widen the bus's write authority, `agentcookie secret link-configs` bridges it as an explicit opt-in step: read-only planning, dry run by default, refusing to replace an existing config or to write through a symlink pointing outside `~/.agentcookie/`. The refusal covers the whole destination path, not just its last component: every lookup and both writes go through an `os.Root` anchored at `~/.config`, so a symlinked `~/.config/<slug>` directory cannot redirect the link out of that tree while the plan claims otherwise. `~/.config` is in turn opened through a root anchored at the home directory, so the containment decision and the open are one operation rather than a resolve followed by an open that a symlink planted between them could make disagree. A symlinked `~/.config` itself is honored — the CLI reads through it too — but only while it resolves inside the home directory.
+
+Note the env-name asymmetry if you do rely on the pointer: the config *directory* derives from `cli_name` (`juneoven-pp-cli`), while the env *variable* derives from `api_name` (`JUNEOVEN_CONFIG_DIR`).
 
 ## 8. Discovery semantics
 

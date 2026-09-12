@@ -38,8 +38,26 @@ func TestDeriveManifestFromPP_TeslaShape(t *testing.T) {
 	if m.ProjectKind != "cli" {
 		t.Errorf("project_kind: %q", m.ProjectKind)
 	}
-	if m.Secrets.File == nil || m.Secrets.File.Path != "~/.config/tesla-pp-cli/config.toml" {
-		t.Errorf("[secrets.file].path: %#v", m.Secrets.File)
+	// config.toml is TOML, not env-shaped, so it rides as a carried file
+	// rather than a [secrets.file] read-in-place.
+	if m.Secrets.File != nil {
+		t.Errorf("[secrets.file] should not be set on a derived manifest: %#v", m.Secrets.File)
+	}
+	if len(m.Files) != 1 {
+		t.Fatalf("want exactly 1 carried file, got %d: %#v", len(m.Files), m.Files)
+	}
+	f := m.Files[0]
+	if f.Source != "~/.config/tesla-pp-cli/config.toml" {
+		t.Errorf("source: %q", f.Source)
+	}
+	if f.Target != "tesla-pp-cli/config.toml" {
+		t.Errorf("target: %q", f.Target)
+	}
+	if f.Key != "TESLA_PP_CLI_CONFIG_TOML" {
+		t.Errorf("key: %q", f.Key)
+	}
+	if f.Optional {
+		t.Error("derived config carriage must not be opt-in")
 	}
 	v, ok := m.Sync.Keys["TESLA_AUTH_TOKEN"]
 	if !ok || !v {
@@ -93,6 +111,74 @@ func TestDeriveManifestFromPP_NoSpecsFallbackToEnvVars(t *testing.T) {
 	}
 	if v := m.Sync.Keys["API_SECRET"]; !v {
 		t.Errorf("fallback should ship: %v", v)
+	}
+}
+
+func TestDeriveManifestFromPP_HyphenatedSlugYieldsValidCarryKey(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, ".printing-press.json")
+	body := `{
+		"cli_name": "booking-com-pp-cli",
+		"auth_env_var_specs": [{"name": "ACCESS_TOKEN", "sensitive": true}]
+	}`
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := DeriveManifestFromPP(p)
+	if err != nil {
+		t.Fatalf("derive: %v", err)
+	}
+	if len(m.Files) != 1 {
+		t.Fatalf("want 1 carried file, got %d", len(m.Files))
+	}
+	if got := m.Files[0].Key; got != "BOOKING_COM_PP_CLI_CONFIG_TOML" {
+		t.Errorf("key: %q", got)
+	}
+	if !validKeyName(m.Files[0].Key) {
+		t.Errorf("carry key %q must be a valid env key name", m.Files[0].Key)
+	}
+}
+
+// espn ships preferences only (a [favorites] table, no credentials). The audit
+// records it as having no secrets, so nothing should be carried for it.
+func TestDeriveManifestFromPP_PreferenceOnlyCarriesNothing(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, ".printing-press.json")
+	body := `{
+		"cli_name": "espn-pp-cli",
+		"auth_env_var_specs": [
+			{"name": "BASE_URL", "sensitive": false},
+			{"name": "TIMEOUT", "sensitive": false}
+		]
+	}`
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := DeriveManifestFromPP(p)
+	if err != nil {
+		t.Fatalf("derive: %v", err)
+	}
+	if len(m.Files) != 0 {
+		t.Errorf("preference-only CLI must carry nothing, got %#v", m.Files)
+	}
+	if m.Secrets.File != nil {
+		t.Errorf("preference-only CLI must not declare [secrets.file]: %#v", m.Secrets.File)
+	}
+}
+
+func TestDeriveManifestFromPP_FallbackEnvVarsStillCarry(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, ".printing-press.json")
+	body := `{"cli_name": "demo", "auth_env_vars": ["API_KEY"]}`
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := DeriveManifestFromPP(p)
+	if err != nil {
+		t.Fatalf("derive: %v", err)
+	}
+	if len(m.Files) != 1 {
+		t.Fatalf("legacy auth_env_vars treats all keys as shipped, so it must carry: %#v", m.Files)
 	}
 }
 

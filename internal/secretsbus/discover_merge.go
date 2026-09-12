@@ -1,6 +1,7 @@
 package secretsbus
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -69,6 +70,13 @@ func LoadPayloadWithDiscovery(homeDir string) (*Payload, []error) {
 			enabled := LoadEnabledFileKeys(homeDir, slug)
 			carried, carryErrs := CarryFiles(rp.Manifest.Files, enabled, homeDir)
 			for _, e := range carryErrs {
+				// A derived manifest asserts a conventional path, so an absent
+				// source just means the CLI was never configured -- a normal
+				// state, not an error. A hand-written manifest names a path its
+				// author chose, where absence is a real misconfiguration.
+				if rp.Kind == SourceKindPPCLIDerived && errors.Is(e, ErrCarrySourceMissing) {
+					continue
+				}
 				errs = append(errs, fmt.Errorf("discovered project %q: %w", slug, e))
 			}
 			maps.Copy(filtered, carried)

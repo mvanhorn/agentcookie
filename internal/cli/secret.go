@@ -81,9 +81,73 @@ var secretEnvCmd = &cobra.Command{
 	RunE:  runSecretEnv,
 }
 
+var secretLinkConfigsApply bool
+
+var secretLinkConfigsCmd = &cobra.Command{
+	Use:   "link-configs",
+	Short: "Link carried CLI configs from ~/.agentcookie/ into ~/.config/ (dry run by default)",
+	Long: `Carried configs materialize under ~/.agentcookie/<cli>/config.toml, but a
+PP CLI reads ~/.config/<cli>/config.toml. This links the second to the first.
+
+The bus deliberately never writes outside ~/.agentcookie/, so this is a
+separate, explicit step rather than something a manifest can trigger.
+
+It prints what it would do and changes nothing unless --apply is passed. An
+existing config file is never replaced, and a symlink pointing anywhere other
+than ~/.agentcookie/ is refused rather than written through. That applies to
+the whole destination path: a symlinked ~/.config/<cli> directory would carry
+the link out of ~/.config, so it is refused too.`,
+	Args: cobra.NoArgs,
+	RunE: runSecretLinkConfigs,
+}
+
 func init() {
-	secretCmd.AddCommand(secretListCmd, secretGetCmd, secretSetCmd, secretRmCmd, secretImportFromCmd, secretEnvCmd, secretAliasCmd)
+	secretCmd.AddCommand(secretListCmd, secretGetCmd, secretSetCmd, secretRmCmd, secretImportFromCmd, secretEnvCmd, secretAliasCmd, secretLinkConfigsCmd)
 	secretImportFromCmd.Flags().StringVar(&secretImportAs, "as", "", "cli-name to file the imported secrets under (required)")
+	secretLinkConfigsCmd.Flags().BoolVar(&secretLinkConfigsApply, "apply", false, "actually create the links (default: dry run)")
+}
+
+func runSecretLinkConfigs(cmd *cobra.Command, _ []string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve home: %w", err)
+	}
+	plan, err := secretsbus.PlanConfigLinks(home)
+	if err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	if len(plan) == 0 {
+		fmt.Fprintln(out, "no carried configs materialized yet; nothing to link")
+		return nil
+	}
+
+	for _, e := range plan {
+		switch e.Action {
+		case secretsbus.LinkActionLink:
+			verb := "would link"
+			if secretLinkConfigsApply {
+				verb = "linking"
+			}
+			fmt.Fprintf(out, "  %s %s -> %s\n", verb, e.Destination, e.Materialized)
+		case secretsbus.LinkActionAlreadyLinked:
+			fmt.Fprintf(out, "  ok      %s (already linked)\n", e.Destination)
+		case secretsbus.LinkActionRefuse:
+			fmt.Fprintf(out, "  SKIP    %s: %s\n", e.Destination, e.Reason)
+		}
+	}
+
+	if !secretLinkConfigsApply {
+		fmt.Fprintln(out, "\ndry run; re-run with --apply to create the links")
+		return nil
+	}
+
+	applied, errs := secretsbus.ApplyConfigLinks(home, plan)
+	fmt.Fprintf(out, "\nlinked %d config(s)\n", applied)
+	for _, e := range errs {
+		fmt.Fprintf(cmd.ErrOrStderr(), "  skipped: %v\n", e)
+	}
+	return nil
 }
 
 // secretsRoot resolves to the v1 standard path. Kept as a helper for tests.

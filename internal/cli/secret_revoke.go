@@ -75,14 +75,12 @@ To silence the auto-detect, drop a manifest with sync.default = false:
   schema_version = 2
   name = "%s"
   display_name = "%s (silenced)"
-  [secrets.file]
-  path = "%s"
   [sync]
   default = false
   EOF
 
 Then re-run `+"`agentcookie discover`"+` to confirm.
-`, name, rp.SourcePath, home, name, name, name, rp.ReadInPlacePath)
+`, name, rp.SourcePath, home, name, name, name)
 		return nil
 
 	case secretsbus.SourceKindLegacyV1:

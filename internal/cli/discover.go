@@ -98,7 +98,21 @@ func runDiscover(cmd *cobra.Command, _ []string) error {
 		row := projectToRow(rp)
 		readPath := row.ReadInPlacePath
 		if readPath == "" {
-			readPath = "(legacy bus dir)"
+			// A project with no env read-in-place is not automatically a
+			// legacy bus entry: a manifest that ships its secrets as carried
+			// files (every auto-detected PP CLI does, since config.toml is
+			// TOML rather than env-shaped) has no read-in-place path at all.
+			switch {
+			case rp.Manifest != nil && len(rp.Manifest.Files) > 0:
+				readPath = rp.Manifest.Files[0].Source
+				if extra := len(rp.Manifest.Files) - 1; extra > 0 {
+					readPath = fmt.Sprintf("%s (+%d more)", readPath, extra)
+				}
+			case rp.Kind == secretsbus.SourceKindLegacyV1:
+				readPath = "(legacy bus dir)"
+			default:
+				readPath = "(none)"
+			}
 		}
 		coverage := row.Coverage
 		if row.Coverage == "MISMATCH" {
