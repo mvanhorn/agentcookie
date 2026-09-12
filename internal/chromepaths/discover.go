@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"slices"
 	"strings"
 )
 
@@ -155,20 +154,28 @@ func browserForRoot(root string) string {
 		return "edge"
 	case strings.Contains(lower, "chromium"):
 		return "chromium"
-	case pathHasComponent(lower, "dia"):
-		// Path-component match: strings.Contains("media", "dia") is true, so
-		// a substring check would mislabel any root whose path includes
-		// "media" as Dia and then look up Dia Safe Storage.
+	case isDiaUserDataRoot(lower):
+		// Require the Dia/User Data pair, not a lone "dia" component.
+		// CHROME_USER_DATA_DIR or cdp.profile_dir under a folder named
+		// dia (or a user named dia) must stay Chrome so key lookup does
+		// not request Dia Safe Storage and drop the store.
 		return "dia"
 	default:
 		return "chrome"
 	}
 }
 
-// pathHasComponent reports whether name is a path element of slashPath.
-// slashPath must already use forward slashes (filepath.ToSlash).
-func pathHasComponent(slashPath, name string) bool {
-	return slices.Contains(strings.Split(slashPath, "/"), name)
+// isDiaUserDataRoot reports whether slashPath contains consecutive Dia
+// support-dir components ("dia" then "user data"). slashPath must already
+// use forward slashes and be lowercased.
+func isDiaUserDataRoot(slashPath string) bool {
+	parts := strings.Split(slashPath, "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] == "dia" && parts[i+1] == "user data" {
+			return true
+		}
+	}
+	return false
 }
 
 // Discover scans known Chrome user-data-dirs and returns all usable

@@ -516,7 +516,10 @@ func TestBrowserForRoot(t *testing.T) {
 		{"/home/me/chrome-profile", "chrome"},
 		{"/some/random/path", "chrome"}, // Default
 		{"/Users/me/Library/Application Support/Dia/User Data", "dia"},
+		{"/Users/me/Library/Application Support/Dia/User Data/Default", "dia"},
 		{"/Users/me/Library/Application Support/some-media-app", "chrome"}, // "media" contains "dia"
+		{"/Users/dia/Library/Application Support/Google/Chrome", "chrome"},
+		{"/tmp/dia/chrome-profile", "chrome"},
 	}
 
 	for _, tc := range cases {
@@ -551,5 +554,38 @@ func TestDiscoverForConfig_DiaUserDataKeepsDiaIdentity(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected dia/Default store from Dia User Data root, got %+v", result.Stores)
+	}
+}
+
+// TestDiscoverForConfig_CustomRootUnderDiaDirStaysChrome is the inverse of
+// the Dia identity guard: a Chrome user-data-dir whose path merely contains
+// a "dia" directory (CHROME_USER_DATA_DIR / cdp.profile_dir) must not be
+// labeled dia, or key lookup would request Dia Safe Storage and skip the
+// store.
+func TestDiscoverForConfig_CustomRootUnderDiaDirStaysChrome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	chromeRoot := filepath.Join(home, "dia", "agent-chrome")
+	if err := os.MkdirAll(chromeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	makeProfile(t, chromeRoot, "Default", true, false)
+
+	result := DiscoverForConfig(chromeRoot)
+	found := false
+	for _, s := range result.Stores {
+		if s.CookiesPath == "" {
+			continue
+		}
+		if s.Browser != "chrome" {
+			t.Errorf("store under %q labeled %q, want chrome", chromeRoot, s.Browser)
+		}
+		if s.Profile == "Default" && s.Browser == "chrome" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected chrome/Default store under a dia/ parent, got %+v", result.Stores)
 	}
 }
