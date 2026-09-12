@@ -3,6 +3,8 @@
 
 sink:
   # URL of the sink machine's /sync endpoint over your tailnet.
+  # Use the MagicDNS hostname (not a 100.x IP) so the source follows
+  # the sink after Tailscale re-auth gives it a new IP.
   url: http://my-mac-mini.tailnet.ts.net:9999/sync
 
 chrome:
@@ -29,3 +31,7 @@ peer:
 # who haven't paired yet. After pairing, delete the field below entirely.
 # security:
 #   shared_secret: only-set-this-before-you-pair
+
+# Multi-sink: to push the same cookies to more than one sink, use a
+# top-level `sinks:` list instead of the single `sink:`/`peer:` above.
+# See examples/source-multi-sink.yaml.

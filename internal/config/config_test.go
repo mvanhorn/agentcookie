@@ -735,3 +735,112 @@ func writeFile(t *testing.T, dir, name, content string) {
 		t.Fatalf("write %s: %v", name, err)
 	}
 }
+
+func TestLoadSourceMultiSinkResolvesAllEntries(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "source.yaml", `
+sinks:
+  - url: http://a.test:9999/sync
+    peer: alpha
+  - url: http://b.test:9999/sync
+    peer: bravo
+chrome:
+  db_path: ~/Library/Application Support/Google/Chrome/Default/Cookies
+`)
+	cfg, err := LoadSource(dir)
+	if err != nil {
+		t.Fatalf("LoadSource: %v", err)
+	}
+	got := cfg.ResolvedSinks()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 resolved sinks, got %d", len(got))
+	}
+	if got[0].URL != "http://a.test:9999/sync" || got[0].Peer != "alpha" {
+		t.Errorf("sink[0] wrong: %+v", got[0])
+	}
+	if got[1].URL != "http://b.test:9999/sync" || got[1].Peer != "bravo" {
+		t.Errorf("sink[1] wrong: %+v", got[1])
+	}
+}
+
+func TestResolvedSinksSynthesizesLegacyScalar(t *testing.T) {
+	cfg := &SourceConfig{
+		Sink: SinkRef{URL: "http://legacy.test:9999/sync"},
+		Peer: PeerRef{Hostname: "legacy-peer"},
+	}
+	got := cfg.ResolvedSinks()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 synthesized sink, got %d", len(got))
+	}
+	if got[0].URL != "http://legacy.test:9999/sync" || got[0].Peer != "legacy-peer" {
+		t.Errorf("synthesized sink wrong: %+v", got[0])
+	}
+}
+
+func TestResolvedSinksPrefersSinksOverLegacyScalar(t *testing.T) {
+	cfg := &SourceConfig{
+		Sinks: []SinkTarget{{URL: "http://new.test:9999/sync", Peer: "new-peer"}},
+		Sink:  SinkRef{URL: "http://legacy.test:9999/sync"},
+		Peer:  PeerRef{Hostname: "legacy-peer"},
+	}
+	got := cfg.ResolvedSinks()
+	if len(got) != 1 || got[0].Peer != "new-peer" {
+		t.Fatalf("expected sinks list to win, got %+v", got)
+	}
+}
+
+func TestResolvedSinksEmptyWhenNeitherSet(t *testing.T) {
+	cfg := &SourceConfig{}
+	if got := cfg.ResolvedSinks(); got != nil {
+		t.Fatalf("expected nil for no sinks, got %+v", got)
+	}
+}
+
+func TestLoadSourceMultiSinkRequiresPerSinkPeerOrSharedSecret(t *testing.T) {
+	dir := t.TempDir()
+	// A sinks entry with no peer and no legacy shared secret has no way to seal.
+	writeFile(t, dir, "source.yaml", `
+sinks:
+  - url: http://a.test:9999/sync
+chrome:
+  db_path: ~/Library/Application Support/Google/Chrome/Default/Cookies
+`)
+	if _, err := LoadSource(dir); err == nil {
+		t.Fatal("expected error for a sink with no peer and no shared secret, got nil")
+	}
+}
+
+func TestLoadSourceMultiSinkSharedSecretCoversPeerlessSink(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "source.yaml", `
+sinks:
+  - url: http://a.test:9999/sync
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+chrome:
+  db_path: ~/Library/Application Support/Google/Chrome/Default/Cookies
+`)
+	if _, err := LoadSource(dir); err != nil {
+		t.Fatalf("shared secret should cover a peerless sink: %v", err)
+	}
+}
+
+func TestExampleMultiSinkConfigDecodes(t *testing.T) {
+	// The shipped multi-sink example must load through the strict loader,
+	// so the docs never drift from the accepted schema.
+	dir := t.TempDir()
+	data, err := os.ReadFile(filepath.Join("..", "..", "examples", "source-multi-sink.yaml"))
+	if err != nil {
+		t.Fatalf("read example: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "source.yaml"), data, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := LoadSource(dir)
+	if err != nil {
+		t.Fatalf("example source-multi-sink.yaml should load: %v", err)
+	}
+	if got := len(cfg.ResolvedSinks()); got != 2 {
+		t.Fatalf("example should declare 2 sinks, got %d", got)
+	}
+}

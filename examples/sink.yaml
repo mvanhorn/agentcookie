@@ -6,11 +6,12 @@
 # See examples/blocklist.yaml for the sync-all configuration.
 
 listen:
-  # Address the sink's /sync HTTP listener binds to. MUST be your
-  # Tailscale 100.x address. The sink refuses to start on 0.0.0.0 or
-  # any non-tailnet routable address.
+  # Address the sink's /sync HTTP listener binds to. Use your current
+  # Tailscale 100.x address. After Tailscale re-auth, if this IP becomes
+  # stale (no longer on any local interface), the sink auto-rebinds to
+  # the new 100.x address on startup.
   #
-  # Find your Tailscale IP: tailscale ip -4
+  # Find your current Tailscale IP: tailscale ip -4
   addr: 100.x.y.z:9999
 
 peer:

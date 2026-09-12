@@ -29,6 +29,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 	"github.com/mvanhorn/agentcookie/internal/state"
 	"github.com/mvanhorn/agentcookie/internal/transport"
+	"github.com/mvanhorn/agentcookie/internal/tsclient"
 )
 
 var (
@@ -72,6 +73,13 @@ func runSink(cmd *cobra.Command, args []string) error {
 	if err := validateListenAddr(cfg.Listen.Addr); err != nil {
 		return fmt.Errorf("sink listen %q: %w", cfg.Listen.Addr, err)
 	}
+
+	// Auto-rebind if configured listen.addr IP is stale (not on any local
+	// interface). This handles the case where Tailscale re-auth gave the
+	// machine a new 100.x IP but sink.yaml still has the old frozen IP.
+	// Keep the configured port, just swap the IP. Localhost bindings are
+	// excluded from rebind since they don't depend on Tailscale state.
+	cfg.Listen.Addr = maybeRebindListenAddr(cmd.Context(), cfg.Listen.Addr)
 
 	// Linux sink: require Tailscale 100.x in production. Localhost is
 	// allowed for tests but is not the documented Linux sink path.
@@ -757,4 +765,84 @@ func unionCookiesWithExtraProfiles(envelopeCookies []chrome.Cookie, profileDir s
 // to avoid dropping path-scoped twins (e.g., "/" vs "/api" on same host+name).
 func cookieDedupeKey(c chrome.Cookie) string {
 	return c.HostKey + "\x00" + c.Name + "\x00" + c.Path
+}
+
+// maybeRebindListenAddr checks if the configured listen address IP is currently
+// bound on a local interface. If not (e.g., Tailscale re-auth gave the machine
+// a new 100.x IP), it rebinds to the current tailnet IP while keeping the
+// configured port.
+//
+// This allows sink.yaml to have a frozen Tailscale IP that becomes stale after
+// re-auth, without requiring manual edit. The sink will automatically find and
+// bind to the new IP.
+//
+// Returns the original addr unchanged if:
+//   - The IP is currently bound locally
+//   - The IP is localhost/loopback (not subject to Tailscale churn)
+//   - RequireTailnetIP fails (Tailscale not running)
+//   - The address parsing fails
+func maybeRebindListenAddr(ctx context.Context, addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+
+	// Localhost bindings don't need rebind
+	switch host {
+	case "127.0.0.1", "::1", "localhost":
+		return addr
+	}
+
+	// Check if the configured IP is on a local interface
+	if isIPBoundLocally(host) {
+		return addr
+	}
+
+	// IP is not bound locally. If it's a tailnet IP, try to get the current one.
+	if !tsclient.IsTailnetIP(host) {
+		// Not a tailnet IP, can't auto-rebind
+		return addr
+	}
+
+	// Get the current tailnet IP
+	newIP, err := tsclient.RequireTailnetIP(ctx)
+	if err != nil {
+		// Tailscale not running or no IP available
+		fmt.Fprintf(os.Stderr, "agentcookie sink: configured listen IP %s not on any local interface, but cannot get current tailnet IP: %v\n", host, err)
+		return addr
+	}
+
+	if newIP == host {
+		// Same IP, no rebind needed (shouldn't happen since isIPBoundLocally failed)
+		return addr
+	}
+
+	newAddr := net.JoinHostPort(newIP, port)
+	fmt.Fprintf(os.Stderr, "agentcookie sink: configured listen IP %s is stale (not on any local interface); rebinding to current tailnet IP %s\n", host, newIP)
+	return newAddr
+}
+
+// isIPBoundLocally returns true if the given IP address is currently assigned
+// to a local network interface. Used to detect stale Tailscale IPs after re-auth.
+func isIPBoundLocally(ipStr string) bool {
+	targetIP := net.ParseIP(ipStr)
+	if targetIP == nil {
+		return false
+	}
+
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+
+	for _, a := range addrs {
+		ipnet, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		if ipnet.IP.Equal(targetIP) {
+			return true
+		}
+	}
+	return false
 }

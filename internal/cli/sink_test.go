@@ -729,3 +729,64 @@ func TestSinkHandler_EmptyEnvelopeStillUnionsExtraProfiles(t *testing.T) {
 		t.Errorf("empty envelope on Linux should return empty after union; got %d", len(result))
 	}
 }
+
+// TestIsIPBoundLocally verifies the local IP detection used by sink rebind.
+func TestIsIPBoundLocally(t *testing.T) {
+	// 127.0.0.1 should always be bound locally on any system.
+	if !isIPBoundLocally("127.0.0.1") {
+		t.Error("127.0.0.1 should be bound locally")
+	}
+
+	// An arbitrary private IP that's unlikely to be bound.
+	if isIPBoundLocally("10.99.99.99") {
+		t.Error("10.99.99.99 should not be bound locally (unless coincidentally assigned)")
+	}
+
+	// Invalid IP should return false.
+	if isIPBoundLocally("not-an-ip") {
+		t.Error("invalid IP should return false")
+	}
+
+	// Empty string should return false.
+	if isIPBoundLocally("") {
+		t.Error("empty string should return false")
+	}
+}
+
+// TestMaybeRebindListenAddr_LocalhostPassthrough verifies that localhost
+// bindings are not subject to rebind.
+func TestMaybeRebindListenAddr_LocalhostPassthrough(t *testing.T) {
+	cases := []string{
+		"127.0.0.1:9999",
+		"localhost:9999",
+	}
+	for _, addr := range cases {
+		t.Run(addr, func(t *testing.T) {
+			got := maybeRebindListenAddr(context.Background(), addr)
+			if got != addr {
+				t.Errorf("localhost should pass through unchanged: got %q, want %q", got, addr)
+			}
+		})
+	}
+}
+
+// TestMaybeRebindListenAddr_BoundIPPassthrough verifies that IPs currently
+// bound locally are not subject to rebind.
+func TestMaybeRebindListenAddr_BoundIPPassthrough(t *testing.T) {
+	// 127.0.0.1 is always bound locally.
+	addr := "127.0.0.1:9999"
+	got := maybeRebindListenAddr(context.Background(), addr)
+	if got != addr {
+		t.Errorf("bound IP should pass through unchanged: got %q, want %q", got, addr)
+	}
+}
+
+// TestMaybeRebindListenAddr_ParseError verifies that unparseable addresses
+// are returned unchanged.
+func TestMaybeRebindListenAddr_ParseError(t *testing.T) {
+	addr := "no-port-here"
+	got := maybeRebindListenAddr(context.Background(), addr)
+	if got != addr {
+		t.Errorf("unparseable address should pass through unchanged: got %q, want %q", got, addr)
+	}
+}

@@ -1,0 +1,32 @@
+# Example multi-sink source.yaml. Copy to ~/.config/agentcookie/source.yaml
+# on the machine where you log in interactively (your laptop) to fan out the
+# same cookies and secrets to more than one sink.
+#
+# One source push reads and filters your cookies once, then seals and POSTs
+# to each sink independently. A sink that is down or unreachable is isolated:
+# it fails on its own while the other sinks still receive the payload.
+#
+# Trust note: every sink receives the SAME full cookie and secret set, so a
+# compromise of the least-trusted sink exposes everything. Only list sinks you
+# trust with the whole payload.
+
+sinks:
+  # Each entry has its own URL and peer (the keys/<peer>.json filename from
+  # `agentcookie pair`). Prefer MagicDNS hostnames over 100.x IPs so the
+  # source follows each sink across Tailscale re-auth.
+  - url: http://mac-mini.tailnet.ts.net:9999/sync
+    peer: mac-mini
+  - url: http://grok-bot.tailnet.ts.net:9999/sync
+    peer: grok-bot
+
+chrome:
+  # Defaults to ~/Library/Application Support/Google/Chrome/Default/Cookies
+  # if omitted. Set explicitly to read from a non-default profile.
+  db_path: ~/Library/Application Support/Google/Chrome/Default/Cookies
+
+# A legacy single-sink source.yaml (top-level `sink:` + `peer:`) still works
+# unchanged and behaves as a one-element sinks list. Pair and append another
+# sink without hand-editing with:
+#
+#   agentcookie wizard install --as source --add-sink --peer <new-sink> \
+#     --sink-url http://<new-sink>.tailnet.ts.net:9999/sync

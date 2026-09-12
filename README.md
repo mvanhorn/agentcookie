@@ -129,7 +129,9 @@ mkdir -p ~/.config/agentcookie
 # 3. Write sink.yaml
 cat > ~/.config/agentcookie/sink.yaml << 'EOF'
 listen:
-  addr: 100.x.y.z:9999  # Your Linux box's Tailscale IP
+  # Use your current Tailscale IP. After Tailscale re-auth, if this IP
+  # becomes stale, the sink auto-rebinds to the new 100.x address.
+  addr: 100.x.y.z:9999
 
 peer:
   hostname: your-mac.tailnet  # Mac's Tailscale hostname
@@ -156,7 +158,7 @@ agentcookie pair --as sink \
 ```
 
 Replace:
-- `100.x.y.z` with your Linux box's Tailscale IP (`tailscale ip -4`)
+- `100.x.y.z` with your current Tailscale IP (`tailscale ip -4`). If Tailscale re-auth gives the sink a new IP, the sink auto-rebinds to it on next start.
 - `your-mac.tailnet` with your Mac's Tailscale hostname (`tailscale status` on either machine)
 - The pairing code and URL with the values printed by the Mac source wizard
 
@@ -269,6 +271,34 @@ agentcookie wizard install --as sink \
 ```
 
 The macOS sink writes to Chrome's encrypted SQLite, the plaintext sidecar, and per-CLI adapter session files. It can also run CDP injection into a managed Chrome subprocess. See [docs/quickstart.md](docs/quickstart.md) for the full macOS-to-macOS walkthrough.
+
+## Fan out to multiple sinks
+
+One source can push the same cookies and secrets to several sinks. A source push reads and filters your cookies once, then seals and POSTs to each sink independently with that sink's own paired key. A sink that is down or unreachable is isolated: it fails on its own while the other sinks still receive the payload.
+
+List sinks under `sinks:` in `source.yaml`, each with its own `url` and `peer`:
+
+```yaml
+sinks:
+  - url: http://mac-mini.tailnet.ts.net:9999/sync
+    peer: mac-mini
+  - url: http://grok-bot.tailnet.ts.net:9999/sync
+    peer: grok-bot
+chrome:
+  db_path: ~/Library/Application Support/Google/Chrome/Default/Cookies
+```
+
+A legacy single-sink `source.yaml` (top-level `sink:` + `peer:`) keeps working unchanged and behaves as a one-element list. To pair and append another sink without hand-editing:
+
+```bash
+agentcookie wizard install --as source --add-sink \
+  --peer <new-sink-hostname> \
+  --sink-url http://<new-sink>.tailnet.ts.net:9999/sync
+```
+
+`agentcookie status` and `agentcookie doctor` report each sink's last push and failures. See [examples/source-multi-sink.yaml](examples/source-multi-sink.yaml).
+
+**Trust note:** every sink receives the same full cookie and secret set, so a compromise of the least-trusted sink exposes everything. Only list sinks you trust with the whole payload. To stop feeding a sink, remove its entry from `sinks:` and delete its `keys/<peer>.json`. The device-bound (DBSC) caveat below is per-sink and unchanged: each sink still needs its own Chrome signed into the same Google account.
 
 ## What about Chrome's device-bound cookies (DBSC)?
 

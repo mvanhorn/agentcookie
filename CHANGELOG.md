@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Multi-sink fan-out
+
+One source can now push the same cookies and secrets to several sinks.
+
+- `source.yaml` accepts a `sinks:` list, each entry with its own `url` and `peer`. A legacy single-sink config (`sink:` + `peer:`) keeps working unchanged and loads as a one-element list.
+- A push reads and filters cookies once, then seals and POSTs to each sink with its own paired key. A missing per-sink key isolates that sink instead of aborting the whole push, and never silently downgrades a paired sink to the legacy shared secret.
+- Per-sink failures are isolated; a partial or total sink failure is a non-zero `--once` exit. The `--once` deadline scales with sink count so a slow first sink cannot starve later healthy ones.
+- `agentcookie wizard install --as source --add-sink --peer <host> --sink-url <url>` pairs and appends an additional sink to an existing config.
+- `agentcookie status` and `agentcookie doctor` report per-sink push state.
+- Example: `examples/source-multi-sink.yaml`.
+
 ## [1.0.0] - 2026-08-13
 
 ### Featured: Mac to Linux continuous sync

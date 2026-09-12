@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mvanhorn/agentcookie/internal/config"
 )
 
 // errInjectedKeychainOpen is the failure injected into the
@@ -533,5 +535,67 @@ func TestSkipChromeSQLiteHelpNotStale(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(f.Usage), "degraded") {
 		t.Errorf("help should describe the degraded opt-out: %q", f.Usage)
+	}
+}
+
+func TestBuildAddSinkYAMLMigratesLegacyAndAppends(t *testing.T) {
+	cfg := &config.SourceConfig{
+		Sink:   config.SinkRef{URL: "http://first.test:9999/sync"},
+		Peer:   config.PeerRef{Hostname: "first"},
+		Chrome: config.ChromeRef{DBPath: "/tmp/Cookies"},
+	}
+	yamlBody, err := buildAddSinkYAML(cfg, "http://second.test:9999/sync", "second")
+	if err != nil {
+		t.Fatalf("buildAddSinkYAML: %v", err)
+	}
+	// The rendered YAML must decode through the real loader into two sinks.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "source.yaml"), []byte(yamlBody), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	loaded, err := config.LoadSource(dir)
+	if err != nil {
+		t.Fatalf("LoadSource on rendered YAML: %v", err)
+	}
+	got := loaded.ResolvedSinks()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 sinks after add, got %d (%s)", len(got), yamlBody)
+	}
+	if got[0].Peer != "first" || got[1].Peer != "second" {
+		t.Errorf("sinks wrong: %+v", got)
+	}
+	if strings.Contains(yamlBody, "\nsink:\n") {
+		t.Errorf("rendered YAML must not emit a legacy sink: block:\n%s", yamlBody)
+	}
+}
+
+func TestBuildAddSinkYAMLRejectsDuplicatePeer(t *testing.T) {
+	cfg := &config.SourceConfig{
+		Sinks: []config.SinkTarget{{URL: "http://a.test/sync", Peer: "alpha"}},
+	}
+	if _, err := buildAddSinkYAML(cfg, "http://a2.test/sync", "alpha"); err == nil {
+		t.Fatal("expected error for duplicate peer, got nil")
+	}
+	if _, err := buildAddSinkYAML(cfg, "http://a.test/sync", "beta"); err == nil {
+		t.Fatal("expected error for duplicate URL, got nil")
+	}
+}
+
+func TestRenderSourceYAMLSinksPreservesSharedSecret(t *testing.T) {
+	cfg := &config.SourceConfig{
+		Chrome:   config.ChromeRef{DBPath: "/tmp/Cookies"},
+		Security: config.SecurityRef{SharedSecret: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+	}
+	body := renderSourceYAMLSinks(cfg, []config.SinkTarget{{URL: "http://a.test/sync"}})
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "source.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	loaded, err := config.LoadSource(dir)
+	if err != nil {
+		t.Fatalf("LoadSource: %v (body:\n%s)", err, body)
+	}
+	if loaded.Security.SharedSecret == "" {
+		t.Error("shared secret not preserved through render")
 	}
 }
