@@ -30,7 +30,8 @@ import (
 // symlink and leave the config there while the plan claimed ~/.config. So
 // every lookup and every write goes through an os.Root anchored at ~/.config,
 // which refuses to follow a symlink whose target leaves that tree instead of
-// quietly redirecting the write.
+// quietly redirecting the write. ~/.config is itself opened through a root
+// anchored at the home directory, so the same holds one level up.
 
 // LinkAction is what a plan entry proposes to do about one destination.
 type LinkAction string
@@ -145,89 +146,119 @@ func PlanConfigLinks(homeDir string) ([]LinkPlanEntry, error) {
 	return plan, nil
 }
 
-// resolveConfigRoot reports the directory ~/.config actually denotes, or the
-// reason nothing under it may be written.
+// maxConfigLinkHops bounds the symlink rewriting in openConfigDir so a cycle
+// of absolute symlinks cannot spin.
+const maxConfigLinkHops = 8
+
+// openConfigDir opens ~/.config through homeRoot, so the entire walk is
+// confined to the home directory and a symlink leading out of it fails rather
+// than redirecting the open. A nil root with an empty refusal means ~/.config
+// does not exist.
 //
-// An empty path with an empty reason means ~/.config does not exist yet.
+// The alternative -- resolving ~/.config by name and then opening the result
+// -- cannot be made safe, because the resolve and the open are separate
+// lookups that a symlink planted between them makes disagree. Anchoring at the
+// home directory instead means the containment decision and the open are the
+// same operation.
 //
-// A symlinked ~/.config is honored rather than refused: pointing the whole
-// config tree at a dotfiles checkout is a normal arrangement, and the CLI
-// reads its config through that same symlink, so writing through it lands the
-// config exactly where the CLI will look. It is still required to stay inside
-// the home directory. Past that boundary the path the plan printed no longer
-// describes where the bytes went, which is the failure mode this whole
-// classification exists to prevent.
-func resolveConfigRoot(homeDir string) (dir, refusal string) {
-	nominal := filepath.Join(homeDir, configDirName)
-	info, err := os.Lstat(nominal)
-	if err != nil {
+// os.Root rejects an absolute symlink even when its target is inside the root,
+// so `ln -s ~/dotfiles/config ~/.config` -- the normal way to write that
+// arrangement, and one the CLI itself reads through -- would otherwise be
+// refused. Such a target is rewritten as a home-relative path and the open
+// retried, which keeps the resolution inside the same confined walk.
+func openConfigDir(homeRoot *os.Root, homeDir string) (*os.Root, string) {
+	name := configDirName
+	for range maxConfigLinkHops {
+		root, err := homeRoot.OpenRoot(name)
+		if err == nil {
+			return root, ""
+		}
 		if os.IsNotExist(err) {
-			return "", ""
+			return nil, ""
 		}
-		return "", fmt.Sprintf("cannot inspect %s: %v", nominal, err)
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		if !info.IsDir() {
-			return "", fmt.Sprintf("%s is not a directory", nominal)
+		target, rerr := homeRoot.Readlink(name)
+		if rerr != nil {
+			return nil, fmt.Sprintf("cannot open %s: %v", filepath.Join(homeDir, name), err)
 		}
-		return nominal, ""
+		rel, ok := homeRelative(homeDir, target)
+		if !ok {
+			return nil, fmt.Sprintf("%s is a symlink to %s, outside the home directory; not writing through it", filepath.Join(homeDir, name), target)
+		}
+		name = rel
 	}
-	// Both sides are resolved before comparison: a home directory reached
-	// through a symlink (/var -> /private/var on macOS) would otherwise look
-	// like an escape.
-	resolved, err := filepath.EvalSymlinks(nominal)
-	if err != nil {
-		return "", fmt.Sprintf("cannot resolve %s: %v", nominal, err)
-	}
-	resolvedHome, err := filepath.EvalSymlinks(homeDir)
-	if err != nil {
-		return "", fmt.Sprintf("cannot resolve %s: %v", homeDir, err)
-	}
-	if !underRoot(resolved, resolvedHome) {
-		return "", fmt.Sprintf("%s is a symlink to %s, outside the home directory; not writing through it", nominal, resolved)
-	}
-	return resolved, ""
+	return nil, fmt.Sprintf("%s resolves through too many symlinks to classify", filepath.Join(homeDir, configDirName))
 }
 
-// openConfigRoot opens ~/.config as an os.Root for read-only classification,
-// without creating anything. A nil root with an empty refusal means ~/.config
-// is absent.
+// homeRelative rewrites a path inside the home directory as a home-relative
+// one. The home directory's own symlinks are resolved as well, because a
+// target may be written either way -- on macOS ~ is reached through /var while
+// the real path is /private/var.
+func homeRelative(homeDir, target string) (string, bool) {
+	target = filepath.Clean(target)
+	bases := []string{filepath.Clean(homeDir)}
+	if resolved, err := filepath.EvalSymlinks(homeDir); err == nil && resolved != bases[0] {
+		bases = append(bases, resolved)
+	}
+	for _, base := range bases {
+		if target == base || !underRoot(target, base) {
+			continue
+		}
+		rel, err := filepath.Rel(base, target)
+		if err != nil {
+			continue
+		}
+		return rel, true
+	}
+	return "", false
+}
+
+// openConfigRoot opens ~/.config for read-only classification, creating
+// nothing. A nil root with an empty refusal means ~/.config is absent, so
+// every destination under it is absent too.
 func openConfigRoot(homeDir string) (*os.Root, string) {
-	dir, refusal := resolveConfigRoot(homeDir)
-	if refusal != "" || dir == "" {
-		return nil, refusal
-	}
-	root, err := os.OpenRoot(dir)
+	homeRoot, err := os.OpenRoot(homeDir)
 	if err != nil {
-		return nil, fmt.Sprintf("cannot open %s: %v", dir, err)
+		return nil, fmt.Sprintf("cannot open %s: %v", homeDir, err)
 	}
-	return root, ""
+	defer homeRoot.Close()
+	return openConfigDir(homeRoot, homeDir)
 }
 
 // openConfigRootForWrite is openConfigRoot plus creating ~/.config when it is
-// missing. The mkdir goes through a root anchored at the home directory, so
-// even that one directory cannot be placed elsewhere by a symlink.
+// missing. The mkdir goes through the home root too, so that one directory
+// cannot be placed elsewhere either.
+//
+// Creating is not allowed to become a way around the classification. A mkdir
+// that reports the directory already exists means something appeared in the
+// window since it was found absent, so the loop classifies ~/.config again
+// rather than opening it by name -- opening by name is what would follow a
+// symlink planted in exactly that window.
 func openConfigRootForWrite(homeDir string) (*os.Root, error) {
-	dir, refusal := resolveConfigRoot(homeDir)
-	if refusal != "" {
-		return nil, errors.New(refusal)
-	}
-	if dir == "" {
-		homeRoot, err := os.OpenRoot(homeDir)
-		if err != nil {
-			return nil, fmt.Errorf("open %s: %w", homeDir, err)
-		}
-		defer homeRoot.Close()
-		if err := homeRoot.Mkdir(configDirName, 0o700); err != nil && !os.IsExist(err) {
-			return nil, fmt.Errorf("create %s: %w", filepath.Join(homeDir, configDirName), err)
-		}
-		dir = filepath.Join(homeDir, configDirName)
-	}
-	root, err := os.OpenRoot(dir)
+	homeRoot, err := os.OpenRoot(homeDir)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", dir, err)
+		return nil, fmt.Errorf("open %s: %w", homeDir, err)
 	}
-	return root, nil
+	defer homeRoot.Close()
+
+	nominal := filepath.Join(homeDir, configDirName)
+	for created := false; ; created = true {
+		root, refusal := openConfigDir(homeRoot, homeDir)
+		if refusal != "" {
+			return nil, errors.New(refusal)
+		}
+		if root != nil {
+			return root, nil
+		}
+		if created {
+			// Still absent after a mkdir that either succeeded or found
+			// something there: a dangling symlink, or a racing writer. Refuse
+			// rather than try harder.
+			return nil, fmt.Errorf("%s does not resolve to a directory; not linking", nominal)
+		}
+		if err := homeRoot.Mkdir(configDirName, 0o700); err != nil && !os.IsExist(err) {
+			return nil, fmt.Errorf("create %s: %w", nominal, err)
+		}
+	}
 }
 
 // classifyDestination decides what may be done with slug's destination without

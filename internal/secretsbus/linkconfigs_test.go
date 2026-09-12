@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -330,48 +331,134 @@ func TestPlanConfigLinks_ConfigRootSymlinkedOutsideHomeRefused(t *testing.T) {
 	}
 }
 
-// Pointing the whole config tree at a dotfiles checkout is a normal
-// arrangement, and the CLI reads its config through that symlink too, so
-// linking follows it while it stays inside the home directory.
-func TestApplyConfigLinks_FollowsConfigRootSymlinkedInsideHome(t *testing.T) {
+// A config root that appears as a symlink only after planning is the same
+// escape arriving through the one path that has to create ~/.config. Finding
+// it absent must not license opening it by name later.
+func TestApplyConfigLinks_RefusesConfigRootSymlinkAppearingAfterPlanning(t *testing.T) {
 	home := t.TempDir()
-	src := materialized(t, home, "demo-pp-cli")
-	dotfiles := filepath.Join(home, "dotfiles", "config")
-	if err := os.MkdirAll(dotfiles, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(dotfiles, filepath.Join(home, ".config")); err != nil {
-		t.Fatal(err)
-	}
+	materialized(t, home, "demo-pp-cli")
 
 	plan, err := PlanConfigLinks(home)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(plan) != 1 || plan[0].Action != LinkActionLink {
+		t.Fatalf("expected one linkable entry while ~/.config was absent, got %#v", plan)
+	}
+
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(home, ".config")); err != nil {
+		t.Fatal(err)
+	}
+
 	applied, errs := ApplyConfigLinks(home, plan)
-	if len(errs) != 0 {
-		t.Fatalf("apply: %v", errs)
+	if applied != 0 {
+		t.Errorf("applied = %d, want 0", applied)
 	}
-	if applied != 1 {
-		t.Fatalf("applied = %d, want 1", applied)
+	if len(errs) == 0 {
+		t.Error("expected an error once ~/.config became a symlink out of the home directory")
 	}
-	got, err := os.ReadFile(filepath.Join(dotfiles, "demo-pp-cli", "config.toml"))
-	if err != nil {
-		t.Fatalf("link not readable through the resolved config root: %v", err)
+	if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+		t.Errorf("wrote into %s: entries=%v err=%v", outside, entries, err)
 	}
-	if string(got) != "carried = true\n" {
-		t.Errorf("linked content: %q", got)
+}
+
+// The window worth covering here -- ~/.config turning into a symlink between
+// being found absent and being created -- has no single-threaded state that
+// reproduces it, so it is exercised by interleaving instead. The assertion is
+// one-directional: nothing correct can ever write outside the home directory,
+// so this cannot fail spuriously; it can only fail to catch a regression.
+func TestApplyConfigLinks_ConfigRootRaceNeverEscapesHome(t *testing.T) {
+	const rounds = 2000
+
+	home := t.TempDir()
+	src := materialized(t, home, "demo-pp-cli")
+	outside := t.TempDir()
+	configDir := filepath.Join(home, ".config")
+
+	plan := []LinkPlanEntry{{
+		Slug:         "demo-pp-cli",
+		Materialized: src,
+		Destination:  filepath.Join(configDir, "demo-pp-cli", "config.toml"),
+		Action:       LinkActionLink,
+	}}
+
+	var flipping sync.WaitGroup
+	flipping.Go(func() {
+		for range rounds {
+			os.RemoveAll(configDir)
+			os.Symlink(outside, configDir)
+			os.Remove(configDir)
+		}
+	})
+	for range rounds {
+		ApplyConfigLinks(home, plan)
 	}
-	resolved, err := filepath.EvalSymlinks(filepath.Join(home, ".config", "demo-pp-cli", "config.toml"))
+	flipping.Wait()
+
+	entries, err := os.ReadDir(outside)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantResolved, err := filepath.EvalSymlinks(src)
-	if err != nil {
-		t.Fatal(err)
+	if len(entries) != 0 {
+		t.Errorf("a link escaped into %s: %v", outside, entries)
 	}
-	if resolved != wantResolved {
-		t.Errorf("resolved to %q, want %q", resolved, wantResolved)
+}
+
+// Pointing the whole config tree at a dotfiles checkout is a normal
+// arrangement, and the CLI reads its config through that symlink too, so
+// linking follows it while it stays inside the home directory. Both spellings
+// of the symlink have to work: os.Root rejects an absolute target outright, so
+// that case is resolved separately from the relative one.
+func TestApplyConfigLinks_FollowsConfigRootSymlinkedInsideHome(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		linkFrom func(home, dotfiles string) string
+	}{
+		{"absolute target", func(_, dotfiles string) string { return dotfiles }},
+		{"relative target", func(_, _ string) string { return filepath.Join("dotfiles", "config") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			src := materialized(t, home, "demo-pp-cli")
+			dotfiles := filepath.Join(home, "dotfiles", "config")
+			if err := os.MkdirAll(dotfiles, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(tc.linkFrom(home, dotfiles), filepath.Join(home, ".config")); err != nil {
+				t.Fatal(err)
+			}
+
+			plan, err := PlanConfigLinks(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			applied, errs := ApplyConfigLinks(home, plan)
+			if len(errs) != 0 {
+				t.Fatalf("apply: %v", errs)
+			}
+			if applied != 1 {
+				t.Fatalf("applied = %d, want 1", applied)
+			}
+			got, err := os.ReadFile(filepath.Join(dotfiles, "demo-pp-cli", "config.toml"))
+			if err != nil {
+				t.Fatalf("link not readable through the resolved config root: %v", err)
+			}
+			if string(got) != "carried = true\n" {
+				t.Errorf("linked content: %q", got)
+			}
+			resolved, err := filepath.EvalSymlinks(filepath.Join(home, ".config", "demo-pp-cli", "config.toml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantResolved, err := filepath.EvalSymlinks(src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resolved != wantResolved {
+				t.Errorf("resolved to %q, want %q", resolved, wantResolved)
+			}
+		})
 	}
 }
 
