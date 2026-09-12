@@ -13,6 +13,16 @@ One source can now push the same cookies and secrets to several sinks.
 - `agentcookie status` and `agentcookie doctor` report per-sink push state.
 - Example: `examples/source-multi-sink.yaml`.
 
+### PP CLI config carriage (#118)
+
+Auto-discovered Printing Press CLIs were pointed at the env-shaped `[secrets.file]` slot, so their `config.toml` went through a strict `KEY=VALUE` parser that cannot read the TOML they actually write. Every one of them failed to sync, and CLIs that were simply never authenticated were reported as errors on every push.
+
+- A PP CLI's `config.toml` now rides as a `[[files]]` carriage item. Bytes are carried verbatim, so nested tables and comments survive and nothing is parsed.
+- Carriage is gated on the manifest declaring at least one sensitive key, so a preference-only config is not swept in.
+- A never-authenticated CLI is skipped quietly instead of erroring; a hand-written manifest naming a missing file still errors, because its author chose the path.
+- `agentcookie secret link-configs` bridges carried configs into `~/.config/<cli>/config.toml`, where the installed fleet actually reads them (only binaries built after roughly 2026-07 honor an env pointer). Read-only planning, dry run until `--apply`. It never replaces an existing config, and the link is confined to `~/.config` so no symlink along the destination path can redirect it out of that tree.
+- Measured across 59 installed CLIs: `secrets-bus` error lines 40 to 0, CLIs contributing secrets 2 to 9.
+
 ## [1.0.0] - 2026-08-13
 
 ### Featured: Mac to Linux continuous sync

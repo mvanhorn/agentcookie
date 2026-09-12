@@ -94,7 +94,9 @@ separate, explicit step rather than something a manifest can trigger.
 
 It prints what it would do and changes nothing unless --apply is passed. An
 existing config file is never replaced, and a symlink pointing anywhere other
-than ~/.agentcookie/ is refused rather than written through.`,
+than ~/.agentcookie/ is refused rather than written through. That applies to
+the whole destination path: a symlinked ~/.config/<cli> directory would carry
+the link out of ~/.config, so it is refused too.`,
 	Args: cobra.NoArgs,
 	RunE: runSecretLinkConfigs,
 }
