@@ -91,30 +91,29 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	browserName := cmuxSyncBrowser
-	if browserName == "" {
-		browserName = cfg.Browser.Name
-	}
-	sourceBrowser, err := chrome.LookupBrowser(browserName)
-	if err != nil {
-		return err
-	}
-	password, err := cmuxSyncPasswordFor(sourceBrowser)
-	if err != nil {
-		if cmuxSyncWatch && chrome.IsKeychainAccessError(err) {
-			// In watch mode, a Keychain access failure means the binary has no
-			// grant yet. Exit 0 so launchd's KeepAlive does not restart the
-			// agent into a prompt storm. The operator must run wizard
-			// set-keychain-access before re-enabling the loop.
-			fmt.Fprintf(os.Stderr, "agentcookie cmux-sync --watch: Keychain not accessible; exiting cleanly so launchd does not restart.\nFix: %s\n", chrome.SafeStorageRemediation)
-			cmuxExitFunc(0)
-			return nil // unreachable in production; allows test assertions
+	var key []byte
+	if !cfg.CDPSource.Enabled {
+		browserName := cmuxSyncBrowser
+		if browserName == "" {
+			browserName = cfg.Browser.Name
 		}
-		return err
-	}
-	key, err := chrome.DeriveAESKey(password)
-	if err != nil {
-		return err
+		sourceBrowser, err := chrome.LookupBrowser(browserName)
+		if err != nil {
+			return err
+		}
+		password, err := cmuxSyncPasswordFor(sourceBrowser)
+		if err != nil {
+			if cmuxSyncWatch && chrome.IsKeychainAccessError(err) {
+				fmt.Fprintf(os.Stderr, "agentcookie cmux-sync --watch: Keychain not accessible; exiting cleanly so launchd does not restart.\nFix: %s\n", chrome.SafeStorageRemediation)
+				cmuxExitFunc(0)
+				return nil
+			}
+			return err
+		}
+		key, err = chrome.DeriveAESKey(password)
+		if err != nil {
+			return err
+		}
 	}
 
 	skipDBSC := cmuxSyncSkipDBSC || os.Getenv("AGENTCOOKIE_SKIP_DBSC_SUSPECT") == "1"
@@ -158,7 +157,7 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return 0, err
 		}
-		cookies, st, err := readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
+		cookies, st, err := readConfiguredCookies(ctx, cfg, blocklist, key, skipDBSC, time.Now().UTC())
 		if err != nil {
 			return 0, err
 		}
@@ -214,6 +213,10 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 	// --watch: re-inject on every debounced Chrome Cookies change. A failed
 	// cycle (cmux down) is logged and the watcher keeps running; the next
 	// change retries.
+	if cfg.CDPSource.Enabled {
+		fmt.Fprintf(os.Stderr, "agentcookie cmux-sync --watch: polling %s, injecting into cmux\n", cfg.CDPSource.Endpoint)
+		return runCDPSourceWatch(cmd.Context(), syncOnce, cfg.CDPSource.Endpoint, cmuxSyncVerbose)
+	}
 	w, err := watcher.New(watcher.Config{
 		CookiesPath: cfg.Chrome.DBPath,
 		LogLabel:    "agentcookie cmux-sync --watch",

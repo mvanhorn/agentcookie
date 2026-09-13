@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -40,6 +41,10 @@ var (
 // wires it to tsclient.ResolveSinkURL; tests can override it to inject
 // specific resolution behaviors (e.g., ErrAmbiguousPeer).
 var resolveSinkURL = tsclient.ResolveSinkURL
+
+// loadSecretsPayload is replaceable by tests. CDP-source profiles are
+// cookie-only, so they must not inherit process-home secrets bus state.
+var loadSecretsPayload = secretsbus.LoadPayloadWithDiscovery
 
 // SetResolveSinkURLForTesting replaces resolveSinkURL with the given
 // function and returns a restore func. Test-only seam.
@@ -101,19 +106,23 @@ func runSource(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	sourceBrowser, err := chrome.LookupBrowser(cfg.Browser.Name)
-	if err != nil {
-		return err
-	}
-	password, err := chrome.SafeStoragePasswordFor(sourceBrowser)
-	if err != nil {
-		// SafeStoragePasswordFor already prefixes its error with
-		// "read <service> from Keychain ..."; don't double the prefix.
-		return err
-	}
-	key, err := chrome.DeriveAESKey(password)
-	if err != nil {
-		return err
+	var key []byte
+	var sourceBrowser chrome.Browser
+	if !cfg.CDPSource.Enabled {
+		sourceBrowser, err = chrome.LookupBrowser(cfg.Browser.Name)
+		if err != nil {
+			return err
+		}
+		password, err := chrome.SafeStoragePasswordFor(sourceBrowser)
+		if err != nil {
+			// SafeStoragePasswordFor already prefixes its error with
+			// "read <service> from Keychain ..."; don't double the prefix.
+			return err
+		}
+		key, err = chrome.DeriveAESKey(password)
+		if err != nil {
+			return err
+		}
 	}
 	// Per-sink transport secrets are resolved inside the fan-out loop
 	// (pushOnce), not here: resolving all secrets up front would let one
@@ -123,7 +132,7 @@ func runSource(cmd *cobra.Command, args []string) error {
 
 	// State writer for `agentcookie status` to read.
 	home, _ := os.UserHomeDir()
-	stateWriter := state.NewWriter(state.SourcePath(home))
+	stateWriter := state.NewWriter(sourceStatePath(cfg.CDPSource.Enabled, common.ConfigDir, home))
 	legacySinkURL := ""
 	if len(sinks) > 0 {
 		legacySinkURL = sinks[0].URL
@@ -156,6 +165,10 @@ func runSource(cmd *cobra.Command, args []string) error {
 		defer cancel()
 		_, err := push(ctx)
 		return err
+	}
+
+	if cfg.CDPSource.Enabled {
+		return runCDPSourceWatch(cmd.Context(), push, cfg.CDPSource.Endpoint, sourceVerbose)
 	}
 
 	// --watch mode: long-running fsnotify watcher across all three sync
@@ -212,6 +225,43 @@ func runSource(cmd *cobra.Command, args []string) error {
 	}()
 
 	return w.Run(cmd.Context())
+}
+
+func sourceStatePath(cdpSource bool, configDir, home string) string {
+	if cdpSource {
+		return filepath.Join(configDir, "state", "source-state.json")
+	}
+	return state.SourcePath(home)
+}
+
+func sourceStatePathForConfig(cfg *config.SourceConfig, configDir, home string) string {
+	return sourceStatePath(cfg != nil && cfg.CDPSource.Enabled, configDir, home)
+}
+
+const cdpSourcePollInterval = 10 * time.Second
+
+// runCDPSourceWatch polls the browser's CDP jar rather than watching encrypted
+// SQLite files. CDP has no cookie-change event, so polling is deliberately
+// bounded; every cycle follows the same allowlist and encrypted push path.
+func runCDPSourceWatch(ctx context.Context, push func(context.Context) (int, error), endpoint string, verbose bool) error {
+	if _, err := push(ctx); err != nil {
+		return err
+	}
+	if verbose {
+		fmt.Fprintf(os.Stderr, "agentcookie source --watch: polling loopback CDP at %s every %s\n", endpoint, cdpSourcePollInterval)
+	}
+	ticker := time.NewTicker(cdpSourcePollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if _, err := push(ctx); err != nil && verbose {
+				fmt.Fprintf(os.Stderr, "agentcookie source --watch: CDP poll failed: %v\n", err)
+			}
+		}
+	}
 }
 
 func pushWithFreshBlocklist(
@@ -348,9 +398,20 @@ func pushOnce(
 	// Shared read pipeline (decrypt -> cookie policy -> DBSC). See
 	// readFilteredCookies in cookie_pipeline.go; `source` and `cmux-sync`
 	// both use it so they filter identically.
-	all, st, err := readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
-	if err != nil {
-		return nil, dbsc, err
+	var all []chrome.Cookie
+	var st readStats
+	var err error
+	if cfg.CDPSource.Enabled {
+		all, err = readCDPSource(ctx, cfg.CDPSource.Endpoint)
+		if err != nil {
+			return nil, dbsc, fmt.Errorf("read cookies from cdp source: %w", err)
+		}
+		all, st = filterCookies(all, blocklist, skipDBSC, time.Now().UTC())
+	} else {
+		all, st, err = readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
+		if err != nil {
+			return nil, dbsc, err
+		}
 	}
 	totalRead := st.totalRead
 	totalDropped := st.totalDropped
@@ -384,7 +445,11 @@ func pushOnce(
 	// [secrets.file] in place, applies sync policy, and merges. v1 bus
 	// wins per-key over v2 read-in-place per spec section 10.3.
 	home, _ := os.UserHomeDir()
-	secretsPayload, secretsErrs := secretsbus.LoadPayloadWithDiscovery(home)
+	var secretsPayload *secretsbus.Payload
+	var secretsErrs []error
+	if !cfg.CDPSource.Enabled {
+		secretsPayload, secretsErrs = loadSecretsPayload(home)
+	}
 	for _, e := range secretsErrs {
 		fmt.Fprintf(os.Stderr, "agentcookie source: secrets-bus: %v\n", e)
 	}
@@ -424,29 +489,34 @@ func pushOnce(
 	// underneath us; fail loud rather than silently packing Chrome's profile
 	// (which would mismatch the cookies/localStorage/IndexedDB the watcher and
 	// the rest of this push are reading from the configured browser).
-	sourceBrowser, err := chrome.LookupBrowser(cfg.Browser.Name)
-	if err != nil {
-		return nil, dbsc, err
-	}
 	var lsTarball []byte
 	var idbTarball []byte
 	var idbSkipped []string
-	if lt, _, err := chromedirsync.Pack(sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile), 0); err == nil {
-		lsTarball = lt
-	} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
-		fmt.Fprintf(os.Stderr, "agentcookie source: localStorage pack failed (%v); continuing without it\n", err)
-	}
-	// IndexedDB is opt-in for v0.7: typical user dirs are 400MB+ (Gmail caches,
-	// Slack message history) and inlining that in the JSON envelope blows
-	// past the source-side POST timeout. Most PP CLIs auth via localStorage
-	// or cookies; IndexedDB is rarely an auth-state surface in practice.
-	// Set AGENTCOOKIE_SYNC_INDEXEDDB=1 to opt in.
-	if os.Getenv("AGENTCOOKIE_SYNC_INDEXEDDB") == "1" {
-		if it, sk, err := chromedirsync.Pack(sourceBrowser.IndexedDBDir(cfg.Browser.Profile), 5*1024*1024); err == nil {
-			idbTarball = it
-			idbSkipped = sk
+	if !cfg.CDPSource.Enabled {
+		// CDP source mode intentionally carries cookies only: localStorage and
+		// IndexedDB remain in the existing browser and must not be scraped from
+		// an on-disk profile as a fallback.
+		sourceBrowser, err := chrome.LookupBrowser(cfg.Browser.Name)
+		if err != nil {
+			return nil, dbsc, err
+		}
+		if lt, _, err := chromedirsync.Pack(sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile), 0); err == nil {
+			lsTarball = lt
 		} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
-			fmt.Fprintf(os.Stderr, "agentcookie source: indexedDB pack failed (%v); continuing without it\n", err)
+			fmt.Fprintf(os.Stderr, "agentcookie source: localStorage pack failed (%v); continuing without it\n", err)
+		}
+		// IndexedDB is opt-in for v0.7: typical user dirs are 400MB+ (Gmail caches,
+		// Slack message history) and inlining that in the JSON envelope blows
+		// past the source-side POST timeout. Most PP CLIs auth via localStorage
+		// or cookies; IndexedDB is rarely an auth-state surface in practice.
+		// Set AGENTCOOKIE_SYNC_INDEXEDDB=1 to opt in.
+		if os.Getenv("AGENTCOOKIE_SYNC_INDEXEDDB") == "1" {
+			if it, sk, err := chromedirsync.Pack(sourceBrowser.IndexedDBDir(cfg.Browser.Profile), 5*1024*1024); err == nil {
+				idbTarball = it
+				idbSkipped = sk
+			} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
+				fmt.Fprintf(os.Stderr, "agentcookie source: indexedDB pack failed (%v); continuing without it\n", err)
+			}
 		}
 	}
 

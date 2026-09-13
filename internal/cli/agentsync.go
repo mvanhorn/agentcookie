@@ -81,21 +81,24 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	browserName := agentSyncBrowser
-	if browserName == "" {
-		browserName = cfg.Browser.Name
-	}
-	sourceBrowser, err := chrome.LookupBrowser(browserName)
-	if err != nil {
-		return err
-	}
-	password, err := chrome.SafeStoragePasswordFor(sourceBrowser)
-	if err != nil {
-		return err
-	}
-	key, err := chrome.DeriveAESKey(password)
-	if err != nil {
-		return err
+	var key []byte
+	if !cfg.CDPSource.Enabled {
+		browserName := agentSyncBrowser
+		if browserName == "" {
+			browserName = cfg.Browser.Name
+		}
+		sourceBrowser, err := chrome.LookupBrowser(browserName)
+		if err != nil {
+			return err
+		}
+		password, err := chrome.SafeStoragePasswordFor(sourceBrowser)
+		if err != nil {
+			return err
+		}
+		key, err = chrome.DeriveAESKey(password)
+		if err != nil {
+			return err
+		}
 	}
 	skipDBSC := agentSyncSkipDBSC || os.Getenv("AGENTCOOKIE_SKIP_DBSC_SUSPECT") == "1"
 	domainFilter := agentSyncDomains
@@ -107,7 +110,7 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return nil, err
 		}
-		cookies, st, err := readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
+		cookies, st, err := readConfiguredCookies(cmd.Context(), cfg, blocklist, key, skipDBSC, time.Now().UTC())
 		if err != nil {
 			return nil, err
 		}
@@ -174,24 +177,31 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	// current cookies into every live context so a site the user just logged
 	// into in their real Chrome becomes logged-in in the agent browser too.
 	// A failed cycle is logged and the watcher keeps running.
-	w, err := watcher.New(watcher.Config{
-		CookiesPath: cfg.Chrome.DBPath,
-		LogLabel:    "agentcookie agent-sync",
-		Push: func(context.Context) (int, error) {
+	if cfg.CDPSource.Enabled {
+		if err := runCDPSourceWatch(ctx, func(ctx context.Context) (int, error) {
 			return syncer.ReinjectAll()
-		},
-		OnEvent: func(ev watcher.Event) {
-			if agentSyncVerbose {
-				fmt.Fprintf(os.Stderr, "agentcookie agent-sync: %s\n", ev.String())
-			}
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("init watcher: %w", err)
-	}
-	err = w.Run(ctx)
-	if err != nil && err != context.Canceled {
-		return err
+		}, cfg.CDPSource.Endpoint, agentSyncVerbose); err != nil && err != context.Canceled {
+			return err
+		}
+	} else {
+		w, err := watcher.New(watcher.Config{
+			CookiesPath: cfg.Chrome.DBPath,
+			LogLabel:    "agentcookie agent-sync",
+			Push: func(context.Context) (int, error) {
+				return syncer.ReinjectAll()
+			},
+			OnEvent: func(ev watcher.Event) {
+				if agentSyncVerbose {
+					fmt.Fprintf(os.Stderr, "agentcookie agent-sync: %s\n", ev.String())
+				}
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("init watcher: %w", err)
+		}
+		if err := w.Run(ctx); err != nil && err != context.Canceled {
+			return err
+		}
 	}
 	fmt.Fprintln(os.Stderr, "agentcookie agent-sync: stopped")
 	return nil

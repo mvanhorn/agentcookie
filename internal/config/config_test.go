@@ -41,6 +41,79 @@ security:
 	}
 }
 
+func TestLoadSourceCDPSourceParsesAndRejectsUnsafeEndpoint(t *testing.T) {
+	t.Run("loopback endpoint", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "source.yaml", `
+sink:
+  url: http://example.test:9999/sync
+peer:
+  hostname: sink
+cdp_source:
+  enabled: true
+  endpoint: http://127.0.0.1:9230
+`)
+		cfg, err := LoadSource(dir)
+		if err != nil {
+			t.Fatalf("LoadSource: %v", err)
+		}
+		if !cfg.CDPSource.Enabled || cfg.CDPSource.Endpoint != "http://127.0.0.1:9230" {
+			t.Fatalf("CDPSource = %+v", cfg.CDPSource)
+		}
+	})
+
+	t.Run("non-loopback endpoint", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "source.yaml", `
+sink:
+  url: http://example.test:9999/sync
+peer:
+  hostname: sink
+cdp_source:
+  enabled: true
+  endpoint: http://100.91.16.115:9230
+`)
+		if _, err := LoadSource(dir); err == nil {
+			t.Fatal("LoadSource accepted a non-loopback cdp_source endpoint")
+		}
+	})
+
+	t.Run("rejects SQLite browser configuration", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "source.yaml", `
+sink:
+  url: http://example.test:9999/sync
+peer:
+  hostname: sink
+chrome:
+  db_path: /private/Cookies
+cdp_source:
+  enabled: true
+  endpoint: http://127.0.0.1:9230
+`)
+		if _, err := LoadSource(dir); err == nil {
+			t.Fatal("LoadSource accepted cdp_source combined with chrome.db_path")
+		}
+	})
+}
+
+func TestLoadSourceLocalAcceptsCDPSource(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "source.yaml", `
+cdp_source:
+  enabled: true
+  endpoint: http://127.0.0.1:9230
+`)
+
+	cfg, err := LoadSourceLocal(dir)
+	if err != nil {
+		t.Fatalf("LoadSourceLocal CDP source: %v", err)
+	}
+	if !cfg.CDPSource.Enabled {
+		t.Fatal("LoadSourceLocal did not retain cdp_source")
+	}
+}
+
 func TestLoadSourceBrowserBlockParsesAndDerivesPath(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "source.yaml", `
@@ -383,6 +456,22 @@ chrome:
 `)
 		if _, err := LoadSource(dir); err == nil {
 			t.Fatal("LoadSource should still require sink.url")
+		}
+	})
+
+	t.Run("accepts CDP source for CDP-capable local commands", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "source.yaml", `
+cdp_source:
+  enabled: true
+  endpoint: http://127.0.0.1:9230
+`)
+		cfg, err := LoadSourceLocal(dir)
+		if err != nil {
+			t.Fatalf("LoadSourceLocal CDP source: %v", err)
+		}
+		if !cfg.CDPSource.Enabled {
+			t.Fatal("LoadSourceLocal did not retain CDP source configuration")
 		}
 	})
 }

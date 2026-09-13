@@ -1068,6 +1068,7 @@ func TestCheckDaemonBinaryPath(t *testing.T) {
 	})
 
 	t.Run("no plist files is OK (Linux or fresh install)", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
 		srcCfg := &config.SourceConfig{}
 		sinkCfg := &config.SinkConfig{}
 		c := checkDaemonBinaryPath(srcCfg, sinkCfg)

@@ -113,7 +113,11 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 			return tsclient.RequireTailnetIP(context.Background())
 		},
 		LoadSourceState: func() (*state.SourceState, error) {
-			return state.LoadSource(state.SourcePath(home))
+			cfg, err := config.LoadSource(common.ConfigDir)
+			if err != nil {
+				return nil, err
+			}
+			return state.LoadSource(sourceStatePathForConfig(cfg, common.ConfigDir, home))
 		},
 		LoadSinkState: func() (*state.SinkState, error) {
 			return state.LoadSink(state.SinkPath(home))

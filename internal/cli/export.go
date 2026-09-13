@@ -69,26 +69,29 @@ func runExport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	browserName := exportBrowser
-	if browserName == "" {
-		browserName = cfg.Browser.Name
-	}
-	sourceBrowser, err := chrome.LookupBrowser(browserName)
-	if err != nil {
-		return err
-	}
-	password, err := chrome.SafeStoragePasswordFor(sourceBrowser)
-	if err != nil {
-		return err
-	}
-	key, err := chrome.DeriveAESKey(password)
-	if err != nil {
-		return err
+	var key []byte
+	if !cfg.CDPSource.Enabled {
+		browserName := exportBrowser
+		if browserName == "" {
+			browserName = cfg.Browser.Name
+		}
+		sourceBrowser, err := chrome.LookupBrowser(browserName)
+		if err != nil {
+			return err
+		}
+		password, err := chrome.SafeStoragePasswordFor(sourceBrowser)
+		if err != nil {
+			return err
+		}
+		key, err = chrome.DeriveAESKey(password)
+		if err != nil {
+			return err
+		}
 	}
 
 	skipDBSC := exportSkipDBSC || os.Getenv("AGENTCOOKIE_SKIP_DBSC_SUSPECT") == "1"
 
-	cookies, st, err := readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
+	cookies, st, err := readConfiguredCookies(cmd.Context(), cfg, blocklist, key, skipDBSC, time.Now().UTC())
 	if err != nil {
 		return err
 	}

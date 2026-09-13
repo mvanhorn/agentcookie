@@ -162,6 +162,36 @@ Replace:
 - `your-mac.tailnet` with your Mac's Tailscale hostname (`tailscale status` on either machine)
 - The pairing code and URL with the values printed by the Mac source wizard
 
+### Linux CDP source (existing browser; no SQLite access)
+
+When the authenticated browser already runs on Linux, set `cdp_source` in its
+**source** configuration. AgentCookie reads the live jar through CDP, applies
+the existing `blocklist.yaml`, and sends the normal paired encrypted envelope.
+It never opens, copies, or decrypts Chromium's SQLite database.
+
+```yaml
+# ~/.config/agentcookie/source.yaml
+sink:
+  url: http://your-sink.tailnet:9999/sync
+peer:
+  hostname: your-sink
+cdp_source:
+  enabled: true
+  endpoint: http://127.0.0.1:9230
+```
+
+The endpoint must be a bare `http` origin using a **literal loopback IP**
+(`127.0.0.1` or `::1`); hostnames such as `localhost` are rejected so a hosts
+or DNS override cannot redirect browser-control access off-host. Tailnet, LAN,
+public, credential-bearing, and path/query endpoints are rejected. CDP-source
+configuration is exclusive: do not set `chrome.db_path` or `browser`.
+`export`, `agent-sync`, and `cmux-sync` also read from the configured CDP
+endpoint in this mode, without falling back to another profile; their watch
+modes poll rather than watching a SQLite file. `source --once` reads once;
+`source --watch` polls every 10 seconds because CDP does not provide a
+cookie-change event. CDP-source mode carries cookies only: it deliberately does
+not scrape Local Storage or IndexedDB from an on-disk profile as a fallback.
+
 ### Attach to the existing Chrome (or start one as fallback)
 
 On Grok Bot and most agent runtimes, Chrome is already running with a debug port. Probe before starting a new one:

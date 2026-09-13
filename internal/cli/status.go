@@ -66,7 +66,7 @@ var statusCmd = &cobra.Command{
 		} else {
 			st.Errors = append(st.Errors, "blocklist.yaml: "+err.Error())
 		}
-		if ss, err := state.LoadSource(state.SourcePath(home)); err == nil && ss != nil {
+		if ss, err := state.LoadSource(sourceStatePathForConfig(st.SourceConfig, common.ConfigDir, home)); err == nil && ss != nil {
 			st.SourceState = ss
 		}
 		if sk, err := state.LoadSink(state.SinkPath(home)); err == nil && sk != nil {

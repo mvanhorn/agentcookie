@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mvanhorn/agentcookie/internal/cdpsource"
 	"gopkg.in/yaml.v3"
 )
 
@@ -26,12 +27,16 @@ type SourceConfig struct {
 	// from Sink+Peer (see ResolvedSinks), so every pre-multi-sink
 	// source.yaml keeps working with no migration. omitempty keeps a
 	// legacy-only config from emitting an empty sinks: key.
-	Sinks    []SinkTarget `yaml:"sinks,omitempty" json:"sinks,omitempty"`
-	Sink     SinkRef      `yaml:"sink,omitempty" json:"sink,omitempty"`
-	Chrome   ChromeRef    `yaml:"chrome" json:"chrome"`
-	Browser  BrowserRef   `yaml:"browser,omitempty" json:"browser,omitempty"`
-	Peer     PeerRef      `yaml:"peer,omitempty" json:"peer,omitempty"`
-	Security SecurityRef  `yaml:"security,omitempty" json:"security,omitempty"`
+	Sinks   []SinkTarget `yaml:"sinks,omitempty" json:"sinks,omitempty"`
+	Sink    SinkRef      `yaml:"sink,omitempty" json:"sink,omitempty"`
+	Chrome  ChromeRef    `yaml:"chrome" json:"chrome"`
+	Browser BrowserRef   `yaml:"browser,omitempty" json:"browser,omitempty"`
+	// CDPSource reads the cookie jar through an existing loopback-only CDP
+	// endpoint instead of opening the browser's encrypted SQLite database.
+	// It is mutually exclusive with the browser/Chrome source reader at runtime.
+	CDPSource CDPSourceRef `yaml:"cdp_source,omitempty" json:"cdp_source,omitempty"`
+	Peer      PeerRef      `yaml:"peer,omitempty" json:"peer,omitempty"`
+	Security  SecurityRef  `yaml:"security,omitempty" json:"security,omitempty"`
 	// Cmux configures the same-machine local loop: `agentcookie cmux-sync`
 	// reads this machine's Chrome and injects into this machine's cmux
 	// browser. Independent of the sink/peer push path; absent = loop off.
@@ -162,6 +167,13 @@ type ChromeRef struct {
 	DBPath string `yaml:"db_path" json:"db_path"`
 }
 
+// CDPSourceRef selects a pre-existing browser to read through CDP. The
+// endpoint is restricted to a loopback HTTP origin during config loading.
+type CDPSourceRef struct {
+	Enabled  bool   `yaml:"enabled" json:"enabled"`
+	Endpoint string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+}
+
 type BrowserRef struct {
 	Name    string `yaml:"name" json:"name"`
 	Profile string `yaml:"profile" json:"profile"`
@@ -253,6 +265,15 @@ func LoadSourceLocal(dir string) (*SourceConfig, error) {
 // shared by LoadSource and LoadSourceLocal (everything except the
 // push-only sink/peer/secret validation).
 func resolveSourcePaths(path string, cfg *SourceConfig) error {
+	if cfg.CDPSource.Enabled {
+		if err := cdpsource.ValidateEndpoint(cfg.CDPSource.Endpoint); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		if cfg.Chrome.DBPath != "" || cfg.Browser.Name != "" || cfg.Browser.Profile != "" {
+			return fmt.Errorf("%s: cdp_source cannot be combined with chrome.db_path or browser configuration", path)
+		}
+		return nil
+	}
 	cfg.Chrome.DBPath = ExpandTilde(cfg.Chrome.DBPath)
 	if cfg.Browser.Name != "" {
 		if _, err := lookupSourceBrowserPath(cfg.Browser.Name); err != nil {
