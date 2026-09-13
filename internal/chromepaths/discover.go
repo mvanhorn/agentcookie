@@ -99,6 +99,10 @@ func chromeRoots() []string {
 			filepath.Join(appSupport, "Chromium"),
 			filepath.Join(appSupport, "BraveSoftware", "Brave-Browser"),
 			filepath.Join(appSupport, "Microsoft Edge"),
+			// Dia uses Arc's User Data layout. Scan the user-data-dir itself
+			// (profiles live under Dia/User Data/<profile>/), not the Dia
+			// support dir, or Default/Profile N would not be found.
+			filepath.Join(appSupport, "Dia", "User Data"),
 		)
 	case "linux":
 		configDir := filepath.Join(home, ".config")
@@ -142,7 +146,7 @@ func osDefaultChromeRoot() string {
 
 // browserForRoot returns a browser identifier based on the root path.
 func browserForRoot(root string) string {
-	lower := strings.ToLower(root)
+	lower := strings.ToLower(filepath.ToSlash(root))
 	switch {
 	case strings.Contains(lower, "brave"):
 		return "brave"
@@ -150,9 +154,28 @@ func browserForRoot(root string) string {
 		return "edge"
 	case strings.Contains(lower, "chromium"):
 		return "chromium"
+	case isDiaUserDataRoot(lower):
+		// Require the Dia/User Data pair, not a lone "dia" component.
+		// CHROME_USER_DATA_DIR or cdp.profile_dir under a folder named
+		// dia (or a user named dia) must stay Chrome so key lookup does
+		// not request Dia Safe Storage and drop the store.
+		return "dia"
 	default:
 		return "chrome"
 	}
+}
+
+// isDiaUserDataRoot reports whether slashPath contains consecutive Dia
+// support-dir components ("dia" then "user data"). slashPath must already
+// use forward slashes and be lowercased.
+func isDiaUserDataRoot(slashPath string) bool {
+	parts := strings.Split(slashPath, "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] == "dia" && parts[i+1] == "user data" {
+			return true
+		}
+	}
+	return false
 }
 
 // Discover scans known Chrome user-data-dirs and returns all usable

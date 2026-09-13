@@ -56,7 +56,7 @@ func TestLookupBrowserAtlas(t *testing.T) {
 }
 
 func TestLookupBrowserUnknownListsSupportedNames(t *testing.T) {
-	_, err := LookupBrowser("dia")
+	_, err := LookupBrowser("vivaldi")
 	if err == nil {
 		t.Fatal("expected unsupported browser error")
 	}
@@ -76,6 +76,7 @@ func TestLookupBrowserStandardForks(t *testing.T) {
 		{"brave", []string{"BraveSoftware", "Brave-Browser"}, "Brave", "Brave Safe Storage"},
 		{"edge", []string{"Microsoft Edge"}, "Microsoft Edge", "Microsoft Edge Safe Storage"},
 		{"arc", []string{"Arc", "User Data"}, "Arc", "Arc Safe Storage"},
+		{"dia", []string{"Dia", "User Data"}, "Dia", "Dia Safe Storage"},
 	}
 	for _, tc := range cases {
 		b, err := LookupBrowser(tc.name)
