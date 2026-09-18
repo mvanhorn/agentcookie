@@ -82,6 +82,7 @@ describe("renderLlmsTxt", () => {
 
   it("explains the Markdown twins and lists all four", () => {
     const how = section(body, "How to read this site");
+    expect(how).toContain("hosts no public HTTP API");
     expect(how).toContain("Accept: text/markdown");
     expect(how).toContain(`${ORIGIN}/md`);
     expect(how).toContain(`${ORIGIN}/md/about`);

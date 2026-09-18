@@ -57,6 +57,7 @@ export const LLMS_HOW_TO_READ: readonly string[] = [
   `Every page has a Markdown twin. Send \`Accept: text/markdown\` on a request to the HTML URL, or fetch the twin directly at ${SITE_ORIGIN}/md for the homepage and ${SITE_ORIGIN}/md/<path> for the others: ${SITE_ORIGIN}/md/about, ${SITE_ORIGIN}/md/contact, ${SITE_ORIGIN}/md/privacy.`,
   "The HTML pages are static and complete without JavaScript; the hero copy, feature list, FAQ, and links are all in the served HTML.",
   `The homepage carries a JSON-LD graph (Organization, SoftwareApplication, WebSite) and a self-referencing canonical link. Every absolute URL on this site is on ${SITE_ORIGIN}.`,
+  "This domain hosts no public HTTP API, OpenAPI document, developer portal, or MCP server; there is nothing to call here beyond these pages. The pairing and sync URLs in the quickstart and the secrets bus specs belong to the tool's private protocol between two machines on one tailnet, not to a service on agentcookie.dev.",
 ];
 
 export const LLMS_CONTACT: readonly string[] = [
