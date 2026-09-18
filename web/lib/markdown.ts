@@ -159,8 +159,21 @@ function markdownResponse(
   return new Response(method === "HEAD" ? null : body, { status, headers });
 }
 
-export function handleMarkdownRequest(request: Request): Response {
-  const { pathname } = new URL(request.url);
+// After a middleware rewrite, `request.url` in a route handler still names
+// the ORIGINAL path (`/about`), while the catch-all `params.path` carries the
+// rewritten segments. Callers that have the segments pass them; direct calls
+// (tests, or a request that reached `/md/*` without a rewrite) fall back to
+// the URL.
+export function handleMarkdownRequest(
+  request: Request,
+  segments?: readonly string[],
+): Response {
+  const pathname =
+    segments === undefined
+      ? new URL(request.url).pathname
+      : segments.length === 0
+        ? MD_PREFIX
+        : `${MD_PREFIX}/${segments.join("/")}`;
   const pagePath = pagePathFor(pathname);
   const route = pagePath === undefined ? undefined : findRoute(pagePath);
   if (!route) {
@@ -182,5 +195,12 @@ export function handleMarkdownRequest(request: Request): Response {
   );
 }
 
-export const GET = handleMarkdownRequest;
-export const HEAD = handleMarkdownRequest;
+type RouteContext = { params: Promise<{ path?: string[] }> };
+
+async function handleRoute(request: Request, context: RouteContext): Promise<Response> {
+  const { path } = await context.params;
+  return handleMarkdownRequest(request, path ?? []);
+}
+
+export const GET = handleRoute;
+export const HEAD = handleRoute;

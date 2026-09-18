@@ -21,6 +21,38 @@ function get(path: string, init: RequestInit = {}): Response {
   return handleMarkdownRequest(new Request(`${BASE}${path}`, init));
 }
 
+describe("rewritten requests resolve by route params, not request.url", () => {
+  // After a middleware rewrite, a route handler's request.url still carries
+  // the ORIGINAL path (`/about`), while the catch-all params carry the
+  // rewritten segments. The route binding passes those segments through.
+  it("serves the about twin for an original /about URL with params ['about']", async () => {
+    const response = handleMarkdownRequest(new Request(`${BASE}/about`), ["about"]);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain(`# ${TRUST_PAGES.about.title}`);
+  });
+
+  it("serves the home twin for an original / URL with empty params", async () => {
+    const response = handleMarkdownRequest(new Request(`${BASE}/`), []);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain(HERO.tagline);
+  });
+
+  it("returns the fixed 404 for params ['md', 'about']", async () => {
+    const response = handleMarkdownRequest(new Request(`${BASE}/md/md/about`), ["md", "about"]);
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe(NOT_FOUND_MARKDOWN);
+  });
+
+  it("exposes route bindings that read params.path", async () => {
+    const mod = await import("./markdown");
+    const response = await mod.GET(new Request(`${BASE}/about`), {
+      params: Promise.resolve({ path: ["about"] }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain(`# ${TRUST_PAGES.about.title}`);
+  });
+});
+
 describe("homepage twin (/md)", () => {
   it("renders the hero, every feature title, and every FAQ question", async () => {
     const response = get("/md");
