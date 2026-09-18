@@ -1,6 +1,7 @@
 // Marketing homepage - server component.
 //
-// Composition: TopNav -> Hero -> WhatItSyncs -> FeatureGrid -> Footer.
+// Composition: Shell (TopNav ... Footer) around
+// Hero -> WhatItSyncs -> FeatureGrid -> FAQ.
 //
 // Dark surface throughout. No `"use client"` anywhere in this tree:
 // the static HTML returned to a non-JS fetch (and to any LLM agent
@@ -11,25 +12,19 @@
 // keyframe-typed terminal sequence. Reduced-motion users get the
 // final state instantly (see app/globals.css).
 
-import { TopNav } from "@/components/marketing/TopNav";
+import { Shell } from "@/components/marketing/Shell";
 import { Hero } from "@/components/marketing/Hero";
 import { WhatItSyncs } from "@/components/marketing/WhatItSyncs";
 import { FeatureGrid } from "@/components/marketing/FeatureGrid";
 import { FAQ } from "@/components/marketing/FAQ";
-import { Footer } from "@/components/marketing/Footer";
 
 export default function MarketingHome() {
   return (
-    <div
-      data-marketing-shell
-      className="mx-auto min-h-screen w-full max-w-[1280px] bg-bg-0 px-12 text-text-0"
-    >
-      <TopNav />
+    <Shell>
       <Hero />
       <WhatItSyncs />
       <FeatureGrid />
       <FAQ />
-      <Footer />
-    </div>
+    </Shell>
   );
 }

@@ -4,6 +4,13 @@
 
 export const GITHUB = "https://github.com/mvanhorn/agentcookie";
 
+// Contact channels (product contract: GitHub issues and a DM on X,
+// no email, no postal address). Kept outside LINKS because LINKS is
+// the set every page must link to; these are for the trust pages.
+export const ISSUES = `${GITHUB}/issues`;
+export const MAINTAINER_X = "https://x.com/mvanhorn";
+export const MAINTAINER_GITHUB = "https://github.com/mvanhorn";
+
 const BLOB = `${GITHUB}/blob/main`;
 
 export const LINKS = {
