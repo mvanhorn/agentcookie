@@ -11,9 +11,10 @@ import type { CSSProperties } from "react";
 // X / LinkedIn / Slack feeds are light backgrounds, so a cream card
 // stands out where a dark-on-dark card would visually disappear.
 
-export const alt =
-  "agentcookie — your agent's session state, synced.";
-export const size = { width: 1200, height: 630 };
+import { OG_IMAGE_ALT, OG_IMAGE_SIZE } from "@/lib/og";
+
+export const alt = OG_IMAGE_ALT;
+export const size = OG_IMAGE_SIZE;
 export const contentType = "image/png";
 
 const PAPER_CREAM = "#F4EFE6";

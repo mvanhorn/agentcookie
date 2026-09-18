@@ -15,6 +15,7 @@
 
 // @vitest-environment jsdom
 
+import { OG_IMAGE } from "@/lib/og";
 import React from "react";
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, cleanup } from "@testing-library/react";
@@ -106,6 +107,8 @@ describe("marketing homepage (/)", () => {
   it("declares a self-referencing canonical and Open Graph url", () => {
     expect(metadata.alternates?.canonical).toBe("/");
     expect(metadata.openGraph?.url).toBe("/");
+    expect(metadata.openGraph?.images).toEqual([OG_IMAGE]);
+    expect(metadata.twitter?.images).toEqual([OG_IMAGE]);
   });
 
   it("embeds the JSON-LD identity graph in a native script tag", () => {

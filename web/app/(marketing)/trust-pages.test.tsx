@@ -12,6 +12,7 @@
 
 // @vitest-environment jsdom
 
+import { OG_IMAGE } from "@/lib/og";
 import React from "react";
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, cleanup } from "@testing-library/react";
@@ -54,6 +55,8 @@ describe("trust pages", () => {
         expect(metadata.title).toBe(copy.title);
         expect(metadata.description).toBe(copy.description);
         expect(metadata.openGraph?.description).toBe(copy.description);
+        expect(metadata.openGraph?.images).toEqual([OG_IMAGE]);
+        expect(metadata.twitter?.images).toEqual([OG_IMAGE]);
         expect(metadata.twitter?.title).toBe(copy.title);
         expect(metadata.twitter?.description).toBe(copy.description);
       });
