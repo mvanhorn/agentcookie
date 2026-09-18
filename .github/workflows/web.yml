@@ -5,9 +5,11 @@ on:
     branches: [main]
     paths:
       - "web/**"
+      - ".github/workflows/web.yml"
   pull_request:
     paths:
       - "web/**"
+      - ".github/workflows/web.yml"
 
 jobs:
   test-build-typecheck:
