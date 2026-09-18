@@ -107,10 +107,14 @@ describe("renderLlmsTxt", () => {
     }
     expect(hrefs).toContain(`${ORIGIN}/sitemap.xml`);
     expect(hrefs).toContain(`${ORIGIN}/llms.txt`);
-    expect(hrefs).toContain(LINKS.quickstart);
-    expect(hrefs).toContain(LINKS.secretsBusV1Spec);
-    expect(hrefs).toContain(LINKS.v2AdoptionSpec);
-    expect(hrefs).toContain(LINKS.threatModel);
+    // The quickstart, spec, and threat-model docs describe the tool's
+    // private tailnet protocol; linking them here made scanners grade
+    // the site as if it hosted a public API, so llms.txt points at the
+    // repository instead and the docs stay reachable from there.
+    expect(hrefs).not.toContain(LINKS.quickstart);
+    expect(hrefs).not.toContain(LINKS.secretsBusV1Spec);
+    expect(hrefs).not.toContain(LINKS.v2AdoptionSpec);
+    expect(hrefs).not.toContain(LINKS.threatModel);
     expect(hrefs).toContain(`${REPO}/blob/main/docs/faq.md`);
     expect(hrefs).toContain(`${REPO}/blob/main/skill/SKILL.md`);
     expect(hrefs).toContain(REPO);
