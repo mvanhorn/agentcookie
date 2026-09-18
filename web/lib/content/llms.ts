@@ -48,7 +48,7 @@ export const LLMS_INSTALL_STEPS: readonly string[] = [
   "On the source Mac, run `agentcookie pair --as source`. It prints a pairing code and a pair URL and waits for the sink.",
   "On the sink, run `agentcookie pair --as sink --peer <source-tailscale-hostname> --pair-url <pair-url> --code <pairing-code>`. Both sides print a matching fingerprint.",
   "On the sink, run `agentcookie sink`. On Linux, Chrome must already be running with `--remote-debugging-port=9223` so the sink can inject cookies.",
-  "On the source Mac, run `agentcookie source --watch`. Every cookie change on the source now reaches the sink within seconds.",
+  "On the source Mac, run `agentcookie source --watch`. The first change pushes right away; later changes are batched at most once every 30 seconds.",
 ];
 
 export const LLMS_INSTALL_OUTRO = `The sink's config files, the cookie allowlist and blocklist, and the daemon setup for launchd or systemd are in the quickstart and the install skill listed under Main pages. Run \`agentcookie doctor\` and \`agentcookie status --json\` to check a pairing.`;
