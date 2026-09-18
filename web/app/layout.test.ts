@@ -30,4 +30,9 @@ describe("root layout metadata", () => {
     const { metadata } = await import("./layout");
     expect(metadata.metadataBase?.href).toBe("https://agentcookie.dev/");
   });
+
+  it("declares the is-agentic site type as content (R9)", async () => {
+    const { metadata } = await import("./layout");
+    expect(metadata.other?.["is-agentic-site-type"]).toBe("content");
+  });
 });

@@ -35,6 +35,9 @@ export const metadata: Metadata = {
     title: SITE_TITLE,
     description: SITE_DESCRIPTION,
   },
+  // is-agentic.com reads this to grade the site as a content site
+  // rather than an app (R9).
+  other: { "is-agentic-site-type": "content" },
 };
 
 export default function RootLayout({
