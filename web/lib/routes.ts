@@ -10,9 +10,9 @@
 import { SITE_TITLE } from "./content/home";
 import { TRUST_PAGES } from "./content/trust";
 
-export type TwinKey = "home" | "about" | "contact" | "privacy";
+export type TwinKey = "home" | "about" | "contact" | "privacy" | "developers";
 
-export type RoutePath = "/" | "/about" | "/contact" | "/privacy";
+export type RoutePath = "/" | "/about" | "/contact" | "/privacy" | "/developers";
 
 export type StaticRoute = {
   path: RoutePath;
@@ -46,6 +46,12 @@ export const ROUTES: readonly StaticRoute[] = [
     title: TRUST_PAGES.privacy.title,
     updatedAt: "2026-09-17",
     twin: "privacy",
+  },
+  {
+    path: "/developers",
+    title: TRUST_PAGES.developers.title,
+    updatedAt: "2026-09-18",
+    twin: "developers",
   },
 ] as const;
 

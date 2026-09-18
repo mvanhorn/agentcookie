@@ -6,12 +6,13 @@ import { describe, it, expect } from "vitest";
 import { ROUTES, findRoute } from "./routes";
 
 describe("static route table", () => {
-  it("lists exactly /, /about, /contact, /privacy in order", () => {
+  it("lists exactly /, /about, /contact, /privacy, /developers in order", () => {
     expect(ROUTES.map((r) => r.path)).toEqual([
       "/",
       "/about",
       "/contact",
       "/privacy",
+      "/developers",
     ]);
   });
 
@@ -36,6 +37,7 @@ describe("static route table", () => {
   it("findRoute resolves known paths and rejects unknown ones", () => {
     expect(findRoute("/")?.twin).toBe("home");
     expect(findRoute("/about")?.twin).toBe("about");
+    expect(findRoute("/developers")?.twin).toBe("developers");
     expect(findRoute("/nope")).toBeUndefined();
     expect(findRoute("/md/about")).toBeUndefined();
   });

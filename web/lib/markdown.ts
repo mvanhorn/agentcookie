@@ -120,6 +120,7 @@ function renderTrust(page: TrustPage): string {
   const blocks: string[] = [`# ${page.title}`, page.description];
   for (const section of page.sections) {
     blocks.push(`## ${section.heading}`, ...section.paragraphs);
+    if (section.code) blocks.push(fence(section.code));
   }
   blocks.push("## Links", linkList(page.links), linkList(INTERNAL_TRUST_LINKS));
   return blocks.join("\n\n") + "\n";
@@ -132,6 +133,7 @@ const TWIN_MARKDOWN: Readonly<Record<TwinKey, string>> = {
   about: renderTrust(TRUST_PAGES.about),
   contact: renderTrust(TRUST_PAGES.contact),
   privacy: renderTrust(TRUST_PAGES.privacy),
+  developers: renderTrust(TRUST_PAGES.developers),
 };
 
 export function renderTwin(twin: TwinKey): string {

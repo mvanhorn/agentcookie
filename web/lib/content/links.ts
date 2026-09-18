@@ -11,6 +11,9 @@ export const ISSUES = `${GITHUB}/issues`;
 export const MAINTAINER_X = "https://x.com/mvanhorn";
 export const MAINTAINER_GITHUB = "https://github.com/mvanhorn";
 
+// GitHub releases page: signed tarballs and checksums.
+export const RELEASES = `${GITHUB}/releases`;
+
 const BLOB = `${GITHUB}/blob/main`;
 
 export const LINKS = {

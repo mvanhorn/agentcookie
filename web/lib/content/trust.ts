@@ -1,9 +1,11 @@
-// Trust page copy: about, contact, privacy. Plain data, rendered by
-// the HTML pages and re-emitted by the Markdown twins. Facts trace to
-// the root README.md and docs/threat-model.md; contact channels are
-// GitHub issues and a DM on x.com/mvanhorn only (no email, no postal
-// address). Nothing here carries a test count, so the README's number
-// is stated in exactly one place (home.ts).
+// Trust page copy: about, contact, privacy, plus the types every such
+// page shares (developers lives in developers.ts and is registered
+// here). Plain data, rendered by the HTML pages and re-emitted by the
+// Markdown twins. Facts trace to the root README.md and
+// docs/threat-model.md; contact channels are GitHub issues and a DM
+// on x.com/mvanhorn only (no email, no postal address). Nothing here
+// carries a test count, so the README's number is stated in exactly
+// one place (home.ts).
 
 import {
   LINKS,
@@ -11,12 +13,19 @@ import {
   MAINTAINER_X,
   MAINTAINER_GITHUB,
 } from "./links";
+import { DEVELOPERS } from "./developers";
 
-export type TrustKey = "about" | "contact" | "privacy";
+export type TrustKey = "about" | "contact" | "privacy" | "developers";
 
 export type TrustSection = {
   heading: string;
   paragraphs: readonly string[];
+  // Optional fragment id, so an error `type` URI such as
+  // /developers#error-not-found lands on the section that explains it.
+  id?: string;
+  // Optional verbatim lines rendered after the paragraphs as one
+  // code block (a <pre> in HTML, a fence in the Markdown twin).
+  code?: readonly string[];
 };
 
 export type TrustLink = {
@@ -144,6 +153,7 @@ export const TRUST_PAGES: Readonly<Record<TrustKey, TrustPage>> = {
   about: ABOUT,
   contact: CONTACT,
   privacy: PRIVACY,
+  developers: DEVELOPERS,
 };
 
 // Every paragraph of a page joined into one string. The length guard

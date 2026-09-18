@@ -104,6 +104,20 @@ describe("marketing homepage (/)", () => {
     );
   });
 
+  it("links every trust page, including /developers, from the footer", () => {
+    renderHome();
+    const hrefs = Array.from(document.querySelectorAll<HTMLAnchorElement>("a")).map(
+      (a) => a.getAttribute("href") ?? "",
+    );
+    for (const path of ["/about", "/contact", "/privacy", "/developers"]) {
+      expect(hrefs, path).toContain(path);
+    }
+    const developers = Array.from(document.querySelectorAll("a")).find(
+      (a) => a.getAttribute("href") === "/developers",
+    );
+    expect(developers?.textContent).toBe("developers");
+  });
+
   it("declares a self-referencing canonical and Open Graph url", () => {
     expect(metadata.alternates?.canonical).toBe("/");
     expect(metadata.openGraph?.url).toBe("/");

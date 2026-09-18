@@ -80,14 +80,19 @@ describe("renderLlmsTxt", () => {
     expect(install).toContain("agentcookie source --watch");
   });
 
-  it("explains the Markdown twins and lists all four", () => {
+  it("explains the Markdown twins and lists all five", () => {
     const how = section(body, "How to read this site");
-    expect(how).toContain("hosts no public HTTP API");
+    expect(how).toContain("hosts no callable API");
+    expect(how).not.toContain("no public HTTP API, OpenAPI document");
+    expect(how).toContain(`${ORIGIN}/openapi.json`);
+    expect(how).toContain("sink HTTP interface you run yourself");
+    expect(how).toContain(`${ORIGIN}/developers`);
     expect(how).toContain("Accept: text/markdown");
     expect(how).toContain(`${ORIGIN}/md`);
     expect(how).toContain(`${ORIGIN}/md/about`);
     expect(how).toContain(`${ORIGIN}/md/contact`);
     expect(how).toContain(`${ORIGIN}/md/privacy`);
+    expect(how).toContain(`${ORIGIN}/md/developers`);
   });
 
   it("links every route, the crawler files, and the repo docs as absolute URLs", () => {
@@ -105,6 +110,11 @@ describe("renderLlmsTxt", () => {
     for (const route of ROUTES) {
       expect(hrefs).toContain(`${ORIGIN}${route.path}`);
     }
+    expect(hrefs).toContain(`${ORIGIN}/developers`);
+    expect(hrefs).toContain(`${ORIGIN}/openapi.json`);
+    expect(main).toContain(
+      `[OpenAPI description of the sink interface](${ORIGIN}/openapi.json)`,
+    );
     expect(hrefs).toContain(`${ORIGIN}/sitemap.xml`);
     expect(hrefs).toContain(`${ORIGIN}/llms.txt`);
     // The quickstart, spec, and threat-model docs describe the tool's

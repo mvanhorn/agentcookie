@@ -10,15 +10,17 @@ import { ROUTES } from "@/lib/routes";
 const ORIGIN = "https://agentcookie.dev";
 
 describe("sitemap.xml", () => {
-  it("lists exactly the four static routes on the production origin", () => {
+  it("lists exactly the five static routes on the production origin", () => {
     const entries = sitemap();
     expect(entries.map((e) => e.url)).toEqual([
       `${ORIGIN}/`,
       `${ORIGIN}/about`,
       `${ORIGIN}/contact`,
       `${ORIGIN}/privacy`,
+      `${ORIGIN}/developers`,
     ]);
     expect(entries).toHaveLength(ROUTES.length);
+    expect(entries).toHaveLength(5);
   });
 
   it("gives every entry a lastModified taken from the route table", () => {

@@ -152,7 +152,7 @@ describe("trust page twins", () => {
   });
 
   it("renders every ROUTES path as an absolute URL in each trust page twin", async () => {
-    for (const key of ["about", "contact", "privacy"] as const) {
+    for (const key of ["about", "contact", "privacy", "developers"] as const) {
       const body = await get(`/md/${key}`).text();
       for (const route of ROUTES) {
         if (route.path === "/") continue;
@@ -177,14 +177,22 @@ describe("trust page twins", () => {
     }
   });
 
-  it("/md/contact and /md/privacy render their page modules", async () => {
-    for (const key of ["contact", "privacy"] as const) {
+  it("/md/contact, /md/privacy, and /md/developers render their page modules", async () => {
+    for (const key of ["contact", "privacy", "developers"] as const) {
       const body = await get(`/md/${key}`).text();
       expect(body).toContain(`# ${TRUST_PAGES[key].title}`);
       for (const section of TRUST_PAGES[key].sections) {
         expect(body).toContain(`## ${section.heading}`);
       }
     }
+  });
+
+  it("/md/developers renders the curl example as a fenced block and links the documents", async () => {
+    const body = await get("/md/developers").text();
+    expect(body).toContain("```\n$ curl http://my-sink.tailnet.ts.net:9999/healthz\nok\n```");
+    expect(body).toContain(`(${SITE_ORIGIN}/openapi.json)`);
+    expect(body).toContain(`(${SITE_ORIGIN}/.well-known/api-catalog)`);
+    expect(body).not.toContain("!");
   });
 });
 

@@ -31,6 +31,7 @@ export function TrustArticle({ pageKey }: { pageKey: TrustKey }) {
         {page.sections.map((section) => (
           <section
             key={section.heading}
+            id={section.id}
             className="rounded-lg border border-border-0 bg-bg-1 p-6"
           >
             <h2 className="m-0 mb-3 font-display text-[15px] font-medium tracking-[-0.01em] text-text-0">
@@ -44,6 +45,11 @@ export function TrustArticle({ pageKey }: { pageKey: TrustKey }) {
                 {paragraph}
               </p>
             ))}
+            {section.code ? (
+              <pre className="m-0 mt-3 overflow-x-auto rounded-md border border-border-0 bg-bg-0 p-4 font-display text-[13px] leading-relaxed text-text-1">
+                {section.code.join("\n")}
+              </pre>
+            ) : null}
           </section>
         ))}
       </div>

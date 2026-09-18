@@ -5,14 +5,16 @@
 
 import { describe, it, expect } from "vitest";
 import { TRUST_PAGES, trustBodyText, ABOUT, CONTACT, PRIVACY } from "./trust";
+import { DEVELOPERS } from "./developers";
 import { LINKS } from "./links";
 
 describe("trust copy", () => {
-  it("exposes about, contact, and privacy", () => {
-    expect(Object.keys(TRUST_PAGES)).toEqual(["about", "contact", "privacy"]);
+  it("exposes about, contact, privacy, and developers", () => {
+    expect(Object.keys(TRUST_PAGES)).toEqual(["about", "contact", "privacy", "developers"]);
     expect(TRUST_PAGES.about).toBe(ABOUT);
     expect(TRUST_PAGES.contact).toBe(CONTACT);
     expect(TRUST_PAGES.privacy).toBe(PRIVACY);
+    expect(TRUST_PAGES.developers).toBe(DEVELOPERS);
   });
 
   it("every entry has more than 500 characters of body text", () => {

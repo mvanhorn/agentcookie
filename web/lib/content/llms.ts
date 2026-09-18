@@ -7,14 +7,15 @@
 // Command names and flags are copied from those files, not invented.
 
 import { SITE_DESCRIPTION, SITE_NAME } from "./home";
-import { GITHUB, ISSUES, LINKS, MAINTAINER_X } from "./links";
+import { GITHUB, ISSUES, LINKS, MAINTAINER_X, RELEASES } from "./links";
 import { ROUTES } from "@/lib/routes";
 import { SITE_ORIGIN } from "@/lib/site";
 
 const BLOB = `${GITHUB}/blob/main`;
 export const FAQ_URL = `${BLOB}/docs/faq.md`;
 export const SKILL_URL = `${BLOB}/skill/SKILL.md`;
-export const RELEASES_URL = `${GITHUB}/releases`;
+export const RELEASES_URL = RELEASES;
+export const OPENAPI_URL = `${SITE_ORIGIN}/openapi.json`;
 
 export const LLMS_INTRO: readonly string[] = [
   "agentcookie is a Go command-line tool. A Mac (the source) watches Chrome's cookie store and per-CLI secret files and pushes every change to one or more sinks (a Linux box or a second Mac) over the user's Tailscale tailnet. On Linux the sink injects cookies into a running Chrome through the DevTools protocol. MIT licensed.",
@@ -54,10 +55,10 @@ export const LLMS_INSTALL_STEPS: readonly string[] = [
 export const LLMS_INSTALL_OUTRO = `The sink's config files, the cookie allowlist and blocklist, and the daemon setup for launchd or systemd are in the quickstart and the install skill listed under Main pages. Run \`agentcookie doctor\` and \`agentcookie status --json\` to check a pairing.`;
 
 export const LLMS_HOW_TO_READ: readonly string[] = [
-  `Every page has a Markdown twin. Send \`Accept: text/markdown\` on a request to the HTML URL, or fetch the twin directly at ${SITE_ORIGIN}/md for the homepage and ${SITE_ORIGIN}/md/<path> for the others: ${SITE_ORIGIN}/md/about, ${SITE_ORIGIN}/md/contact, ${SITE_ORIGIN}/md/privacy.`,
+  `Every page has a Markdown twin. Send \`Accept: text/markdown\` on a request to the HTML URL, or fetch the twin directly at ${SITE_ORIGIN}/md for the homepage and ${SITE_ORIGIN}/md/<path> for the others: ${SITE_ORIGIN}/md/about, ${SITE_ORIGIN}/md/contact, ${SITE_ORIGIN}/md/privacy, ${SITE_ORIGIN}/md/developers.`,
   "The HTML pages are static and complete without JavaScript; the hero copy, feature list, FAQ, and links are all in the served HTML.",
   `The homepage carries a JSON-LD graph (Organization, SoftwareApplication, WebSite) and a self-referencing canonical link. Every absolute URL on this site is on ${SITE_ORIGIN}.`,
-  "This domain hosts no public HTTP API, OpenAPI document, developer portal, or MCP server; there is nothing to call here beyond these pages. The pairing and sync URLs in the repository's quickstart and specs belong to the tool's private protocol between two machines on one tailnet, not to a service on agentcookie.dev; read them from the source repository when you need the wire details.",
+  `This domain hosts no callable API, developer portal, or MCP server; there is nothing to call here beyond these pages, and every request under ${SITE_ORIGIN}/api answers a JSON 404. ${OPENAPI_URL} is an OpenAPI 3.1 description of the sink HTTP interface you run yourself on your own tailnet (GET /healthz and POST /sync on the sink, POST /pair on the source during pairing), and ${SITE_ORIGIN}/developers explains it. The pairing and sync URLs in the repository's quickstart and specs belong to that private protocol between two machines on one tailnet, not to a service on agentcookie.dev.`,
 ];
 
 export const LLMS_CONTACT: readonly string[] = [
@@ -75,6 +76,7 @@ export function mainPages(): readonly Link[] {
   }));
   return [
     ...pages,
+    { label: "OpenAPI description of the sink interface", href: OPENAPI_URL },
     { label: "Sitemap", href: `${SITE_ORIGIN}/sitemap.xml` },
     { label: "This file", href: `${SITE_ORIGIN}/llms.txt` },
     { label: "Source repository (GitHub)", href: GITHUB },

@@ -1,6 +1,6 @@
 // Trust page rendering tests (R7, R10).
 //
-// /about, /contact, and /privacy are synchronous Server Components
+// /about, /contact, /privacy, and /developers are synchronous Server Components
 // that render their lib/content/trust.ts copy inside Shell. Each
 // must ship a self-referencing canonical and an Open Graph URL in
 // its metadata, and its static render must carry the full prose
@@ -19,7 +19,9 @@ import { render, cleanup } from "@testing-library/react";
 import AboutPage, { metadata as aboutMetadata } from "./about/page";
 import ContactPage, { metadata as contactMetadata } from "./contact/page";
 import PrivacyPage, { metadata as privacyMetadata } from "./privacy/page";
+import DevelopersPage, { metadata as developersMetadata } from "./developers/page";
 import { TRUST_PAGES } from "@/lib/content/trust";
+import { API_NOT_FOUND_DETAIL } from "@/lib/api-not-found";
 import { FOOTER_LINKS, ISSUES, MAINTAINER_X } from "@/lib/content/links";
 import { ROUTES } from "@/lib/routes";
 
@@ -29,6 +31,7 @@ const PAGES = [
   { path: "/about", Page: AboutPage, metadata: aboutMetadata, copy: TRUST_PAGES.about },
   { path: "/contact", Page: ContactPage, metadata: contactMetadata, copy: TRUST_PAGES.contact },
   { path: "/privacy", Page: PrivacyPage, metadata: privacyMetadata, copy: TRUST_PAGES.privacy },
+  { path: "/developers", Page: DevelopersPage, metadata: developersMetadata, copy: TRUST_PAGES.developers },
 ] as const;
 
 const TRUST_PATHS = ROUTES.map((route) => route.path).filter(
@@ -104,5 +107,37 @@ describe("trust pages", () => {
     expect(hrefs()).toContain(MAINTAINER_X);
     expect(text).not.toMatch(/[a-z0-9._-]+@[a-z0-9-]+\.[a-z]{2,}/i);
     expect(hrefs().some((href) => href.startsWith("mailto:"))).toBe(false);
+  });
+
+  describe("/developers", () => {
+    it("renders 500+ characters, the error section ids, the curl example, and no email", () => {
+      render(DevelopersPage() as React.ReactElement);
+      const text = document.body.textContent ?? "";
+      expect(text.length).toBeGreaterThan(500);
+      expect(document.querySelector("#error-not-found")).not.toBeNull();
+      expect(document.querySelector("section#error-not-found h2")?.textContent).toContain("404");
+      expect(document.querySelector("#error-method-not-allowed")).not.toBeNull();
+      expect(document.querySelector("pre")?.textContent).toBe(
+        "$ curl http://my-sink.tailnet.ts.net:9999/healthz\nok",
+      );
+      expect(text).toContain(API_NOT_FOUND_DETAIL);
+      expect(text).not.toMatch(/[a-z0-9._-]+@[a-z0-9-]+\.[a-z]{2,}/i);
+      expect(text).not.toContain("!");
+      expect(hrefs().some((href) => href.startsWith("mailto:"))).toBe(false);
+    });
+
+    it("links the OpenAPI document, the API catalog, the quickstart, the spec, and releases", () => {
+      render(DevelopersPage() as React.ReactElement);
+      const links = hrefs();
+      expect(links).toContain("https://agentcookie.dev/openapi.json");
+      expect(links).toContain("https://agentcookie.dev/.well-known/api-catalog");
+      expect(links).toContain(
+        "https://github.com/mvanhorn/agentcookie/blob/main/docs/quickstart.md",
+      );
+      expect(links).toContain(
+        "https://github.com/mvanhorn/agentcookie/blob/main/docs/spec-agentcookie-secrets-bus-v1.md",
+      );
+      expect(links).toContain("https://github.com/mvanhorn/agentcookie/releases");
+    });
   });
 });
