@@ -10,7 +10,7 @@
 // method and pathname.
 
 import { SITE_ORIGIN } from "./site";
-import { findRoute, type TwinKey } from "./routes";
+import { findRoute, TRUST_ROUTE_LINKS, type TwinKey } from "./routes";
 import {
   HERO,
   TERMINAL,
@@ -51,6 +51,15 @@ function fence(lines: readonly string[], lang = ""): string {
 function linkList(links: readonly { label: string; href: string }[]): string {
   return links.map((link) => `- [${link.label}](${link.href})`).join("\n");
 }
+
+// The footer's internal trust-page links (about, contact, privacy),
+// rendered here as absolute URLs the way every other link in a
+// Markdown twin is (KTD2/R15), so an agent reading the twin in
+// isolation never needs to resolve a relative path.
+const INTERNAL_TRUST_LINKS = TRUST_ROUTE_LINKS.map((link) => ({
+  label: link.label,
+  href: `${SITE_ORIGIN}${link.href}`,
+}));
 
 function terminalBlock(): string {
   const lines = TERMINAL.lines.map((line) =>
@@ -98,7 +107,12 @@ function renderHome(): string {
   for (const faq of FAQS) {
     blocks.push(`### ${faq.question}`, ...faq.answer);
   }
-  blocks.push("## links", linkList(FOOTER_LINKS), FOOTER_LINE);
+  blocks.push(
+    "## links",
+    linkList(FOOTER_LINKS),
+    linkList(INTERNAL_TRUST_LINKS),
+    FOOTER_LINE,
+  );
   return blocks.join("\n\n") + "\n";
 }
 
@@ -107,7 +121,7 @@ function renderTrust(page: TrustPage): string {
   for (const section of page.sections) {
     blocks.push(`## ${section.heading}`, ...section.paragraphs);
   }
-  blocks.push("## Links", linkList(page.links));
+  blocks.push("## Links", linkList(page.links), linkList(INTERNAL_TRUST_LINKS));
   return blocks.join("\n\n") + "\n";
 }
 

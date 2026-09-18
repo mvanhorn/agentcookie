@@ -16,6 +16,7 @@ import MarketingHome from "@/app/(marketing)/page";
 import { FEATURES } from "./features";
 import { FAQS } from "./faq";
 import { LINKS } from "./links";
+import { renderTwin } from "@/lib/markdown";
 import {
   HERO,
   TERMINAL_COMMANDS,
@@ -93,6 +94,15 @@ describe("content modules feed the homepage", () => {
     expect(SITE_TITLE).toContain("Linux box");
     expect(SITE_DESCRIPTION).toContain("Linux box");
     expect(SITE_DESCRIPTION).toContain("Tailscale");
+  });
+
+  it("has no stale second-Mac terminal framing in the page or the /md twin", () => {
+    const text = renderHome();
+    expect(text).not.toContain("second-Mac");
+    expect(text).not.toContain("second-mac");
+    const twin = renderTwin("home");
+    expect(twin).not.toContain("second-Mac");
+    expect(twin).not.toContain("second-mac");
   });
 
   it("does not mention an email address anywhere", () => {

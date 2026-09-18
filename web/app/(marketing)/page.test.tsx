@@ -5,7 +5,7 @@
 // contracts the design + README traceability guarantees ship:
 //
 //   - Hero headline + tagline strings are present.
-//   - Terminal demo includes all three ssh second-mac commands.
+//   - Terminal demo includes all three ssh sink commands.
 //   - Every feature in lib/content/features.ts renders.
 //   - Footer links to repo, quickstart, specs, threat model.
 //

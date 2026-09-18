@@ -54,6 +54,8 @@ describe("trust pages", () => {
         expect(metadata.title).toBe(copy.title);
         expect(metadata.description).toBe(copy.description);
         expect(metadata.openGraph?.description).toBe(copy.description);
+        expect(metadata.twitter?.title).toBe(copy.title);
+        expect(metadata.twitter?.description).toBe(copy.description);
       });
 
       it("renders more than 500 characters of prose with the title and every section", () => {

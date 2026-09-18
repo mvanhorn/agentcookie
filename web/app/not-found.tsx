@@ -2,7 +2,6 @@
 // stay put, with a way home and a way into the docs.
 
 import type { Metadata } from "next";
-import Link from "next/link";
 import { Shell } from "@/components/marketing/Shell";
 import { LINKS } from "@/lib/content/links";
 
@@ -30,9 +29,9 @@ export default function NotFound() {
           and the quickstart is the fastest way to a working install.
         </p>
         <p className="m-0 flex flex-wrap gap-6 font-body text-sm">
-          <Link href="/" className="text-text-1 hover:text-text-0">
+          <a href="/" className="text-text-1 hover:text-text-0">
             home
-          </Link>
+          </a>
           <a href={LINKS.quickstart} className="text-text-1 hover:text-text-0">
             quickstart <span className="font-display text-text-2">↗</span>
           </a>

@@ -117,15 +117,13 @@ Check on the sink: open Chrome (or use the running one), visit a synced site, yo
 
 ## Step 6: Make it continuous
 
-For now, `agentcookie source --once` is a single shot. Wire it to your preferred trigger (cron, launchd, fswatch on Chrome's Cookies file). Long-lived fsnotify-driven watch mode is on the roadmap.
-
-A reasonable cron:
-
 ```
-*/5 * * * * /path/to/agentcookie source --once >> ~/.agentcookie/source-cron.log 2>&1
+agentcookie source --watch
 ```
 
-Five-minute resolution is fine for most sites; session tokens generally rotate on the order of hours.
+This is the long-running mode: fsnotify watches Chrome's Cookies SQLite file for write events, debounces 500ms, and pushes to the sink, rate-capped at one push every 2 seconds even under continuous Chrome activity. Keep it running the same way you kept the sink running in Step 4 (a LaunchAgent plist, or interactively while testing).
+
+`agentcookie source --once` is still there as a one-shot alternative: a single read+push cycle, useful for cron, CI, or a manual sync check.
 
 ## Step 7: Device-bound sessions (DBSC)
 

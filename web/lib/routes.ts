@@ -54,3 +54,15 @@ export const ROUTES: readonly StaticRoute[] = [
 export function findRoute(path: string): StaticRoute | undefined {
   return ROUTES.find((route) => route.path === path);
 }
+
+export type RouteLink = { href: RoutePath; label: string };
+
+// The site's internal trust-page links (everything but the homepage
+// itself), derived once from ROUTES so the footer and the Markdown
+// twins render the same set and cannot drift from each other.
+export const TRUST_ROUTE_LINKS: readonly RouteLink[] = ROUTES.filter(
+  (route) => route.path !== "/",
+).map((route) => ({
+  href: route.path,
+  label: route.path.slice(1),
+}));

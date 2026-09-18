@@ -30,10 +30,10 @@ export type TerminalLine =
   | { kind: "output"; text: string; tone: "muted" | "success" };
 
 export const TERMINAL = {
-  label: "agentcookie second-Mac session",
+  label: "agentcookie sink session",
   prompt: "you@laptop:~",
   lines: [
-    { kind: "command", text: "ssh second-mac 'instacart-pp-cli carts'" },
+    { kind: "command", text: "ssh sink 'instacart-pp-cli carts'" },
     {
       kind: "output",
       tone: "muted",
@@ -46,7 +46,7 @@ export const TERMINAL = {
     },
     {
       kind: "command",
-      text: "ssh second-mac 'ebay-pp-cli auctions watch --ending-within 1h'",
+      text: "ssh sink 'ebay-pp-cli auctions watch --ending-within 1h'",
     },
     {
       kind: "output",
@@ -55,7 +55,7 @@ export const TERMINAL = {
     },
     {
       kind: "command",
-      text: "ssh second-mac 'table-reservation-goat goat \"omakase\"'",
+      text: "ssh sink 'table-reservation-goat goat \"omakase\"'",
       cursor: true,
     },
     {

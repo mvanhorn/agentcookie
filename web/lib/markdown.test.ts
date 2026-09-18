@@ -13,9 +13,10 @@ import { FEATURES } from "./content/features";
 import { FAQS } from "./content/faq";
 import { FOOTER_LINKS } from "./content/links";
 import { TRUST_PAGES } from "./content/trust";
-import { ROUTES } from "./routes";
+import { ROUTES, TRUST_ROUTE_LINKS } from "./routes";
 
 const BASE = "http://localhost:3000";
+const SITE_ORIGIN = "https://agentcookie.dev";
 
 function get(path: string, init: RequestInit = {}): Response {
   return handleMarkdownRequest(new Request(`${BASE}${path}`, init));
@@ -87,6 +88,15 @@ describe("homepage twin (/md)", () => {
     }
   });
 
+  it("renders every footer trust-page link (about, contact, privacy) as an absolute URL", async () => {
+    const body = await get("/md").text();
+    expect(TRUST_ROUTE_LINKS.length).toBeGreaterThan(0);
+    for (const route of ROUTES) {
+      if (route.path === "/") continue;
+      expect(body).toContain(`(${SITE_ORIGIN}${route.path})`);
+    }
+  });
+
   it("sets the Markdown, canonical, cache, and robots headers", () => {
     const response = get("/md");
     expect(response.headers.get("content-type")).toBe(
@@ -139,6 +149,18 @@ describe("trust page twins", () => {
     expect(response.headers.get("link")).toBe(
       '<https://agentcookie.dev/about>; rel="canonical"',
     );
+  });
+
+  it("renders every ROUTES path as an absolute URL in each trust page twin", async () => {
+    for (const key of ["about", "contact", "privacy"] as const) {
+      const body = await get(`/md/${key}`).text();
+      for (const route of ROUTES) {
+        if (route.path === "/") continue;
+        expect(body, `${key} twin missing link to ${route.path}`).toContain(
+          `(${SITE_ORIGIN}${route.path})`,
+        );
+      }
+    }
   });
 
   it("renders every route in the table through the same handler", async () => {

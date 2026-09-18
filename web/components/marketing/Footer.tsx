@@ -11,12 +11,9 @@
 import React from "react";
 import { FOOTER_LINKS } from "@/lib/content/links";
 import { FOOTER_LINE } from "@/lib/content/home";
-import { ROUTES } from "@/lib/routes";
+import { TRUST_ROUTE_LINKS } from "@/lib/routes";
 
-const TRUST_LINKS = ROUTES.filter((route) => route.path !== "/").map((route) => ({
-  href: route.path,
-  label: route.path.slice(1),
-}));
+const TRUST_LINKS = TRUST_ROUTE_LINKS;
 
 function LinkRow({ items }: { items: readonly { href: string; label: string }[] }) {
   return (
