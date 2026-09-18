@@ -2,7 +2,7 @@
   "name": "agentcookie-web",
   "version": "0.1.0",
   "private": true,
-  "description": "agentcookie.dev - session state sync for the agent on your second Mac",
+  "description": "agentcookie.dev - session state sync for the agent on your Linux box or second Mac",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

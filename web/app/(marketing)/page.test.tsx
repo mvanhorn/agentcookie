@@ -6,7 +6,7 @@
 //
 //   - Hero headline + tagline strings are present.
 //   - Terminal demo includes all three ssh second-mac commands.
-//   - Every feature in lib/features.ts renders.
+//   - Every feature in lib/content/features.ts renders.
 //   - Footer links to repo, quickstart, specs, threat model.
 //
 // When the README is rewritten such that the tagline or feature
@@ -19,7 +19,7 @@ import React from "react";
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, cleanup } from "@testing-library/react";
 import MarketingHome from "./page";
-import { FEATURES } from "@/lib/features";
+import { FEATURES } from "@/lib/content/features";
 
 vi.mock("server-only", () => ({}));
 
@@ -64,7 +64,7 @@ describe("marketing homepage (/)", () => {
     );
   });
 
-  it("renders every feature card from lib/features.ts", () => {
+  it("renders every feature card from lib/content/features.ts", () => {
     renderHome();
     for (const feature of FEATURES) {
       expect(document.body.textContent).toContain(feature.title);

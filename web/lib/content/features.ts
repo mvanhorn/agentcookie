@@ -1,17 +1,26 @@
 // Source of truth for FeatureGrid. Each entry maps to one Working
 // bullet in the agentcookie README. Adding a card here is the same
 // as adding a bullet to the README - when the README is rewritten,
-// the page.test.tsx assertions on this list catch drift.
+// the app/(marketing)/page.test.tsx assertions on this list catch
+// drift.
 
 export type Feature = {
   title: string;
   body: string;
 };
 
-export const FEATURES: Feature[] = [
+export const FEATURES: readonly Feature[] = [
   {
     title: "continuous laptop -> sink sync",
     body: "fsnotify on Chrome's Cookies file, debounced, allowlist + blocklist filtered, AES-256-GCM over Tailscale.",
+  },
+  {
+    title: "live CDP injection on Linux",
+    body: "the Linux sink attaches to Chrome's debug port and sets cookies straight into the in-memory store, on every sync and every new browser context. no Keychain, no SQLite rewrite; browserUse, Puppeteer, and Playwright see the session already there.",
+  },
+  {
+    title: "fan out to multiple sinks",
+    body: "one source pushes the same cookies and secrets to several sinks, each sealed with that sink's own paired key. a sink that is down fails on its own while the others still receive the payload.",
   },
   {
     title: "universal cookie delivery",
@@ -53,4 +62,4 @@ export const FEATURES: Feature[] = [
     title: "fifteen-category doctor",
     body: "cookie delivery (universal vs degraded, with duplicate-keychain-item race detection), binary signature + install, Tailscale, config, keystore, listener bind, sink/source state, sealing posture, adapter coverage, CDP injector health, secrets-bus + secret coverage, and DBSC-suspect cookies.",
   },
-];
+] as const;

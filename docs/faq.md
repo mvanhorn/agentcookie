@@ -97,4 +97,4 @@ MIT. PRs welcome. See the repo at https://github.com/mvanhorn/agentcookie.
 
 ## How do I report a security issue?
 
-Open an issue, or for sensitive findings, email the maintainer directly. There's no bug bounty yet; that's not v0.1 territory.
+Open an issue at https://github.com/mvanhorn/agentcookie/issues, or for sensitive findings, send a direct message to the maintainer on X at https://x.com/mvanhorn. There's no bug bounty yet; that's not v0.1 territory.

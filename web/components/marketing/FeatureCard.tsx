@@ -1,7 +1,7 @@
 // Presentational tile for the FeatureGrid. Title in Geist Mono,
 // body in Geist Sans.
 
-import type { Feature } from "@/lib/features";
+import type { Feature } from "@/lib/content/features";
 
 export function FeatureCard({ feature }: { feature: Feature }) {
   return (

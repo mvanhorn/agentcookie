@@ -77,4 +77,4 @@ The Linux receive path (v1.0+) operates under a stricter trust model than the ma
 
 ## Reporting issues
 
-Open an issue at https://github.com/mvanhorn/agentcookie. For sensitive findings, contact the maintainer directly.
+Open an issue at https://github.com/mvanhorn/agentcookie/issues. For sensitive findings, send a direct message to the maintainer on X at https://x.com/mvanhorn.

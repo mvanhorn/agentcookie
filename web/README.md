@@ -30,8 +30,11 @@ list feature card lift from the README. `app/(marketing)/page.test.tsx`
 asserts on the specific README-derived strings, so a README rewrite that
 changes them will fail the suite until the site catches up.
 
-The feature card source list is `lib/features.ts`. To add or remove a card,
-edit that file - the test asserts every entry renders.
+All homepage copy lives in `lib/content/` (`home.ts`, `features.ts`,
+`faq.ts`, `links.ts`); components read text from those modules.
+`lib/content/content.test.ts` asserts that every string in the modules
+reaches the rendered page. To add or remove a feature card, edit
+`lib/content/features.ts` - the tests assert every entry renders.
 
 ## Deploy
 

@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { SITE_NAME, SITE_TITLE, SITE_DESCRIPTION } from "@/lib/content/home";
+import { SITE_ORIGIN } from "@/lib/site";
 
 // Geist Sans + Geist Mono. The CSS variables are consumed by
 // `app/globals.css` to drive --font-body and --font-display, which
@@ -15,21 +17,17 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-const SITE_TITLE = "agentcookie - session state sync for the agent on your second Mac";
-const SITE_DESCRIPTION =
-  "Cookies and per-CLI secrets, replicated continuously from your laptop to the Mac your agent runs on. Encrypted over Tailscale, zero per-site auth ceremony.";
-
 export const metadata: Metadata = {
   title: SITE_TITLE,
   description: SITE_DESCRIPTION,
-  metadataBase: new URL(
-    process.env.NEXT_PUBLIC_PLATFORM_URL ?? "https://agentcookie.dev",
-  ),
+  // Literal production origin. Preview deployments must still emit
+  // canonical agentcookie.dev URLs, so no environment fallback here.
+  metadataBase: new URL(SITE_ORIGIN),
   openGraph: {
     title: SITE_TITLE,
     description: SITE_DESCRIPTION,
     url: "/",
-    siteName: "agentcookie",
+    siteName: SITE_NAME,
     type: "website",
   },
   twitter: {

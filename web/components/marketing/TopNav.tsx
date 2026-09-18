@@ -2,14 +2,11 @@
 //
 // Right-aligned slot order: quickstart, spec, github, primary
 // "Install" CTA that anchors back to the README install block.
+// URLs come from lib/content/links.ts.
 
 import Link from "next/link";
-
-const GITHUB = "https://github.com/mvanhorn/agentcookie";
-const README = `${GITHUB}/blob/main/README.md`;
-const QUICKSTART = `${GITHUB}/blob/main/docs/quickstart.md`;
-const SPEC =
-  `${GITHUB}/blob/main/docs/spec-agentcookie-secrets-bus-v2-adoption.md`;
+import { LINKS, NAV_LINKS } from "@/lib/content/links";
+import { SITE_NAME } from "@/lib/content/home";
 
 export function TopNav() {
   return (
@@ -21,29 +18,20 @@ export function TopNav() {
         href="/"
         className="font-display font-medium text-[18px] tracking-[-0.02em] text-text-0"
       >
-        agentcookie
+        {SITE_NAME}
       </Link>
       <div className="flex items-center gap-6">
+        {NAV_LINKS.map((link) => (
+          <a
+            key={link.href}
+            href={link.href}
+            className="font-body text-sm text-text-1 hover:text-text-0"
+          >
+            {link.label} <span className="font-display text-text-2">↗</span>
+          </a>
+        ))}
         <a
-          href={QUICKSTART}
-          className="font-body text-sm text-text-1 hover:text-text-0"
-        >
-          quickstart <span className="font-display text-text-2">↗</span>
-        </a>
-        <a
-          href={SPEC}
-          className="font-body text-sm text-text-1 hover:text-text-0"
-        >
-          spec <span className="font-display text-text-2">↗</span>
-        </a>
-        <a
-          href={GITHUB}
-          className="font-body text-sm text-text-1 hover:text-text-0"
-        >
-          github <span className="font-display text-text-2">↗</span>
-        </a>
-        <a
-          href={`${README}#install`}
+          href={LINKS.install}
           className="inline-flex items-center justify-center rounded-lg bg-accent-agent px-4 py-[9px] font-display text-sm font-medium tracking-[-0.01em] text-bg-0 transition-colors hover:bg-[#92f5ad] active:bg-[#6be089]"
         >
           Install
