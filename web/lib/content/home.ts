@@ -145,7 +145,6 @@ export const WHAT_IT_SYNCS = {
 } as const;
 
 export const FEATURE_GRID = {
-  label: "what's working today",
   heading: "what's working today",
   trailer:
     "the source is a Mac. the sink is a Linux box (live CDP injection into Chrome's in-memory store) or a second Mac, and one source fans out to several sinks. 520+ unit tests across 26 packages.",

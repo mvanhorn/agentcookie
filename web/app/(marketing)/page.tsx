@@ -24,18 +24,14 @@ import { WhatItSyncs } from "@/components/marketing/WhatItSyncs";
 import { FeatureGrid } from "@/components/marketing/FeatureGrid";
 import { FAQ } from "@/components/marketing/FAQ";
 import { GRAPH, serializeJsonLd } from "@/lib/jsonld";
-import { SITE_NAME, SITE_TITLE, SITE_DESCRIPTION } from "@/lib/content/home";
+import { SITE_TITLE, SITE_DESCRIPTION } from "@/lib/content/home";
+import { pageMetadata } from "@/lib/trust-metadata";
 
-export const metadata: Metadata = {
-  alternates: { canonical: "/" },
-  openGraph: {
-    title: SITE_TITLE,
-    description: SITE_DESCRIPTION,
-    url: "/",
-    siteName: SITE_NAME,
-    type: "website",
-  },
-};
+export const metadata: Metadata = pageMetadata({
+  path: "/",
+  title: SITE_TITLE,
+  description: SITE_DESCRIPTION,
+});
 
 export default function MarketingHome() {
   return (

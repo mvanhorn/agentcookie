@@ -9,7 +9,7 @@ import { FeatureCard } from "./FeatureCard";
 
 export function FeatureGrid() {
   return (
-    <section aria-label={FEATURE_GRID.label} className="pb-16">
+    <section aria-label={FEATURE_GRID.heading} className="pb-16">
       <h2 className="m-0 mb-8 font-display text-[28px] font-medium tracking-[-0.02em] text-text-0">
         {FEATURE_GRID.heading}
       </h2>

@@ -9,19 +9,30 @@ import { TRUST_PAGES, type TrustKey } from "@/lib/content/trust";
 import { SITE_NAME } from "@/lib/content/home";
 import type { RoutePath } from "@/lib/routes";
 
-export function trustMetadata(pageKey: TrustKey): Metadata {
-  const page = TRUST_PAGES[pageKey];
-  const path: RoutePath = `/${pageKey}`;
+export function pageMetadata(input: {
+  path: RoutePath;
+  title: string;
+  description: string;
+}): Metadata {
   return {
-    title: page.title,
-    description: page.description,
-    alternates: { canonical: path },
+    title: input.title,
+    description: input.description,
+    alternates: { canonical: input.path },
     openGraph: {
-      url: path,
+      url: input.path,
       type: "website",
       siteName: SITE_NAME,
-      title: page.title,
-      description: page.description,
+      title: input.title,
+      description: input.description,
     },
   };
+}
+
+export function trustMetadata(pageKey: TrustKey): Metadata {
+  const page = TRUST_PAGES[pageKey];
+  return pageMetadata({
+    path: `/${pageKey}`,
+    title: page.title,
+    description: page.description,
+  });
 }

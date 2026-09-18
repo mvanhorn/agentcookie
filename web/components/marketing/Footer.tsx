@@ -13,31 +13,31 @@ import { FOOTER_LINKS } from "@/lib/content/links";
 import { FOOTER_LINE } from "@/lib/content/home";
 import { ROUTES } from "@/lib/routes";
 
-const TRUST_ROUTES = ROUTES.filter((route) => route.path !== "/");
+const TRUST_LINKS = ROUTES.filter((route) => route.path !== "/").map((route) => ({
+  href: route.path,
+  label: route.path.slice(1),
+}));
+
+function LinkRow({ items }: { items: readonly { href: string; label: string }[] }) {
+  return (
+    <div className="flex flex-wrap items-center gap-3 text-[13px] text-text-1">
+      {items.map((link, i) => (
+        <React.Fragment key={link.href}>
+          {i > 0 ? <span className="text-text-2">·</span> : null}
+          <a href={link.href} className="hover:text-text-0">
+            {link.label}
+          </a>
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}
 
 export function Footer() {
   return (
     <footer className="flex flex-col gap-3 border-t border-border-0 py-6 pb-12">
-      <div className="flex flex-wrap items-center gap-3 text-[13px] text-text-1">
-        {FOOTER_LINKS.map((link, i) => (
-          <React.Fragment key={link.href}>
-            {i > 0 ? <span className="text-text-2">·</span> : null}
-            <a href={link.href} className="hover:text-text-0">
-              {link.label}
-            </a>
-          </React.Fragment>
-        ))}
-      </div>
-      <div className="flex flex-wrap items-center gap-3 text-[13px] text-text-1">
-        {TRUST_ROUTES.map((route, i) => (
-          <React.Fragment key={route.path}>
-            {i > 0 ? <span className="text-text-2">·</span> : null}
-            <a href={route.path} className="hover:text-text-0">
-              {route.path.slice(1)}
-            </a>
-          </React.Fragment>
-        ))}
-      </div>
+      <LinkRow items={FOOTER_LINKS} />
+      <LinkRow items={TRUST_LINKS} />
       <div className="text-[13px] text-text-2">{FOOTER_LINE}</div>
     </footer>
   );

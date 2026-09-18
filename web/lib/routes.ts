@@ -7,6 +7,9 @@
 // page's Markdown twin; the handler resolves a request path through
 // findRoute and dispatches on that key.
 
+import { SITE_TITLE } from "./content/home";
+import { TRUST_PAGES } from "./content/trust";
+
 export type TwinKey = "home" | "about" | "contact" | "privacy";
 
 export type RoutePath = "/" | "/about" | "/contact" | "/privacy";
@@ -22,25 +25,25 @@ export type StaticRoute = {
 export const ROUTES: readonly StaticRoute[] = [
   {
     path: "/",
-    title: "agentcookie - session state sync for the agent on your Linux box or second Mac",
+    title: SITE_TITLE,
     updatedAt: "2026-09-17",
     twin: "home",
   },
   {
     path: "/about",
-    title: "About agentcookie",
+    title: TRUST_PAGES.about.title,
     updatedAt: "2026-09-17",
     twin: "about",
   },
   {
     path: "/contact",
-    title: "Contact",
+    title: TRUST_PAGES.contact.title,
     updatedAt: "2026-09-17",
     twin: "contact",
   },
   {
     path: "/privacy",
-    title: "Privacy",
+    title: TRUST_PAGES.privacy.title,
     updatedAt: "2026-09-17",
     twin: "privacy",
   },

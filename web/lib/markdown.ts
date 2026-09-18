@@ -76,7 +76,7 @@ function sinkSurfaceBlock(): string {
   ]);
 }
 
-export function renderHome(): string {
+function renderHome(): string {
   const blocks: string[] = [
     `# ${HERO.headline.join(" ")}`,
     HERO.tagline,
@@ -111,27 +111,17 @@ function renderTrust(page: TrustPage): string {
   return blocks.join("\n\n") + "\n";
 }
 
-export function renderAbout(): string {
-  return renderTrust(TRUST_PAGES.about);
-}
-
-export function renderContact(): string {
-  return renderTrust(TRUST_PAGES.contact);
-}
-
-export function renderPrivacy(): string {
-  return renderTrust(TRUST_PAGES.privacy);
-}
-
-const RENDERERS: Readonly<Record<TwinKey, () => string>> = {
-  home: renderHome,
-  about: renderAbout,
-  contact: renderContact,
-  privacy: renderPrivacy,
+// Every twin is a pure function of module-level content constants, so the
+// bodies are rendered once at module load rather than on every request.
+const TWIN_MARKDOWN: Readonly<Record<TwinKey, string>> = {
+  home: renderHome(),
+  about: renderTrust(TRUST_PAGES.about),
+  contact: renderTrust(TRUST_PAGES.contact),
+  privacy: renderTrust(TRUST_PAGES.privacy),
 };
 
 export function renderTwin(twin: TwinKey): string {
-  return RENDERERS[twin]();
+  return TWIN_MARKDOWN[twin];
 }
 
 // `/md` -> `/`, `/md/about` -> `/about`; anything outside the tree
