@@ -11,8 +11,11 @@
 //
 // Next's built-in trailing-slash and repeated-slash redirects run
 // before middleware, so this file never redirects. The matcher keeps
-// `_next/*`, `_vercel/*`, `/md` and `/md/*`, `/opengraph-image`, and
-// any path with a file extension out of the middleware altogether.
+// `_next/*`, `_vercel/*`, `/md` and `/md/*`, `/api` and `/api/*`,
+// `/.well-known` and `/.well-known/*`, `/opengraph-image`, and any
+// path with a file extension (which covers `/openapi.json`) out of
+// the middleware altogether: those trees serve machine documents and
+// problem responses, never a page with a Markdown twin.
 
 import { NextResponse, type NextRequest } from "next/server";
 import { preferredRepresentation } from "@/lib/negotiate";
@@ -20,7 +23,7 @@ import { SITE_ORIGIN } from "@/lib/site";
 
 export const config = {
   matcher: [
-    "/((?!_next/|_vercel/|md(?:/|$)|opengraph-image(?:/|$)|.*\\.[^/]*$).*)",
+    "/((?!_next/|_vercel/|md(?:/|$)|api(?:/|$)|\\.well-known(?:/|$)|opengraph-image(?:/|$)|.*\\.[^/]*$).*)",
   ],
 };
 

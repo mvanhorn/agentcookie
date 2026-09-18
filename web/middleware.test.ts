@@ -44,19 +44,41 @@ describe("middleware matcher", () => {
       "/md",
       "/md/about",
       "/md/md/about",
+      "/api",
+      "/api/",
+      "/api/v1/sync",
+      "/.well-known",
+      "/.well-known/api-catalog",
+      "/openapi.json",
     ]) {
       expect(matches(path), path).toBe(false);
     }
   });
 
   it("covers pages and unknown paths", () => {
-    for (const path of ["/", "/about", "/contact", "/privacy", "/nope", "/mdx"]) {
+    for (const path of [
+      "/",
+      "/about",
+      "/contact",
+      "/privacy",
+      "/developers",
+      "/nope",
+      "/mdx",
+      "/apix",
+      "/well-known",
+    ]) {
       expect(matches(path), path).toBe(true);
     }
   });
 
   it("does not match /md even with a Markdown preference", () => {
     expect(matches("/md", { accept: "text/markdown" })).toBe(false);
+  });
+
+  it("never rewrites the api tree or the well-known tree to a Markdown twin", () => {
+    for (const path of ["/api/x", "/api", "/.well-known/api-catalog"]) {
+      expect(matches(path, { accept: "text/markdown" }), path).toBe(false);
+    }
   });
 });
 
