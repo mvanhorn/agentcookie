@@ -468,12 +468,16 @@ func TestCDPInjector_FailureDoesNotPropagate(t *testing.T) {
 }
 
 type sinkHandlerFixture struct {
-	configDir  string
-	home       string
-	mux        *http.ServeMux
-	secret     string
-	seqTracker *protocol.SequenceTracker
-	sinkState  *state.SinkState
+	configDir   string
+	home        string
+	mux         *http.ServeMux
+	secret      string
+	key         []byte
+	cfg         *config.SinkConfig
+	seqTracker  *protocol.SequenceTracker
+	sinkState   *state.SinkState
+	stateWriter *state.Writer
+	stateMu     *sync.Mutex
 }
 
 func newSinkHandlerFixture(t *testing.T, dryRun bool) *sinkHandlerFixture {
@@ -497,16 +501,25 @@ func newSinkHandlerFixture(t *testing.T, dryRun bool) *sinkHandlerFixture {
 	sinkState := &state.SinkState{Role: "sink", ListenAddr: cfg.Listen.Addr}
 	stateWriter := state.NewWriter(filepath.Join(t.TempDir(), "sink-state.json"))
 	var stateMu sync.Mutex
-	mux := newSinkMux(cfg, secret, []byte("0123456789abcdef"), seqTracker, stateWriter, sinkState, &stateMu)
+	key := []byte("0123456789abcdef")
+	mux := newSinkMux(cfg, secret, key, seqTracker, stateWriter, sinkState, &stateMu)
 
 	return &sinkHandlerFixture{
-		configDir:  configDir,
-		home:       home,
-		mux:        mux,
-		secret:     secret,
-		seqTracker: seqTracker,
-		sinkState:  sinkState,
+		configDir:   configDir,
+		home:        home,
+		mux:         mux,
+		secret:      secret,
+		key:         key,
+		cfg:         cfg,
+		seqTracker:  seqTracker,
+		sinkState:   sinkState,
+		stateWriter: stateWriter,
+		stateMu:     &stateMu,
 	}
+}
+
+func (f *sinkHandlerFixture) applySealed(sealed []byte) envelopeApplyResult {
+	return applySealedEnvelope(context.Background(), f.cfg, f.secret, f.key, f.seqTracker, f.stateWriter, f.sinkState, f.stateMu, sealed)
 }
 
 func (f *sinkHandlerFixture) postSync(seq int64, cookies []chrome.Cookie) *httptest.ResponseRecorder {

@@ -4,7 +4,7 @@ This document captures the wire format between source and sink so future clients
 
 ## Layers, outside to inside
 
-1. **Transport.** HTTP over a Tailscale tailnet. POST `/sync` on the sink machine carries the sealed payload as the request body with `Content-Type: application/octet-stream`.
+1. **Transport.** HTTP over a Tailscale tailnet. The default path is POST `/sync` on the sink: the source pushes a sealed payload as the request body with `Content-Type: application/octet-stream`. Client-only sinks that cannot accept inbound HTTP (Muse-like sandboxes) instead poll the source: `GET /pull` on the source's watch listener (the pairing port, default `:9998`) returns the same sealed envelope. `/pull` is guarded by HMAC-SHA256 request auth over a timestamp and nonce using the existing peer key (`internal/transport`). Envelope crypto is unchanged.
 2. **Authenticated encryption.** AES-256-GCM. The key is derived from the source-sink pair via X25519 + HKDF-SHA256 (see `internal/pairing`), or from the legacy `security.shared_secret` YAML field. Each message carries a fresh 12-byte nonce as the first 12 bytes of the ciphertext; the GCM tag is appended automatically. Wrong-secret payloads are rejected by the AEAD tag check.
 3. **Envelope.** Inside the seal, the plaintext is a JSON `SyncEnvelope`.
 

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Pull / poll mode for client-only sinks
+
+Sinks that can dial out over Tailscale but cannot accept inbound HTTP (Muse-like client-only shims) can poll the source instead of binding `/sync`.
+
+- `agentcookie source --watch` serves `GET /pull` on the pairing port (Tailscale `100.x:9998` by default; `--pull-listen` overrides). The latest sealed envelope is HMAC-authenticated with the existing peer key.
+- `agentcookie sink --pull-from <source-host> --pull-interval 30s` skips the sync listener and polls that endpoint. Fetched envelopes use the same decrypt → policy → sidecar/CDP path as POST `/sync`, and sequence tracking skips already-applied payloads.
+- The shared HTTP client now sets `Transport.Proxy = http.ProxyFromEnvironment` so outbound polls honor `HTTP_PROXY` (required on sandboxes whose tailnet access is a local proxy).
+
 ### Dia source-browser support
 
 Dia (The Browser Company) is a Chromium-family source adapter using the same Safe Storage model as Arc, Brave, and Edge. Set `browser.name: dia` in `source.yaml`. Discovery labels Dia's `User Data` root as `dia` so key lookup uses `Dia Safe Storage` rather than Chrome's.

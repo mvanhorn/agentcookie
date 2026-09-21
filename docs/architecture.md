@@ -64,7 +64,7 @@ choice, not the code default. The code default remains security-by-default.
 | `cmd/agentcookie` | CLI entry point (cobra). |
 | `internal/cli` | Subcommand implementations: `source`, `sink`, `pair`, `status`, `version`. |
 | `internal/chrome` | Read + decrypt Chrome cookies on macOS via Keychain Safe Storage + SQLite. Schema-aware INSERT for the write path. |
-| `internal/transport` | AES-GCM seal/open with key = SHA-256(secret). |
+| `internal/transport` | AES-GCM seal/open with key = SHA-256(secret). HMAC request auth for GET `/pull`. |
 | `internal/config` | YAML loaders for `source.yaml`, `sink.yaml`, `blocklist.yaml`. Tilde expansion, defaults, validation. |
 | `internal/pairing` | X25519 + HKDF handshake. Source listens for pairing; sink connects with the printed code. Both sides derive identical 32-byte keys. |
 | `internal/keystore` | Per-peer key files at `~/.config/agentcookie/keys/<peer>.json` mode 0600. |
@@ -82,7 +82,7 @@ choice, not the code default. The code default remains security-by-default.
 7. Decrypts each `encrypted_value` (v10 prefix, AES-128-CBC, IV = 16 spaces, PKCS#7).
 8. Wraps the cookies in a `SyncEnvelope` with version, hostname, monotonic Sequence.
 9. AES-GCM-seals the envelope with the paired key.
-10. POSTs to the sink's `/sync` URL.
+10. POSTs to the sink's `/sync` URL, and also stores the plaintext envelope so `GET /pull` can seal it for client-only sinks.
 
 On the sink, in the `/sync` handler:
 

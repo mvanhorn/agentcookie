@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +23,8 @@ func TestDefaults_AllProfiles(t *testing.T) {
 		{Pair, true, false, 16 * 1024},
 		{PairClient, false, true, 0},
 		{SyncClient, false, true, 0},
+		{SourcePull, true, false, 16 * 1024},
+		{PullClient, false, true, 0},
 	}
 	for _, c := range cases {
 		s := Defaults(c.profile)
@@ -65,6 +69,86 @@ func TestClient_HasTimeout(t *testing.T) {
 	c = Client(SyncClient)
 	if c.Timeout != 5*time.Minute {
 		t.Errorf("SyncClient.Timeout: got %v want 5m", c.Timeout)
+	}
+	c = Client(PullClient)
+	if c.Timeout != 5*time.Minute {
+		t.Errorf("PullClient.Timeout: got %v want 5m", c.Timeout)
+	}
+}
+
+// TestClient_TransportHonorsProxyFromEnvironment is the regression for
+// client-only tailnets: outbound HTTP must go through the env proxy
+// (Muse uses e.g. HTTP_PROXY on port 3130). A nil Transport, or a
+// Transport with Proxy left nil, would ignore those variables.
+func TestClient_TransportHonorsProxyFromEnvironment(t *testing.T) {
+	c := Client(PullClient)
+	if c.Transport == nil {
+		t.Fatal("Client Transport is nil; HTTP_PROXY/HTTPS_PROXY would depend on mutating http.DefaultTransport")
+	}
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport type %T, want *http.Transport", c.Transport)
+	}
+	if tr.Proxy == nil {
+		t.Fatal("Transport.Proxy is nil; HTTP_PROXY/HTTPS_PROXY would be ignored")
+	}
+	got := reflect.ValueOf(tr.Proxy).Pointer()
+	want := reflect.ValueOf(http.ProxyFromEnvironment).Pointer()
+	if got != want {
+		t.Fatal("Transport.Proxy is not http.ProxyFromEnvironment")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "http://100.64.0.1:9998/pull", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyURL, err := url.Parse("http://127.0.0.1:3130")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Drive the assigned Proxy func through a request that must not be
+	// skipped as loopback. If Proxy were a no-op, this would return nil.
+	tr.Proxy = http.ProxyURL(proxyURL)
+	gotURL, err := tr.Proxy(req)
+	if err != nil {
+		t.Fatalf("Proxy: %v", err)
+	}
+	if gotURL == nil || gotURL.Host != proxyURL.Host {
+		t.Fatalf("Proxy(%s) = %v, want host %s", req.URL, gotURL, proxyURL.Host)
+	}
+}
+
+// TestClient_RoutesNonLoopbackThroughProxy sends a real request through
+// Client's Transport with Proxy set. A Transport that ignores the Proxy
+// field (or a nil Transport relying on a mutated DefaultTransport) fails.
+func TestClient_RoutesNonLoopbackThroughProxy(t *testing.T) {
+	proxyHits := 0
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyHits++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer proxy.Close()
+
+	c := Client(PullClient)
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport type %T, want *http.Transport", c.Transport)
+	}
+	tr = tr.Clone()
+	u, err := url.Parse(proxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr.Proxy = http.ProxyURL(u)
+	c.Transport = tr
+
+	resp, err := c.Get("http://100.64.0.1:9998/pull")
+	if err != nil {
+		t.Fatalf("GET via proxy: %v", err)
+	}
+	defer resp.Body.Close()
+	if proxyHits != 1 {
+		t.Fatalf("proxy hits = %d, want 1 (Transport ignored Proxy)", proxyHits)
 	}
 }
 

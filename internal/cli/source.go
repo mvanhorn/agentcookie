@@ -30,11 +30,12 @@ import (
 )
 
 var (
-	sourceOnce     bool
-	sourceWatch    bool
-	sourceVerbose  bool
-	sourceDryRun   bool
-	sourceSkipDBSC bool
+	sourceOnce       bool
+	sourceWatch      bool
+	sourceVerbose    bool
+	sourceDryRun     bool
+	sourceSkipDBSC   bool
+	sourcePullListen string
 )
 
 // resolveSinkURL is the sink URL resolver used by pushOnce. Production
@@ -75,7 +76,14 @@ var sourceCmd = &cobra.Command{
                               500ms and runs a push. Rate-capped at one push
                               every 2 seconds even under continuous Chrome
                               activity. This is the v0.2 default mode and the
-                              one a LaunchAgent should run.`,
+                              one a LaunchAgent should run.
+
+While --watch is running, the source also serves GET /pull on the pairing
+port (Tailscale 100.x:9998 by default, override with --pull-listen). Client-
+only sinks that cannot accept inbound HTTP poll that endpoint instead of
+receiving POST /sync:
+
+  agentcookie sink --pull-from <this-host> --pull-interval 30s`,
 	RunE: runSource,
 }
 
@@ -85,6 +93,7 @@ func init() {
 	sourceCmd.Flags().BoolVar(&sourceVerbose, "verbose", false, "log per-pattern decisions to stderr")
 	sourceCmd.Flags().BoolVar(&sourceDryRun, "dry-run", false, "read + filter but do not contact the sink")
 	sourceCmd.Flags().BoolVar(&sourceSkipDBSC, "skip-dbsc-suspect", false, "drop cookies that look device-bound (DBSC) instead of shipping them with a warning; also honored via AGENTCOOKIE_SKIP_DBSC_SUSPECT=1")
+	sourceCmd.Flags().StringVar(&sourcePullListen, "pull-listen", "", "host:port for GET /pull while --watch is running (default: this machine's Tailscale 100.x:9998)")
 }
 
 func runSource(cmd *cobra.Command, args []string) error {
@@ -164,6 +173,10 @@ func runSource(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(cmd.Context(), time.Duration(nSinks)*perSink+30*time.Second)
 		defer cancel()
 		_, err := push(ctx)
+		return err
+	}
+
+	if err := startWatchPullListener(cmd.Context(), cfg); err != nil {
 		return err
 	}
 
@@ -552,6 +565,7 @@ func pushOnce(
 	if err != nil {
 		return nil, dbsc, fmt.Errorf("marshal envelope: %w", err)
 	}
+	pullPayloadCache.Store(payload)
 	// Fan out: read and filtering above happened once; only sealing and
 	// transport repeat per sink. Each sink is sealed with its own key and
 	// POSTed independently. A per-sink failure (missing key, seal error,

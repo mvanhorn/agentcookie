@@ -330,6 +330,26 @@ agentcookie wizard install --as source --add-sink \
 
 **Trust note:** every sink receives the same full cookie and secret set, so a compromise of the least-trusted sink exposes everything. Only list sinks you trust with the whole payload. To stop feeding a sink, remove its entry from `sinks:` and delete its `keys/<peer>.json`. The device-bound (DBSC) caveat below is per-sink and unchanged: each sink still needs its own Chrome signed into the same Google account.
 
+## Client-only sinks (inbound blocked)
+
+Some sandboxes can dial out over Tailscale but cannot accept inbound HTTP, so the usual POST to the sink's `/sync` never lands and the cookie store stays empty.
+
+On the Mac, `source --watch` already serves pairing on port 9998. It now keeps a listener up during watch and adds `GET /pull` (HMAC-authenticated with the paired key) that returns the latest sealed envelope.
+
+On the blocked box, skip the sync listener and poll:
+
+```bash
+# Pairing is outbound (sink -> source /pair) and already works.
+agentcookie pair --as sink --peer <mac-hostname> \
+  --pair-url http://<mac-hostname>:9998/pair --code <code>
+
+agentcookie sink --pull-from <mac-hostname> --pull-interval 30s
+```
+
+`--pull-from` accepts a hostname, `host:port`, or a full URL. Bare hostnames default to `http://<host>:9998/pull`. The poll client honors `HTTP_PROXY` / `HTTPS_PROXY`, which is required when the sandbox only reaches the tailnet through a local proxy. Crypto, envelope format, and Chrome read/write paths are unchanged.
+
+The client-only box does not need its own `sinks:` entry on the Mac. Pairing writes the peer key; `/pull` seals with that key. Keep the Mac's existing push sinks as they are.
+
 ## What about Chrome's device-bound cookies (DBSC)?
 
 Chrome's Device Bound Session Credentials (DBSC) tie a session to one machine's secure hardware so a stolen cookie cannot be replayed elsewhere. For a site that has adopted DBSC, a copied cookie works on the sink only until its short-lived window (minutes) lapses.
@@ -345,6 +365,7 @@ The secrets bus (bearer tokens, API keys, OAuth refresh tokens) is untouched by 
 ### Working today
 
 - Mac to Linux continuous sync via Tailscale `/sync`
+- Client-only sinks via `GET /pull` + `sink --pull-from` when inbound HTTP is blocked
 - Mac to Mac continuous sync (second Mac, Mac mini)
 - Live CDP injection on Linux (cookies go into Chrome's in-memory store)
 - Three cookie delivery surfaces on macOS sink (Chrome SQLite, plaintext sidecar, per-CLI adapters)

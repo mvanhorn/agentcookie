@@ -230,6 +230,8 @@ The macOS sink writes to Chrome's encrypted SQLite, the plaintext sidecar, and p
 
 **`agentcookie status` reports zero syncs**: The source watcher has not seen a Chrome write yet. Open a tab on the source's Chrome (any domain) and refresh. The sync should appear within 2 seconds.
 
+**Sink cookie store stays empty and nothing listens on `/sync`**: If the sink can dial out over Tailscale but cannot accept inbound HTTP (client-only Tailscale shims), POST `/sync` will never land. On the source, `agentcookie source --watch` serves `GET /pull`. On the sink, run `agentcookie sink --pull-from <source-hostname> --pull-interval 30s` instead of the listener. Pairing (`POST /pair` from sink to source) is outbound and still works.
+
 **Doctor shows `sync-all` but cookies don't land**: The policy label and actual behavior can diverge. Verify success with `live_cdp: injected N cookies into M context(s)` in the sync output, not the policy label. Also check `LastWriteMode` contains `livecdp`.
 
 ## Out of scope for this skill

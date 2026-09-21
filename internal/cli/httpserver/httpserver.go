@@ -39,6 +39,16 @@ const (
 	// sink's /sync endpoint. Larger Timeout to allow the bigger
 	// envelopes.
 	SyncClient
+
+	// SourcePull is the source-side GET /pull listener served during
+	// `source --watch`. Request bodies are tiny (auth headers only);
+	// responses can be as large as a /sync envelope.
+	SourcePull
+
+	// PullClient is the sink-side poll client that GETs /pull. Timeout
+	// matches SyncClient so a large first envelope over a slow tailnet
+	// (or an HTTP proxy) can complete.
+	PullClient
 )
 
 // Settings carries the resolved values for a Profile. Exported so callers
@@ -82,6 +92,19 @@ func Defaults(p Profile) Settings {
 		return Settings{
 			ClientTimeout: 5 * time.Minute,
 		}
+	case SourcePull:
+		return Settings{
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      5 * time.Minute,
+			IdleTimeout:       120 * time.Second,
+			MaxHeaderBytes:    16 * 1024,
+			MaxBodyBytes:      16 * 1024,
+		}
+	case PullClient:
+		return Settings{
+			ClientTimeout: 5 * time.Minute,
+		}
 	}
 	return Settings{}
 }
@@ -106,15 +129,39 @@ func ConfigureWith(srv *http.Server, s Settings) *http.Server {
 }
 
 // Client returns an http.Client configured for the given profile.
-// PairClient and SyncClient are the supported profiles; other inputs
-// fall back to a 30-second timeout.
+// PairClient, SyncClient, and PullClient are the supported client
+// profiles; other inputs fall back to a 30-second timeout.
+//
+// Transport is always set. A bare `&http.Client{Timeout: ...}` leaves
+// Transport nil, which uses http.DefaultTransport — fine until a test or
+// runtime replaces DefaultTransport, and easy to misread as "no proxy".
+// Client-only Tailscale shims (Muse-like sandboxes) can only reach the
+// tailnet through an HTTP proxy from the environment (typically
+// HTTP_PROXY on port 3130). Cloning DefaultTransport and setting
+// ProxyFromEnvironment makes that path explicit. If a test has replaced
+// DefaultTransport with a stub RoundTripper, that stub is used as-is.
 func Client(p Profile) *http.Client {
 	s := Defaults(p)
 	timeout := s.ClientTimeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-	return &http.Client{Timeout: timeout}
+	return &http.Client{Timeout: timeout, Transport: proxyTransport()}
+}
+
+// proxyTransport returns a RoundTripper that honors HTTP_PROXY,
+// HTTPS_PROXY, and NO_PROXY. http.ProxyFromEnvironment is the stdlib
+// equivalent used by DefaultTransport; setting it on a cloned transport
+// keeps that behavior even if a caller later mutates DefaultTransport.Proxy.
+func proxyTransport() http.RoundTripper {
+	base := http.DefaultTransport
+	tr, ok := base.(*http.Transport)
+	if !ok {
+		return base
+	}
+	cloned := tr.Clone()
+	cloned.Proxy = http.ProxyFromEnvironment
+	return cloned
 }
 
 // LimitedReader wraps r so reads beyond max bytes return

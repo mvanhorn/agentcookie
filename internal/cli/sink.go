@@ -33,7 +33,9 @@ import (
 )
 
 var (
-	sinkDryRun bool
+	sinkDryRun       bool
+	sinkPullFrom     string
+	sinkPullInterval time.Duration
 )
 
 var sinkCmd = &cobra.Command{
@@ -52,12 +54,22 @@ injection via CDP, which lifts that requirement, lands in U4.
 and dumps each accepted batch of cookies to stderr as JSON. Useful for
 debugging the wire format and for running the sink over SSH without the
 GUI Keychain prompt that 'security find-generic-password' otherwise
-requires on macOS.`,
+requires on macOS.
+
+On a client-only tailnet (inbound HTTP blocked, outbound fine), skip the
+listener and poll the source instead:
+
+  agentcookie sink --pull-from <source-tailnet-host> --pull-interval 30s
+
+Each fetched envelope goes through the same decrypt, cookie-policy, and
+sidecar/CDP write path as POST /sync. Already-applied sequences are skipped.`,
 	RunE: runSink,
 }
 
 func init() {
 	sinkCmd.Flags().BoolVar(&sinkDryRun, "dry-run", false, "accept and decrypt sync payloads but do NOT touch Chrome Safe Storage or write any cookies; dump batches to stderr")
+	sinkCmd.Flags().StringVar(&sinkPullFrom, "pull-from", "", "poll this source (host, host:port, or URL) via GET /pull instead of binding /sync; for client-only/inbound-blocked tailnets")
+	sinkCmd.Flags().DurationVar(&sinkPullInterval, "pull-interval", 30*time.Second, "how often to poll --pull-from")
 }
 
 func runSink(cmd *cobra.Command, args []string) error {
@@ -66,27 +78,34 @@ func runSink(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	if sinkPullFrom != "" && sinkPullInterval <= 0 {
+		return fmt.Errorf("--pull-interval must be greater than 0")
+	}
+
 	// v0.12 S1: refuse to start on 0.0.0.0 or any non-tailnet address.
 	// Catches the case where an old sink.yaml has the v0.11 permissive
 	// default baked in, OR a user hand-edited the file. Explicit
 	// 127.0.0.1 stays allowed for local-dev binding (operator typed it).
-	if err := validateListenAddr(cfg.Listen.Addr); err != nil {
-		return fmt.Errorf("sink listen %q: %w", cfg.Listen.Addr, err)
-	}
+	// Pull mode never binds, so listen.addr is unused.
+	if sinkPullFrom == "" {
+		if err := validateListenAddr(cfg.Listen.Addr); err != nil {
+			return fmt.Errorf("sink listen %q: %w", cfg.Listen.Addr, err)
+		}
 
-	// Auto-rebind if configured listen.addr IP is stale (not on any local
-	// interface). This handles the case where Tailscale re-auth gave the
-	// machine a new 100.x IP but sink.yaml still has the old frozen IP.
-	// Keep the configured port, just swap the IP. Localhost bindings are
-	// excluded from rebind since they don't depend on Tailscale state.
-	cfg.Listen.Addr = maybeRebindListenAddr(cmd.Context(), cfg.Listen.Addr)
+		// Auto-rebind if configured listen.addr IP is stale (not on any local
+		// interface). This handles the case where Tailscale re-auth gave the
+		// machine a new 100.x IP but sink.yaml still has the old frozen IP.
+		// Keep the configured port, just swap the IP. Localhost bindings are
+		// excluded from rebind since they don't depend on Tailscale state.
+		cfg.Listen.Addr = maybeRebindListenAddr(cmd.Context(), cfg.Listen.Addr)
 
-	// Linux sink: require Tailscale 100.x in production. Localhost is
-	// allowed for tests but is not the documented Linux sink path.
-	if config.IsLinux() {
-		host, _, _ := net.SplitHostPort(cfg.Listen.Addr)
-		if host == "127.0.0.1" || host == "::1" || host == "localhost" {
-			fmt.Fprintln(os.Stderr, "agentcookie sink: WARNING: localhost bind on Linux is for testing only. Production Linux sinks must bind a Tailscale 100.x address (run `tailscale status` to find your tailnet IP).")
+		// Linux sink: require Tailscale 100.x in production. Localhost is
+		// allowed for tests but is not the documented Linux sink path.
+		if config.IsLinux() {
+			host, _, _ := net.SplitHostPort(cfg.Listen.Addr)
+			if host == "127.0.0.1" || host == "::1" || host == "localhost" {
+				fmt.Fprintln(os.Stderr, "agentcookie sink: WARNING: localhost bind on Linux is for testing only. Production Linux sinks must bind a Tailscale 100.x address (run `tailscale status` to find your tailnet IP).")
+			}
 		}
 	}
 
@@ -158,6 +177,19 @@ func runSink(cmd *cobra.Command, args []string) error {
 	}
 
 	var stateMu sync.Mutex
+	if sinkPullFrom != "" {
+		pullURL, err := normalizePullURL(sinkPullFrom)
+		if err != nil {
+			return err
+		}
+		if sinkDryRun {
+			fmt.Fprintf(os.Stderr, "agentcookie sink: pull mode (dry-run); polling %s every %s (no /sync listener)\n", pullURL, sinkPullInterval)
+		} else {
+			fmt.Fprintf(os.Stderr, "agentcookie sink: pull mode; polling %s every %s (no /sync listener)\n", pullURL, sinkPullInterval)
+		}
+		return runSinkPullLoop(cmd.Context(), cfg, transportSecret, key, seqTracker, stateWriter, sinkState, &stateMu, pullURL, sinkPullInterval)
+	}
+
 	mux := newSinkMux(cfg, transportSecret, key, seqTracker, stateWriter, sinkState, &stateMu)
 
 	srv := httpserver.Configure(&http.Server{Addr: cfg.Listen.Addr, Handler: mux}, httpserver.SinkSync)
@@ -210,240 +242,260 @@ func newSinkMux(
 			http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		plaintext, err := transport.OpenWithSecret(sealed, transportSecret)
-		if err != nil {
-			http.Error(w, "open payload: "+err.Error(), http.StatusUnauthorized)
+		res := applySealedEnvelope(r.Context(), cfg, transportSecret, key, seqTracker, stateWriter, sinkState, stateMu, sealed)
+		if res.Status != http.StatusOK {
+			http.Error(w, res.Reply, res.Status)
 			return
 		}
-		var envelope protocol.SyncEnvelope
-		if err := json.Unmarshal(plaintext, &envelope); err != nil {
-			http.Error(w, "unmarshal envelope: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		if envelope.ProtocolVersion < protocol.MinVersion || envelope.ProtocolVersion > protocol.Version {
-			http.Error(w, fmt.Sprintf("protocol version mismatch: got %d, sink speaks %d-%d", envelope.ProtocolVersion, protocol.MinVersion, protocol.Version), http.StatusBadRequest)
-			return
-		}
-
-		bl, err := loadFreshBlocklist()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "agentcookie sink: cookie policy load failed: %v\n", err)
-			recordSinkReject(sinkState, stateWriter, stateMu, err)
-			http.Error(w, "load blocklist: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		blockMatcher := protocol.NewBlocklistMatcherForSink(bl)
-
-		if !seqTracker.Accept(envelope.SourceHostname, envelope.Sequence) {
-			http.Error(w, fmt.Sprintf("sequence %d not greater than last seen for %q (replay defense)", envelope.Sequence, envelope.SourceHostname), http.StatusConflict)
-			return
-		}
-
-		// Sink-side cookie policy filter (defense in depth).
-		cookies := envelope.Cookies
-		var droppedHosts map[string]int
-		cookies, droppedHosts = blockMatcher.Filter(cookies)
-
-		dropped := 0
-		for _, n := range droppedHosts {
-			dropped += n
-		}
-
-		if sinkDryRun {
-			// Dump the accepted batch to stderr as JSON for inspection. Do NOT
-			// touch Chrome state.
-			dump, _ := json.MarshalIndent(map[string]any{
-				"source_hostname": envelope.SourceHostname,
-				"sequence":        envelope.Sequence,
-				"accepted":        len(cookies),
-				"dropped":         dropped,
-				"cookies":         cookies,
-			}, "", "  ")
-			fmt.Fprintf(os.Stderr, "agentcookie sink (dry-run): accepted batch:\n%s\n", string(dump))
-			stateMu.Lock()
-			sinkState.LastWrite = time.Now().UTC()
-			sinkState.LastWriteCount = len(cookies)
-			sinkState.LastWriteMode = "dry-run"
-			sinkState.TotalWrites++
-			sinkState.TotalDropped += dropped
-			_ = stateWriter.Save(sinkState)
-			stateMu.Unlock()
-			_, _ = fmt.Fprintf(w, "dry-run ok: accepted %d cookies; dropped %d %s cookies\n", len(cookies), dropped, blockMatcher.DropLabel())
-			return
-		}
-
-		var (
-			result    writeResult
-			writeMode string
-			writeErr  error
-		)
-		if cfg.SkipChromeSQLite {
-			// v0.12.0-beta.3: headless-sink path. Sidecar only; no Chrome
-			// SQLite/leveldb/indexeddb writes. Friend's Chrome app on
-			// the sink does not see synced cookies through this path
-			// (PP CLIs read them via sidecar / adapter session files).
-			result, writeErr = applySidecarOnlyToSink(cookies)
-			writeMode = "sidecar+adapter"
-		} else {
-			result, writeErr = applyEnvelopeToSink(r.Context(), cfg, &envelope, cookies, key)
-			writeMode = "sqlite+leveldb"
-		}
-		if writeErr != nil {
-			fmt.Fprintf(os.Stderr, "agentcookie sink: write failed (cookies=%d ls=%d idb=%d mode=%s): %v\n", result.Cookies, result.LocalStorage, result.IndexedDB, writeMode, writeErr)
-			recordSinkReject(sinkState, stateWriter, stateMu, writeErr)
-			http.Error(w, fmt.Sprintf("apply envelope: %v", writeErr), http.StatusInternalServerError)
-			return
-		}
-		fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies (+ %d sidecar) + %d localStorage origins + %d indexedDB origins (mode=%s, dropped %d %s cookies)\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, writeMode, dropped, blockMatcher.DropLabel())
-
-		// v0.12.0-beta.3: when CDP injection is enabled, spawn a
-		// one-shot headless Chrome and push the cookies via
-		// Storage.setCookies. Chrome encrypts its own SQLite with its
-		// own Safe Storage key; agentcookie never reads Chrome's
-		// Keychain item on this path. Failures are logged but do not
-		// fail the /sync response -- the sidecar write already
-		// succeeded above, so PP CLIs are still served.
-		var cdpWriteMode string
-		if cfg.CDP.Enabled && len(cookies) > 0 {
-			profileDir := cfg.CDP.ProfileDir
-			if profileDir == "" {
-				profileDir = "~/.agentcookie/chrome-profile"
-			}
-			if cdpErr := cdpInject(r.Context(), profileDir, cookies); cdpErr != nil {
-				fmt.Fprintf(os.Stderr, "agentcookie sink: CDP injection failed (sidecar write succeeded, PP CLIs unaffected): %v\n", cdpErr)
-			} else {
-				fmt.Fprintf(os.Stderr, "agentcookie sink: CDP injection pushed %d cookies into %s\n", len(cookies), profileDir)
-				cdpWriteMode = "+cdp"
-			}
-		}
-
-		// Linux sink: when live_cdp is enabled, attach to an already-running
-		// Chrome at the configured endpoint (default 127.0.0.1:9223) and
-		// inject cookies. This is the Linux sink's primary injection path:
-		// no Keychain, no Chrome SQLite rewrite, just live CDP injection
-		// into a Chrome that the agent runtime (e.g., Grok Bot) already
-		// started with --remote-debugging-port.
-		var liveCDPContexts int
-		var liveCDPErr error
-		var liveCDPEndpoint string
-		if cfg.LiveCDP.Enabled && len(cookies) > 0 {
-			liveCDPEndpoint = cfg.LiveCDP.Endpoint
-			if liveCDPEndpoint == "" {
-				liveCDPEndpoint = livecdp.DefaultCDPEndpoint
-			}
-			liveCDPContexts, liveCDPErr = livecdp.AttachAndInject(r.Context(), liveCDPEndpoint, cookies)
-			if liveCDPErr != nil {
-				fmt.Fprintf(os.Stderr, "agentcookie sink: live CDP injection failed (sidecar write succeeded): %v\n", liveCDPErr)
-			} else {
-				fmt.Fprintf(os.Stderr, "agentcookie sink: live CDP injection pushed %d cookies into %d context(s) at %s\n", len(cookies), liveCDPContexts, liveCDPEndpoint)
-			}
-		}
-
-		// v0.11: after the cookie write commits, push the decrypted set
-		// into each registered PP CLI's local session cache. This is the
-		// step that lets kooky-using AND pycookiecheat-using PP CLIs run
-		// headlessly on this sink with zero per-binary Keychain prompts.
-		// Adapter failures are reported but do not block the sync. See
-		// plan 2026-05-17-007.
-		//
-		// v0.15: union envelope cookies with extra Chrome profiles discovered
-		// on this sink machine before running adapters. This ensures adapters
-		// see the same cookie set that `cookies --domain` outputs, including
-		// extra-profile cookies (Darwin only; Linux uses sidecar/plaintext).
-		//
-		// P1 fix: union first, then check length. This ensures extra-profile
-		// cookies are processed even when the envelope is empty/fully filtered.
-		// The union function also filters extra-profile cookies through the
-		// blocklist so opted-out domains never reach adapters.
-		var adapterResults []sinkpush.Result
-		profileDir := ""
-		if cfg.CDP.ProfileDir != "" {
-			profileDir = cfg.CDP.ProfileDir
-		}
-		unionedCookies := unionCookiesWithExtraProfiles(cookies, profileDir, blockMatcher)
-		if len(unionedCookies) > 0 {
-			adapterResults = sinkpush.RunAll(unionedCookies)
-			logAdapterResults(adapterResults)
-		}
-
-		// v0.13: secrets-bus payload. When present, persist per-CLI
-		// secrets.env files at the standard path under
-		// ~/.agentcookie/secrets/. Sealing is enabled when the master
-		// key is present AND v0.12's sealing posture is on; the sealed
-		// twin appears alongside the plaintext. R12 regression guard:
-		// when envelope.Secrets is empty/nil this branch is a no-op.
-		if len(envelope.Secrets) > 0 {
-			home, _ := os.UserHomeDir()
-			sealingEnabled := keystore.MasterKeyExists()
-			secResult, secErrs := secretsbus.WritePayload(home, envelope.Secrets, sealingEnabled)
-			for _, e := range secErrs {
-				fmt.Fprintf(os.Stderr, "agentcookie sink: secrets-bus: %v\n", e)
-			}
-			fmt.Fprintf(os.Stderr, "agentcookie sink: secrets-bus wrote %d cli(s), %d key(s), %d sealed, %d file(s) materialized\n",
-				secResult.CLIsWritten, secResult.KeysWritten, secResult.SealedWritten, secResult.FilesMaterialized)
-		}
-
-		// Update sink state under mutex to avoid races from concurrent /sync handlers.
-		stateMu.Lock()
-		sinkState.LastWrite = time.Now().UTC()
-		if cfg.SkipChromeSQLite {
-			sinkState.LastWriteCount = result.SidecarCookies
-		} else {
-			sinkState.LastWriteCount = result.Cookies
-		}
-		sinkState.LastWriteMode = writeMode + cdpWriteMode
-		sinkState.TotalWrites++
-		sinkState.TotalDropped += dropped
-		if cfg.LiveCDP.Enabled && len(cookies) > 0 {
-			sinkState.LastWriteMode = writeMode + "+livecdp"
-			if sinkState.LiveCDP == nil {
-				sinkState.LiveCDP = &state.LiveCDPState{
-					Enabled:  true,
-					Endpoint: liveCDPEndpoint,
-				}
-			}
-			sinkState.LiveCDP.LastInjectAt = time.Now().UTC()
-			sinkState.LiveCDP.LastCookies = len(cookies)
-			sinkState.LiveCDP.LastContexts = liveCDPContexts
-			if liveCDPErr != nil {
-				sinkState.LiveCDP.LastError = liveCDPErr.Error()
-				sinkState.LiveCDP.TotalFailures++
-			} else {
-				sinkState.LiveCDP.LastError = ""
-				sinkState.LiveCDP.TotalInjects++
-			}
-		}
-		if len(adapterResults) > 0 {
-			sinkState.LastAdapterResults = toStateAdapterResults(adapterResults)
-		}
-		_ = stateWriter.Save(sinkState)
-		stateMu.Unlock()
-
-		// Build the ok-line. When live CDP ran, include inject result so
-		// operators don't mistake "wrote 0 cookies" for a failure (Linux
-		// skips SQLite and injects via live CDP; the sidecar+livecdp path
-		// is the real delivery).
-		okLine := fmt.Sprintf("ok: wrote %d cookies (%d sidecar), %d localStorage origins, %d indexedDB origins; dropped %d %s cookies",
-			result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, dropped, blockMatcher.DropLabel())
-		if cfg.LiveCDP.Enabled {
-			endpoint := liveCDPEndpoint
-			if endpoint == "" {
-				endpoint = cfg.LiveCDP.Endpoint
-				if endpoint == "" {
-					endpoint = livecdp.DefaultCDPEndpoint
-				}
-			}
-			if liveCDPErr != nil {
-				okLine += fmt.Sprintf("; live_cdp: FAILED at %s: %v", endpoint, liveCDPErr)
-			} else if liveCDPContexts > 0 {
-				okLine += fmt.Sprintf("; live_cdp: injected %d cookies into %d context(s) at %s", len(cookies), liveCDPContexts, endpoint)
-			} else if len(cookies) == 0 {
-				okLine += fmt.Sprintf("; live_cdp: no cookies to inject (endpoint=%s)", endpoint)
-			}
-		}
-		_, _ = fmt.Fprintln(w, okLine)
+		_, _ = fmt.Fprintln(w, res.Reply)
 	})
 	return mux
+}
+
+// envelopeApplyResult is the HTTP-shaped outcome of decrypting and applying
+// one sealed envelope. /sync writes it to the response; pull mode uses the
+// same function and maps 409 Conflict to "already applied, skip".
+type envelopeApplyResult struct {
+	Status int
+	Reply  string
+}
+
+func applySealedEnvelope(
+	ctx context.Context,
+	cfg *config.SinkConfig,
+	transportSecret string,
+	key []byte,
+	seqTracker *protocol.SequenceTracker,
+	stateWriter *state.Writer,
+	sinkState *state.SinkState,
+	stateMu *sync.Mutex,
+	sealed []byte,
+) envelopeApplyResult {
+	plaintext, err := transport.OpenWithSecret(sealed, transportSecret)
+	if err != nil {
+		return envelopeApplyResult{Status: http.StatusUnauthorized, Reply: "open payload: " + err.Error()}
+	}
+	var envelope protocol.SyncEnvelope
+	if err := json.Unmarshal(plaintext, &envelope); err != nil {
+		return envelopeApplyResult{Status: http.StatusBadRequest, Reply: "unmarshal envelope: " + err.Error()}
+	}
+	if envelope.ProtocolVersion < protocol.MinVersion || envelope.ProtocolVersion > protocol.Version {
+		return envelopeApplyResult{Status: http.StatusBadRequest, Reply: fmt.Sprintf("protocol version mismatch: got %d, sink speaks %d-%d", envelope.ProtocolVersion, protocol.MinVersion, protocol.Version)}
+	}
+
+	bl, err := loadFreshBlocklist()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agentcookie sink: cookie policy load failed: %v\n", err)
+		recordSinkReject(sinkState, stateWriter, stateMu, err)
+		return envelopeApplyResult{Status: http.StatusInternalServerError, Reply: "load blocklist: " + err.Error()}
+	}
+	blockMatcher := protocol.NewBlocklistMatcherForSink(bl)
+
+	if !seqTracker.Accept(envelope.SourceHostname, envelope.Sequence) {
+		return envelopeApplyResult{Status: http.StatusConflict, Reply: fmt.Sprintf("sequence %d not greater than last seen for %q (replay defense)", envelope.Sequence, envelope.SourceHostname)}
+	}
+
+	// Sink-side cookie policy filter (defense in depth).
+	cookies := envelope.Cookies
+	var droppedHosts map[string]int
+	cookies, droppedHosts = blockMatcher.Filter(cookies)
+
+	dropped := 0
+	for _, n := range droppedHosts {
+		dropped += n
+	}
+
+	if sinkDryRun {
+		// Dump the accepted batch to stderr as JSON for inspection. Do NOT
+		// touch Chrome state.
+		dump, _ := json.MarshalIndent(map[string]any{
+			"source_hostname": envelope.SourceHostname,
+			"sequence":        envelope.Sequence,
+			"accepted":        len(cookies),
+			"dropped":         dropped,
+			"cookies":         cookies,
+		}, "", "  ")
+		fmt.Fprintf(os.Stderr, "agentcookie sink (dry-run): accepted batch:\n%s\n", string(dump))
+		stateMu.Lock()
+		sinkState.LastWrite = time.Now().UTC()
+		sinkState.LastWriteCount = len(cookies)
+		sinkState.LastWriteMode = "dry-run"
+		sinkState.TotalWrites++
+		sinkState.TotalDropped += dropped
+		_ = stateWriter.Save(sinkState)
+		stateMu.Unlock()
+		return envelopeApplyResult{Status: http.StatusOK, Reply: fmt.Sprintf("dry-run ok: accepted %d cookies; dropped %d %s cookies", len(cookies), dropped, blockMatcher.DropLabel())}
+	}
+
+	var (
+		result    writeResult
+		writeMode string
+		writeErr  error
+	)
+	if cfg.SkipChromeSQLite {
+		// v0.12.0-beta.3: headless-sink path. Sidecar only; no Chrome
+		// SQLite/leveldb/indexeddb writes. Friend's Chrome app on
+		// the sink does not see synced cookies through this path
+		// (PP CLIs read them via sidecar / adapter session files).
+		result, writeErr = applySidecarOnlyToSink(cookies)
+		writeMode = "sidecar+adapter"
+	} else {
+		result, writeErr = applyEnvelopeToSink(ctx, cfg, &envelope, cookies, key)
+		writeMode = "sqlite+leveldb"
+	}
+	if writeErr != nil {
+		fmt.Fprintf(os.Stderr, "agentcookie sink: write failed (cookies=%d ls=%d idb=%d mode=%s): %v\n", result.Cookies, result.LocalStorage, result.IndexedDB, writeMode, writeErr)
+		recordSinkReject(sinkState, stateWriter, stateMu, writeErr)
+		return envelopeApplyResult{Status: http.StatusInternalServerError, Reply: fmt.Sprintf("apply envelope: %v", writeErr)}
+	}
+	fmt.Fprintf(os.Stderr, "agentcookie sink: wrote %d cookies (+ %d sidecar) + %d localStorage origins + %d indexedDB origins (mode=%s, dropped %d %s cookies)\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, writeMode, dropped, blockMatcher.DropLabel())
+
+	// v0.12.0-beta.3: when CDP injection is enabled, spawn a
+	// one-shot headless Chrome and push the cookies via
+	// Storage.setCookies. Chrome encrypts its own SQLite with its
+	// own Safe Storage key; agentcookie never reads Chrome's
+	// Keychain item on this path. Failures are logged but do not
+	// fail the /sync response -- the sidecar write already
+	// succeeded above, so PP CLIs are still served.
+	var cdpWriteMode string
+	if cfg.CDP.Enabled && len(cookies) > 0 {
+		profileDir := cfg.CDP.ProfileDir
+		if profileDir == "" {
+			profileDir = "~/.agentcookie/chrome-profile"
+		}
+		if cdpErr := cdpInject(ctx, profileDir, cookies); cdpErr != nil {
+			fmt.Fprintf(os.Stderr, "agentcookie sink: CDP injection failed (sidecar write succeeded, PP CLIs unaffected): %v\n", cdpErr)
+		} else {
+			fmt.Fprintf(os.Stderr, "agentcookie sink: CDP injection pushed %d cookies into %s\n", len(cookies), profileDir)
+			cdpWriteMode = "+cdp"
+		}
+	}
+
+	// Linux sink: when live_cdp is enabled, attach to an already-running
+	// Chrome at the configured endpoint (default 127.0.0.1:9223) and
+	// inject cookies. This is the Linux sink's primary injection path:
+	// no Keychain, no Chrome SQLite rewrite, just live CDP injection
+	// into a Chrome that the agent runtime (e.g., Grok Bot) already
+	// started with --remote-debugging-port.
+	var liveCDPContexts int
+	var liveCDPErr error
+	var liveCDPEndpoint string
+	if cfg.LiveCDP.Enabled && len(cookies) > 0 {
+		liveCDPEndpoint = cfg.LiveCDP.Endpoint
+		if liveCDPEndpoint == "" {
+			liveCDPEndpoint = livecdp.DefaultCDPEndpoint
+		}
+		liveCDPContexts, liveCDPErr = livecdp.AttachAndInject(ctx, liveCDPEndpoint, cookies)
+		if liveCDPErr != nil {
+			fmt.Fprintf(os.Stderr, "agentcookie sink: live CDP injection failed (sidecar write succeeded): %v\n", liveCDPErr)
+		} else {
+			fmt.Fprintf(os.Stderr, "agentcookie sink: live CDP injection pushed %d cookies into %d context(s) at %s\n", len(cookies), liveCDPContexts, liveCDPEndpoint)
+		}
+	}
+
+	// v0.11: after the cookie write commits, push the decrypted set
+	// into each registered PP CLI's local session cache. This is the
+	// step that lets kooky-using AND pycookiecheat-using PP CLIs run
+	// headlessly on this sink with zero per-binary Keychain prompts.
+	// Adapter failures are reported but do not block the sync. See
+	// plan 2026-05-17-007.
+	//
+	// v0.15: union envelope cookies with extra Chrome profiles discovered
+	// on this sink machine before running adapters. This ensures adapters
+	// see the same cookie set that `cookies --domain` outputs, including
+	// extra-profile cookies (Darwin only; Linux uses sidecar/plaintext).
+	//
+	// P1 fix: union first, then check length. This ensures extra-profile
+	// cookies are processed even when the envelope is empty/fully filtered.
+	// The union function also filters extra-profile cookies through the
+	// blocklist so opted-out domains never reach adapters.
+	var adapterResults []sinkpush.Result
+	profileDir := ""
+	if cfg.CDP.ProfileDir != "" {
+		profileDir = cfg.CDP.ProfileDir
+	}
+	unionedCookies := unionCookiesWithExtraProfiles(cookies, profileDir, blockMatcher)
+	if len(unionedCookies) > 0 {
+		adapterResults = sinkpush.RunAll(unionedCookies)
+		logAdapterResults(adapterResults)
+	}
+
+	// v0.13: secrets-bus payload. When present, persist per-CLI
+	// secrets.env files at the standard path under
+	// ~/.agentcookie/secrets/. Sealing is enabled when the master
+	// key is present AND v0.12's sealing posture is on; the sealed
+	// twin appears alongside the plaintext. R12 regression guard:
+	// when envelope.Secrets is empty/nil this branch is a no-op.
+	if len(envelope.Secrets) > 0 {
+		home, _ := os.UserHomeDir()
+		sealingEnabled := keystore.MasterKeyExists()
+		secResult, secErrs := secretsbus.WritePayload(home, envelope.Secrets, sealingEnabled)
+		for _, e := range secErrs {
+			fmt.Fprintf(os.Stderr, "agentcookie sink: secrets-bus: %v\n", e)
+		}
+		fmt.Fprintf(os.Stderr, "agentcookie sink: secrets-bus wrote %d cli(s), %d key(s), %d sealed, %d file(s) materialized\n",
+			secResult.CLIsWritten, secResult.KeysWritten, secResult.SealedWritten, secResult.FilesMaterialized)
+	}
+
+	// Update sink state under mutex to avoid races from concurrent /sync handlers.
+	stateMu.Lock()
+	sinkState.LastWrite = time.Now().UTC()
+	if cfg.SkipChromeSQLite {
+		sinkState.LastWriteCount = result.SidecarCookies
+	} else {
+		sinkState.LastWriteCount = result.Cookies
+	}
+	sinkState.LastWriteMode = writeMode + cdpWriteMode
+	sinkState.TotalWrites++
+	sinkState.TotalDropped += dropped
+	if cfg.LiveCDP.Enabled && len(cookies) > 0 {
+		sinkState.LastWriteMode = writeMode + "+livecdp"
+		if sinkState.LiveCDP == nil {
+			sinkState.LiveCDP = &state.LiveCDPState{
+				Enabled:  true,
+				Endpoint: liveCDPEndpoint,
+			}
+		}
+		sinkState.LiveCDP.LastInjectAt = time.Now().UTC()
+		sinkState.LiveCDP.LastCookies = len(cookies)
+		sinkState.LiveCDP.LastContexts = liveCDPContexts
+		if liveCDPErr != nil {
+			sinkState.LiveCDP.LastError = liveCDPErr.Error()
+			sinkState.LiveCDP.TotalFailures++
+		} else {
+			sinkState.LiveCDP.LastError = ""
+			sinkState.LiveCDP.TotalInjects++
+		}
+	}
+	if len(adapterResults) > 0 {
+		sinkState.LastAdapterResults = toStateAdapterResults(adapterResults)
+	}
+	_ = stateWriter.Save(sinkState)
+	stateMu.Unlock()
+
+	// Build the ok-line. When live CDP ran, include inject result so
+	// operators don't mistake "wrote 0 cookies" for a failure (Linux
+	// skips SQLite and injects via live CDP; the sidecar+livecdp path
+	// is the real delivery).
+	okLine := fmt.Sprintf("ok: wrote %d cookies (%d sidecar), %d localStorage origins, %d indexedDB origins; dropped %d %s cookies",
+		result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, dropped, blockMatcher.DropLabel())
+	if cfg.LiveCDP.Enabled {
+		endpoint := liveCDPEndpoint
+		if endpoint == "" {
+			endpoint = cfg.LiveCDP.Endpoint
+			if endpoint == "" {
+				endpoint = livecdp.DefaultCDPEndpoint
+			}
+		}
+		if liveCDPErr != nil {
+			okLine += fmt.Sprintf("; live_cdp: FAILED at %s: %v", endpoint, liveCDPErr)
+		} else if liveCDPContexts > 0 {
+			okLine += fmt.Sprintf("; live_cdp: injected %d cookies into %d context(s) at %s", len(cookies), liveCDPContexts, endpoint)
+		} else if len(cookies) == 0 {
+			okLine += fmt.Sprintf("; live_cdp: no cookies to inject (endpoint=%s)", endpoint)
+		}
+	}
+	return envelopeApplyResult{Status: http.StatusOK, Reply: okLine}
 }
 
 func recordSinkReject(sinkState *state.SinkState, stateWriter *state.Writer, stateMu *sync.Mutex, err error) {
