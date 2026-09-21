@@ -276,20 +276,17 @@ func TestPullCacheStaleStoreDoesNotOverwriteNewerPayload(t *testing.T) {
 
 func TestPullCacheConcurrentStaleClearLosesToNewerStore(t *testing.T) {
 	cache := newPullCache()
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		cache.Clear()
 		old := cache.Begin()
 		newer := cache.Begin()
 		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			cache.ClearIfCurrent(old)
-		}()
-		go func() {
-			defer wg.Done()
+		})
+		wg.Go(func() {
 			cache.StoreIfCurrent(newer, []byte("fresh"))
-		}()
+		})
 		wg.Wait()
 		if got := string(cache.Load()); got != "fresh" {
 			t.Fatalf("iteration %d: stale Clear won over newer Store: %q", i, got)
@@ -317,13 +314,11 @@ func TestSourcePushCyclesAreSerialized(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 2 {
+		wg.Go(func() {
 			_, err := fx.push()
 			errCh <- err
-		}()
+		})
 	}
 	wg.Wait()
 	close(errCh)
