@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -246,6 +248,99 @@ unexpected: true
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("after policy load failure /pull status = %d, want 204; body=%q", rec.Code, rec.Body.String())
 	}
+}
+
+func TestPullCacheStaleClearDoesNotWipeNewerPayload(t *testing.T) {
+	cache := newPullCache()
+	old := cache.Begin()
+	newer := cache.Begin()
+	cache.StoreIfCurrent(newer, []byte("new-envelope"))
+	cache.ClearIfCurrent(old)
+	got := cache.Load()
+	if string(got) != "new-envelope" {
+		t.Fatalf("stale Clear wiped newer payload: %q", got)
+	}
+}
+
+func TestPullCacheStaleStoreDoesNotOverwriteNewerPayload(t *testing.T) {
+	cache := newPullCache()
+	old := cache.Begin()
+	newer := cache.Begin()
+	cache.StoreIfCurrent(newer, []byte("new-envelope"))
+	cache.StoreIfCurrent(old, []byte("old-envelope"))
+	got := cache.Load()
+	if string(got) != "new-envelope" {
+		t.Fatalf("stale Store overwrote newer payload: %q", got)
+	}
+}
+
+func TestPullCacheConcurrentStaleClearLosesToNewerStore(t *testing.T) {
+	cache := newPullCache()
+	for i := 0; i < 50; i++ {
+		cache.Clear()
+		old := cache.Begin()
+		newer := cache.Begin()
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			cache.ClearIfCurrent(old)
+		}()
+		go func() {
+			defer wg.Done()
+			cache.StoreIfCurrent(newer, []byte("fresh"))
+		}()
+		wg.Wait()
+		if got := string(cache.Load()); got != "fresh" {
+			t.Fatalf("iteration %d: stale Clear won over newer Store: %q", i, got)
+		}
+	}
+}
+
+func TestSourcePushCyclesAreSerialized(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "session", Value: "xyz", Path: "/"},
+	})
+	var inFlight atomic.Int32
+	var overlapped atomic.Bool
+	inner := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		n := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		if n > 1 {
+			overlapped.Store(true)
+		}
+		time.Sleep(40 * time.Millisecond)
+		return inner.RoundTrip(req)
+	})
+	t.Cleanup(func() { http.DefaultTransport = inner })
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := fx.push()
+			errCh <- err
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("push: %v", err)
+		}
+	}
+	if overlapped.Load() {
+		t.Fatal("source push cycles overlapped; cookie/secrets/discovery watchers must serialize complete cycles")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func TestStartWatchPullListenerFailsIfAddrInUse(t *testing.T) {

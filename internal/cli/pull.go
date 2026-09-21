@@ -22,12 +22,27 @@ const defaultPullListenPort = "9998"
 // pullCache holds the latest marshaled SyncEnvelope (plaintext JSON) so
 // GET /pull can seal it per-peer. Source --watch keeps building envelopes
 // exactly as before; this is the extra serving copy for client-only sinks.
+//
+// gen orders complete push cycles. Begin starts a cycle; StoreIfCurrent and
+// ClearIfCurrent apply only if no newer cycle has begun, so a slower empty
+// or fail-closed cycle cannot wipe a newer envelope.
 type pullCache struct {
 	mu      sync.RWMutex
 	payload []byte
+	gen     uint64
 }
 
 func newPullCache() *pullCache { return &pullCache{} }
+
+func (c *pullCache) Begin() uint64 {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.gen++
+	return c.gen
+}
 
 func (c *pullCache) Store(payload []byte) {
 	if c == nil {
@@ -35,6 +50,18 @@ func (c *pullCache) Store(payload []byte) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.payload = append([]byte(nil), payload...)
+}
+
+func (c *pullCache) StoreIfCurrent(gen uint64, payload []byte) {
+	if c == nil || gen == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if gen != c.gen {
+		return
+	}
 	c.payload = append([]byte(nil), payload...)
 }
 
@@ -59,6 +86,18 @@ func (c *pullCache) Clear() {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.payload = nil
+}
+
+func (c *pullCache) ClearIfCurrent(gen uint64) {
+	if c == nil || gen == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if gen != c.gen {
+		return
+	}
 	c.payload = nil
 }
 

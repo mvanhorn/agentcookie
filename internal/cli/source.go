@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -277,6 +278,14 @@ func runCDPSourceWatch(ctx context.Context, push func(context.Context) (int, err
 	}
 }
 
+// sourcePushMu serializes complete source push cycles. Cookie, secrets, and
+// discovery watchers each invoke push independently, and the cookie watcher
+// launches runOne in a goroutine (the startup push bypasses the rate cap),
+// so cycles can overlap. A slower empty or fail-closed cycle must not Clear
+// a newer envelope already published to GET /pull. Same reason cmux-sync
+// serializes whole cycles.
+var sourcePushMu sync.Mutex
+
 func pushWithFreshBlocklist(
 	ctx context.Context,
 	cfg *config.SourceConfig,
@@ -287,16 +296,24 @@ func pushWithFreshBlocklist(
 	srcState *state.SourceState,
 	stateWriter *state.Writer,
 ) (int, error) {
+	sourcePushMu.Lock()
+	defer sourcePushMu.Unlock()
+
+	var pullGen uint64
+	if !dryRun {
+		pullGen = pullPayloadCache.Begin()
+	}
+
 	blocklist, err := loadFreshBlocklist()
 	var dbsc dbscSummary
 	if err != nil {
 		// Fail closed at the sync boundary: do not keep serving a previously
 		// filtered envelope from GET /pull after policy cannot be loaded.
-		pullPayloadCache.Clear()
+		pullPayloadCache.ClearIfCurrent(pullGen)
 		recordSourcePushResult(srcState, stateWriter, nil, dbsc, err)
 		return 0, err
 	}
-	results, dbsc, err := pushOnce(ctx, cfg, blocklist, key, dryRun, verbose, skipDBSC)
+	results, dbsc, err := pushOnce(ctx, cfg, blocklist, key, dryRun, verbose, skipDBSC, pullGen)
 	recordSourcePushResult(srcState, stateWriter, results, dbsc, err)
 	if err != nil {
 		return 0, err
@@ -417,6 +434,7 @@ func pushOnce(
 	dryRun bool,
 	verbose bool,
 	skipDBSC bool,
+	pullGen uint64,
 ) ([]sinkResult, dbscSummary, error) {
 	var dbsc dbscSummary
 
@@ -429,14 +447,14 @@ func pushOnce(
 	if cfg.CDPSource.Enabled {
 		all, err = readCDPSource(ctx, cfg.CDPSource.Endpoint)
 		if err != nil {
-			pullPayloadCache.Clear()
+			pullPayloadCache.ClearIfCurrent(pullGen)
 			return nil, dbsc, fmt.Errorf("read cookies from cdp source: %w", err)
 		}
 		all, st = filterCookies(all, blocklist, skipDBSC, time.Now().UTC())
 	} else {
 		all, st, err = readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
 		if err != nil {
-			pullPayloadCache.Clear()
+			pullPayloadCache.ClearIfCurrent(pullGen)
 			return nil, dbsc, err
 		}
 	}
@@ -510,8 +528,9 @@ func pushOnce(
 		_ = emit(result, fmt.Sprintf("agentcookie source: %d cookies after cookie policy (%s), %d secrets clis (dry-run=%v)%s\n", len(all), blocklist.CookiePolicySummary(), secretsCLICount, dryRun, dbscNote(dbsc)))
 		// Nothing to deliver under the current policy. Drop any previously
 		// cached envelope so GET /pull cannot hand a newly polling sink
-		// cookies this cycle excluded.
-		pullPayloadCache.Clear()
+		// cookies this cycle excluded. ClearIfCurrent no-ops if a newer
+		// cycle already published (or began) its own payload.
+		pullPayloadCache.ClearIfCurrent(pullGen)
 		// A non-nil empty result records that this was a successful source
 		// cycle with no delivery attempt. nil remains reserved for dry-runs,
 		// which must not make source health look current.
@@ -536,7 +555,7 @@ func pushOnce(
 		// an on-disk profile as a fallback.
 		sourceBrowser, err := chrome.LookupBrowser(cfg.Browser.Name)
 		if err != nil {
-			pullPayloadCache.Clear()
+			pullPayloadCache.ClearIfCurrent(pullGen)
 			return nil, dbsc, err
 		}
 		if lt, _, err := chromedirsync.Pack(sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile), 0); err == nil {
@@ -573,10 +592,10 @@ func pushOnce(
 	}
 	payload, err := json.Marshal(envelope)
 	if err != nil {
-		pullPayloadCache.Clear()
+		pullPayloadCache.ClearIfCurrent(pullGen)
 		return nil, dbsc, fmt.Errorf("marshal envelope: %w", err)
 	}
-	pullPayloadCache.Store(payload)
+	pullPayloadCache.StoreIfCurrent(pullGen, payload)
 	// Fan out: read and filtering above happened once; only sealing and
 	// transport repeat per sink. Each sink is sealed with its own key and
 	// POSTed independently. A per-sink failure (missing key, seal error,
