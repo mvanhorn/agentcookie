@@ -16,16 +16,18 @@ Download from the assets below and verify against `checksums.txt`:
 
 | Platform | Archive |
 |----------|---------|
-| macOS arm64 | `agentcookie_1.0.0_darwin_arm64.tar.gz` |
+| macOS (Apple Silicon and Intel) | `agentcookie_1.0.0_darwin_universal.tar.gz` |
 | Linux amd64 | `agentcookie_1.0.0_linux_amd64.tar.gz` |
 | Linux arm64 | `agentcookie_1.0.0_linux_arm64.tar.gz` |
 
+The macOS archive is a Universal 2 binary (arm64 + x86_64). One download runs natively on Apple Silicon and Intel.
+
 ```bash
 # On Mac
-curl -LO https://github.com/mvanhorn/agentcookie/releases/download/v1.0.0/agentcookie_1.0.0_darwin_arm64.tar.gz
+curl -LO https://github.com/mvanhorn/agentcookie/releases/download/v1.0.0/agentcookie_1.0.0_darwin_universal.tar.gz
 curl -LO https://github.com/mvanhorn/agentcookie/releases/download/v1.0.0/checksums.txt
 shasum -a 256 -c checksums.txt --ignore-missing
-tar -xzf agentcookie_1.0.0_darwin_arm64.tar.gz
+tar -xzf agentcookie_1.0.0_darwin_universal.tar.gz
 sudo mv agentcookie /usr/local/bin/
 
 # On Linux

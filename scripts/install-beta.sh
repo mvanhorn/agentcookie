@@ -27,7 +27,7 @@
 #                              Default: /usr/local/bin if writable,
 #                              else $HOME/bin.
 #   --tarball <path>           Use a local tarball instead of fetching
-#                              the latest release.
+#                              the newest macOS release asset.
 #
 # Design notes:
 #   - Bash, not Go. Friends will read 80 lines of Bash; they will not
@@ -71,6 +71,172 @@ prompt() {
   read -rp "    $question: " val
   printf -v "$var" '%s' "$val"
 }
+
+# ---- release asset selection ----
+# Sourced by scripts/release_asset_test.sh. Kept inside this file because
+# the release tarball ships install-beta.sh on its own.
+
+# macos_host_arch [UNAME_M]
+# Map `uname -m` onto the asset tokens we publish. x86_64 and amd64 are
+# the same Intel slice (Go's amd64, lipo's x86_64).
+macos_host_arch() {
+  local machine="${1:-$(uname -m)}"
+  case "$machine" in
+    arm64|aarch64) printf 'arm64\n' ;;
+    x86_64|amd64) printf 'amd64\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+# macos_release_jq HOST
+# jq program for one page of GET /repos/{owner}/{repo}/releases.
+# HOST is arm64 or amd64. Emits TSV rows, newest published_at first:
+#   prerelease<TAB>tag<TAB>asset
+# asset is empty when that release has no usable macOS tarball.
+# A usable asset is a darwin universal archive, otherwise a tarball for
+# HOST. gh's --pattern glob does not support character classes, so the
+# caller downloads the exact asset name this filter returns.
+macos_release_jq() {
+  local host="$1"
+  case "$host" in
+    arm64|amd64) ;;
+    *) return 1 ;;
+  esac
+  sed "s/__HOST__/${host}/g" <<'JQ'
+def is_tarball:
+  ((.name // "") | test("\\.tar\\.gz$"));
+def is_universal:
+  ((.name // "") | test("darwin.*universal"));
+def is_host_arch:
+  if "__HOST__" == "arm64" then
+    ((.name // "") | test("darwin[-_]arm64"))
+  else
+    (((.name // "") | test("darwin[-_]amd64")) or ((.name // "") | test("darwin[-_]x86_64")))
+  end;
+def chosen_asset:
+  . as $assets
+  | ($assets | map(select(is_tarball and is_universal))) as $uni
+  | ($assets | map(select(is_tarball and is_host_arch and (is_universal | not)))) as $arch
+  | if ($uni | length) > 0 then $uni[0].name
+    elif ($arch | length) > 0 then $arch[0].name
+    else ""
+    end;
+map(select(.draft | not))
+| sort_by(.published_at // "")
+| reverse
+| .[]
+| [
+    (if .prerelease then "true" else "false" end),
+    .tag_name,
+    ((.assets // []) | chosen_asset)
+  ]
+| @tsv
+JQ
+}
+
+# select_macos_release_from_rows TSV
+# TSV is the concatenated output of macos_release_jq across release
+# pages, already newest-first. Prefer the newest stable release with a
+# usable asset; fall back to the newest prerelease only when no stable
+# release has one. Prints:
+#   tag<US>asset<US>used_prerelease<US>latest_stable
+# US is ASCII unit separator. tag and asset are empty when nothing
+# matched. latest_stable is the newest non-draft stable tag, even when
+# it has no macOS asset. A non-whitespace separator keeps those empty
+# fields; `read` with IFS=$'\t' would drop a leading tab.
+select_macos_release_from_rows() {
+  local rows="$1"
+  local latest_stable="" release_tag="" asset_name="" pre_tag="" pre_asset=""
+  local pre="" tag="" asset="" used_pre=0
+
+  while IFS=$'\t' read -r pre tag asset || [[ -n "${tag:-}" ]]; do
+    [[ -z "${tag:-}" ]] && continue
+    if [[ "$pre" == "false" && -z "$latest_stable" ]]; then
+      latest_stable="$tag"
+    fi
+    if [[ -n "${asset:-}" && "$pre" == "false" && -z "$release_tag" ]]; then
+      release_tag="$tag"
+      asset_name="$asset"
+    elif [[ -n "${asset:-}" && "$pre" == "true" && -z "$pre_tag" ]]; then
+      pre_tag="$tag"
+      pre_asset="$asset"
+    fi
+  done <<< "$rows"
+
+  if [[ -z "$release_tag" && -n "$pre_tag" ]]; then
+    release_tag="$pre_tag"
+    asset_name="$pre_asset"
+    used_pre=1
+  fi
+
+  printf '%s\037%s\037%s\037%s\n' "$release_tag" "$asset_name" "$used_pre" "$latest_stable"
+}
+
+# asset_usable_for_host NAME HOST
+# True when NAME is a darwin universal tarball, or a darwin tarball for
+# HOST. Globs cover underscore and hyphen spellings. Never treats
+# linux_*_arm64 as macOS.
+asset_usable_for_host() {
+  local name="$1" host="$2"
+  local lower
+  lower="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+  [[ "$lower" == *.tar.gz ]] || return 1
+  [[ "$lower" == *darwin* ]] || return 1
+  if [[ "$lower" == *darwin*universal* ]]; then
+    return 0
+  fi
+  case "$host" in
+    arm64)
+      [[ "$lower" == *darwin_arm64* || "$lower" == *darwin-arm64* ]]
+      ;;
+    amd64)
+      [[ "$lower" == *darwin_amd64* || "$lower" == *darwin-amd64* || "$lower" == *darwin_x86_64* || "$lower" == *darwin-x86_64* ]]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# pick_downloaded_tarball DIR EXPECTED_NAME
+# Print the path whose basename is EXPECTED_NAME. An empty glob is not
+# an error under `set -euo pipefail` (nullglob). Does not use `ls | head`,
+# which would pick darwin_amd64 ahead of darwin_arm64 by sort order.
+pick_downloaded_tarball() {
+  local dir="$1" expected="$2"
+  local f base found="" nullglob_was=0
+  local -a matches=()
+  shopt -q nullglob && nullglob_was=1
+  shopt -s nullglob
+  matches=("$dir"/*.tar.gz)
+  if [[ $nullglob_was -eq 0 ]]; then
+    shopt -u nullglob
+  fi
+  if [[ ${#matches[@]} -eq 0 ]]; then
+    echo "install-beta.sh: release tarball not found after download (looked in $dir)" >&2
+    return 1
+  fi
+  for f in "${matches[@]}"; do
+    base="$(basename "$f")"
+    if [[ "$base" == "$expected" ]]; then
+      found="$f"
+      break
+    fi
+  done
+  if [[ -z "$found" ]]; then
+    echo "install-beta.sh: download did not include $expected (found: ${matches[*]})" >&2
+    return 1
+  fi
+  printf '%s\n' "$found"
+}
+
+if [[ "${AGENTCOOKIE_INSTALL_BETA_LIB_ONLY:-}" == "1" ]]; then
+  if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+  fi
+  echo "install-beta.sh: AGENTCOOKIE_INSTALL_BETA_LIB_ONLY is set; selection helpers only, not installing" >&2
+  exit 0
+fi
 
 # ---- argument parsing ----
 
@@ -146,12 +312,49 @@ if [[ -z "$TARBALL" ]]; then
   if ! gh auth status >/dev/null 2>&1; then
     die "gh is not authenticated. Run 'gh auth login' first."
   fi
-  step "downloading latest release from $REPO"
+  # The newest GitHub release is not guaranteed to have a macOS build
+  # (v1.1.0 shipped linux-only). Asset names also changed at v1.0.0:
+  #   <= v0.17.1   agentcookie-v0.17.1-darwin-arm64.tar.gz   (hyphens)
+  #   >= v1.0.0    agentcookie_1.0.0_darwin_arm64.tar.gz     (underscores)
+  #   universal    agentcookie_<version>_darwin_universal.tar.gz
+  #                (darwin-universal is accepted too)
+  # Walk non-draft releases newest-first. Prefer a universal archive,
+  # otherwise the host architecture. Prefer a stable release over a
+  # prerelease. Do not swallow gh failures: an API or download error
+  # must not look like "no macOS release".
+  if ! HOST_ARCH="$(macos_host_arch)"; then
+    die "unsupported architecture $(uname -m). This installer needs arm64 or x86_64 to choose a macOS release asset."
+  fi
+  step "finding newest release with a macOS build for $HOST_ARCH"
+  if ! RELEASE_ROWS="$(gh api "repos/$REPO/releases?per_page=100" --paginate --jq "$(macos_release_jq "$HOST_ARCH")")"; then
+    die "GitHub API request failed while listing releases for $REPO. This is an API, auth, or network error, not a release that lacks a macOS build. Check 'gh auth status' and try again, or re-run with --tarball <path>."
+  fi
+  SELECT_OUT="$(select_macos_release_from_rows "$RELEASE_ROWS")"
+  IFS=$'\037' read -r RELEASE_TAG ASSET_NAME USED_PRERELEASE LATEST_STABLE <<< "$SELECT_OUT"
+  if [[ -z "$RELEASE_TAG" || -z "$ASSET_NAME" ]]; then
+    die "no release in $REPO publishes a macOS asset this machine can run (darwin universal, or darwin ${HOST_ARCH}). Download a tarball manually and re-run with --tarball <path>."
+  fi
+  if ! asset_usable_for_host "$ASSET_NAME" "$HOST_ARCH"; then
+    die "refusing to download $ASSET_NAME: it is not a universal macOS build or a ${HOST_ARCH} macOS build."
+  fi
+  if [[ -n "$LATEST_STABLE" && "$LATEST_STABLE" != "$RELEASE_TAG" ]]; then
+    warn "latest release $LATEST_STABLE has no usable macOS build for this machine; using $RELEASE_TAG instead"
+  fi
+  if [[ "$USED_PRERELEASE" == "1" ]]; then
+    warn "$RELEASE_TAG is a pre-release (no stable release has a usable macOS build for this machine)"
+  fi
+  ok "selected $RELEASE_TAG ($ASSET_NAME)"
+
+  step "downloading $RELEASE_TAG from $REPO"
   TMP_DL="$(mktemp -d -t agentcookie-beta.XXXXXX)"
-  gh release download --repo "$REPO" --pattern '*darwin_arm64.tar.gz' --dir "$TMP_DL" --clobber
-  TARBALL="$(ls -1 "$TMP_DL"/*.tar.gz | head -n1)"
-  if [[ -z "$TARBALL" || ! -f "$TARBALL" ]]; then
-    die "release tarball not found after download (looked in $TMP_DL)"
+  # Exact asset name, not '*darwin*'. A bare darwin glob plus `ls | head`
+  # picks darwin_amd64 ahead of darwin_arm64. gh --pattern has no
+  # character classes, so the name chosen above is the pattern.
+  if ! gh release download "$RELEASE_TAG" --repo "$REPO" --pattern "$ASSET_NAME" --dir "$TMP_DL" --clobber; then
+    die "failed to download $ASSET_NAME from release $RELEASE_TAG. The release listing already found this asset, so this is a GitHub download error (auth, network, or rate limit), not a missing macOS build."
+  fi
+  if ! TARBALL="$(pick_downloaded_tarball "$TMP_DL" "$ASSET_NAME")"; then
+    die "release tarball not found after download (looked in $TMP_DL for $ASSET_NAME). Re-run with --tarball <path> if you already have the archive."
   fi
   ok "downloaded $(basename "$TARBALL")"
 fi
@@ -161,8 +364,9 @@ fi
 WORK="$(mktemp -d -t agentcookie-install.XXXXXX)"
 tar -xzf "$TARBALL" -C "$WORK"
 # The release tarball wraps everything in a versioned directory
-# (agentcookie-${VERSION}-darwin-arm64/), so the binary is one level
-# deep. find tolerates both shapes (wrapped + flat).
+# (agentcookie_<version>_darwin_universal/, or darwin_arm64 /
+# darwin_amd64, plus older hyphenated names), so the binary is one
+# level deep. find tolerates both shapes (wrapped + flat).
 NEW_BIN="$(find "$WORK" -name agentcookie -type f -perm -u+x 2>/dev/null | head -n1)"
 if [[ -z "$NEW_BIN" || ! -x "$NEW_BIN" ]]; then
   die "agentcookie binary not found inside tarball ($TARBALL)"

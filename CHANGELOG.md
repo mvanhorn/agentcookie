@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Universal 2 macOS releases
+
+- `make release` builds one Universal 2 binary (arm64 + x86_64). The darwin archive is `agentcookie_<version>_darwin_universal.tar.gz`, so Intel Macs get the same signed, notarized binary as Apple Silicon.
+- `scripts/install-beta.sh` walks releases newest-first and installs the newest stable asset this Mac can run (a universal build, otherwise the host architecture, including older hyphenated names). A linux-only latest release no longer aborts the macOS install. A GitHub API or download failure is reported as that failure, rather than as a missing macOS asset.
+- The release workflow refuses to upload or publish a tag that has no universal darwin tarball.
+
 ### Pull / poll mode for client-only sinks
 
 Sinks that can dial out over Tailscale but cannot accept inbound HTTP (Muse-like client-only shims) can poll the source instead of binding `/sync`.

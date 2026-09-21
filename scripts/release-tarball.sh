@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
 #
-# release-tarball.sh - Build the release tarball for darwin-arm64.
+# release-tarball.sh - Build the release tarball for the darwin binary.
 # Bundles the notarized agentcookie binary with the install-beta.sh script
 # and the quickstart guide.
 #
 # Usage:
 #   scripts/release-tarball.sh <version>
 #
-# Where <version> matches the release tag (e.g. v1.0.0). The script produces:
+# Where <version> matches the release tag (e.g. v1.0.0). The archive name
+# comes from `lipo -archs` on bin/agentcookie, using the v1.0 underscore
+# scheme (install-beta.sh also accepts the older hyphenated spelling):
 #
+#   dist/agentcookie_<version-without-v>_darwin_universal.tar.gz
 #   dist/agentcookie_<version-without-v>_darwin_arm64.tar.gz
+#   dist/agentcookie_<version-without-v>_darwin_amd64.tar.gz
 #
-# Example: v1.0.0 -> dist/agentcookie_1.0.0_darwin_arm64.tar.gz
+# A `make release` / `make build-universal` binary carries both arm64 and
+# x86_64 and ships as darwin_universal. A single-arch `make build` dev
+# binary ships as darwin_arm64 or darwin_amd64.
+#
+# Example: v1.0.0 + universal -> dist/agentcookie_1.0.0_darwin_universal.tar.gz
 #
 # Prereqs:
 #   1. bin/agentcookie exists, signed and notarized (run `make release`
@@ -24,6 +32,43 @@
 # same sequence.
 
 set -euo pipefail
+
+# tarball_arch_from_lipo_archs ARCHS
+# Map `lipo -archs` output to the archive token. Prints one of
+# darwin_universal, darwin_arm64, darwin_amd64. Returns 1 when the
+# binary's architectures are missing or unrecognized so the caller does
+# not guess a name (a guessed name is how the universal upload glob
+# silently matches nothing).
+tarball_arch_from_lipo_archs() {
+  local archs="$1"
+  local has_arm64=0 has_x86_64=0 a
+  # lipo prints space-separated arch names; splitting them is the point.
+  # shellcheck disable=SC2086
+  for a in $archs; do
+    case "$a" in
+      arm64) has_arm64=1 ;;
+      x86_64) has_x86_64=1 ;;
+    esac
+  done
+  if [[ $has_arm64 -eq 1 && $has_x86_64 -eq 1 ]]; then
+    printf 'darwin_universal\n'
+  elif [[ $has_x86_64 -eq 1 ]]; then
+    printf 'darwin_amd64\n'
+  elif [[ $has_arm64 -eq 1 ]]; then
+    printf 'darwin_arm64\n'
+  else
+    echo "release-tarball.sh: unrecognized architectures from lipo: ${archs:-<empty>}" >&2
+    return 1
+  fi
+}
+
+if [[ "${AGENTCOOKIE_RELEASE_TARBALL_LIB_ONLY:-}" == "1" ]]; then
+  if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+  fi
+  echo "release-tarball.sh: AGENTCOOKIE_RELEASE_TARBALL_LIB_ONLY is set; not building a tarball" >&2
+  exit 0
+fi
 
 if [[ $# -lt 1 ]]; then
   echo "usage: scripts/release-tarball.sh <version>" >&2
@@ -57,14 +102,19 @@ if ! codesign -d -r- "$BIN" >/dev/null 2>&1; then
   exit 2
 fi
 
-ARCH="$(uname -m)"
-if [[ "$ARCH" == "arm64" ]]; then
-  TARBALL_ARCH="darwin_arm64"
-else
-  TARBALL_ARCH="darwin_$ARCH"
+# Name the archive for the binary's actual slices. Do not fall back to
+# `uname -m`: a wrong or empty lipo result must fail the release instead
+# of publishing a single-arch file the universal upload glob will skip.
+if ! BIN_ARCHS="$(lipo -archs "$BIN")"; then
+  echo "release-tarball.sh: lipo -archs failed on $BIN; refusing to guess an archive name" >&2
+  exit 2
+fi
+if ! TARBALL_ARCH="$(tarball_arch_from_lipo_archs "$BIN_ARCHS")"; then
+  exit 2
 fi
 
-# Use underscore naming: agentcookie_1.0.0_darwin_arm64
+# Underscore naming, same scheme as the linux archives:
+# agentcookie_1.0.0_darwin_universal
 OUT_NAME="agentcookie_${VERSION_NUM}_${TARBALL_ARCH}"
 DIST_DIR="dist"
 mkdir -p "$DIST_DIR"
