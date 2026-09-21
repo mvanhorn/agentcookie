@@ -290,6 +290,9 @@ func pushWithFreshBlocklist(
 	blocklist, err := loadFreshBlocklist()
 	var dbsc dbscSummary
 	if err != nil {
+		// Fail closed at the sync boundary: do not keep serving a previously
+		// filtered envelope from GET /pull after policy cannot be loaded.
+		pullPayloadCache.Clear()
 		recordSourcePushResult(srcState, stateWriter, nil, dbsc, err)
 		return 0, err
 	}
@@ -426,12 +429,14 @@ func pushOnce(
 	if cfg.CDPSource.Enabled {
 		all, err = readCDPSource(ctx, cfg.CDPSource.Endpoint)
 		if err != nil {
+			pullPayloadCache.Clear()
 			return nil, dbsc, fmt.Errorf("read cookies from cdp source: %w", err)
 		}
 		all, st = filterCookies(all, blocklist, skipDBSC, time.Now().UTC())
 	} else {
 		all, st, err = readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
 		if err != nil {
+			pullPayloadCache.Clear()
 			return nil, dbsc, err
 		}
 	}
@@ -503,6 +508,10 @@ func pushOnce(
 	}
 	if len(all) == 0 && secretsCLICount == 0 {
 		_ = emit(result, fmt.Sprintf("agentcookie source: %d cookies after cookie policy (%s), %d secrets clis (dry-run=%v)%s\n", len(all), blocklist.CookiePolicySummary(), secretsCLICount, dryRun, dbscNote(dbsc)))
+		// Nothing to deliver under the current policy. Drop any previously
+		// cached envelope so GET /pull cannot hand a newly polling sink
+		// cookies this cycle excluded.
+		pullPayloadCache.Clear()
 		// A non-nil empty result records that this was a successful source
 		// cycle with no delivery attempt. nil remains reserved for dry-runs,
 		// which must not make source health look current.
@@ -527,6 +536,7 @@ func pushOnce(
 		// an on-disk profile as a fallback.
 		sourceBrowser, err := chrome.LookupBrowser(cfg.Browser.Name)
 		if err != nil {
+			pullPayloadCache.Clear()
 			return nil, dbsc, err
 		}
 		if lt, _, err := chromedirsync.Pack(sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile), 0); err == nil {
@@ -563,6 +573,7 @@ func pushOnce(
 	}
 	payload, err := json.Marshal(envelope)
 	if err != nil {
+		pullPayloadCache.Clear()
 		return nil, dbsc, fmt.Errorf("marshal envelope: %w", err)
 	}
 	pullPayloadCache.Store(payload)

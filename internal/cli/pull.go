@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -47,6 +48,18 @@ func (c *pullCache) Load() []byte {
 		return nil
 	}
 	return append([]byte(nil), c.payload...)
+}
+
+// Clear drops the cached envelope so GET /pull cannot serve cookies from a
+// previous cycle after a fail-closed policy load or a cycle with nothing
+// deliverable. 204 No Content is the empty/no-deliverable state.
+func (c *pullCache) Clear() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.payload = nil
 }
 
 // pullPayloadCache is the process-wide latest envelope for GET /pull.
@@ -131,6 +144,8 @@ func resolveSourcePullListen(ctx context.Context, explicit string) (string, erro
 // startWatchPullListener serves GET /pull for the life of source --watch.
 // Auto-detect failure (no Tailscale) logs a warning and leaves push intact;
 // an explicit --pull-listen is required to bind and fails the command on error.
+// The TCP bind happens synchronously so a colliding pairing port fails
+// `source --watch` instead of looking successful while /pull is down.
 func startWatchPullListener(ctx context.Context, cfg *config.SourceConfig) error {
 	addr, err := resolveSourcePullListen(ctx, sourcePullListen)
 	if err != nil {
@@ -144,6 +159,10 @@ func startWatchPullListener(ctx context.Context, cfg *config.SourceConfig) error
 	if cfg != nil {
 		legacy = cfg.Security.SharedSecret
 	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("pull listen %s: %w", addr, err)
+	}
 	srv := newPullServer(addr, common.ConfigDir, legacy, pullPayloadCache)
 	go func() {
 		<-ctx.Done()
@@ -152,8 +171,8 @@ func startWatchPullListener(ctx context.Context, cfg *config.SourceConfig) error
 		_ = srv.Shutdown(shutCtx)
 	}()
 	go func() {
-		fmt.Fprintf(os.Stderr, "agentcookie source --watch: serving GET /pull on http://%s/pull\n", addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		fmt.Fprintf(os.Stderr, "agentcookie source --watch: serving GET /pull on http://%s/pull\n", ln.Addr().String())
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintf(os.Stderr, "agentcookie source --watch: pull listener: %v\n", err)
 		}
 	}()

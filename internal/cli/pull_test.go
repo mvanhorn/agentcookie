@@ -1,13 +1,18 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
+	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"github.com/mvanhorn/agentcookie/internal/transport"
@@ -166,4 +171,118 @@ func TestSourcePushPublishesPullCache(t *testing.T) {
 	if len(env.Cookies) == 0 {
 		t.Error("cached envelope missing cookies")
 	}
+}
+
+func TestPullCacheClearedWhenPolicyFiltersEverything(t *testing.T) {
+	pullPayloadCache.Clear()
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "session", Value: "xyz", Path: "/"},
+	})
+	writeCLIFile(t, filepath.Join(fx.configDir, "blocklist.yaml"), `
+version: 1
+policy: blocklist
+domains: []
+`)
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("seed push: %v", err)
+	}
+	rec := getPull(t, fx.secret)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("seed /pull status = %d, want 200; body=%q", rec.Code, rec.Body.String())
+	}
+	got, err := transport.OpenWithSecret(rec.Body.Bytes(), fx.secret)
+	if err != nil {
+		t.Fatalf("open seed /pull: %v", err)
+	}
+	var env protocol.SyncEnvelope
+	if err := json.Unmarshal(got, &env); err != nil {
+		t.Fatalf("unmarshal seed envelope: %v", err)
+	}
+	if len(env.Cookies) == 0 {
+		t.Fatal("seed /pull should return cookies")
+	}
+
+	writeCLIFile(t, filepath.Join(fx.configDir, "blocklist.yaml"), `
+version: 1
+policy: allowlist
+domains:
+  - pattern: "never-this-host.invalid"
+`)
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("filter-all push: %v", err)
+	}
+	rec = getPull(t, fx.secret)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("after filter-all /pull status = %d, want 204; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPullCacheClearedWhenPolicyLoadFails(t *testing.T) {
+	pullPayloadCache.Clear()
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "session", Value: "xyz", Path: "/"},
+	})
+	writeCLIFile(t, filepath.Join(fx.configDir, "blocklist.yaml"), `
+version: 1
+policy: blocklist
+domains: []
+`)
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("seed push: %v", err)
+	}
+	if rec := getPull(t, fx.secret); rec.Code != http.StatusOK {
+		t.Fatalf("seed /pull status = %d, want 200", rec.Code)
+	}
+
+	writeCLIFile(t, filepath.Join(fx.configDir, "blocklist.yaml"), `
+version: 1
+domains: []
+unexpected: true
+`)
+	if _, err := fx.push(); err == nil {
+		t.Fatal("malformed blocklist should fail closed")
+	}
+	rec := getPull(t, fx.secret)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("after policy load failure /pull status = %d, want 204; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStartWatchPullListenerFailsIfAddrInUse(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("occupy listen addr: %v", err)
+	}
+	defer ln.Close()
+	addr := ln.Addr().String()
+
+	prev := sourcePullListen
+	sourcePullListen = addr
+	t.Cleanup(func() { sourcePullListen = prev })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	err = startWatchPullListener(ctx, &config.SourceConfig{})
+	if err == nil {
+		t.Fatal("expected bind error when pull listen address is occupied")
+	}
+	if !strings.Contains(err.Error(), "pull listen") {
+		t.Errorf("error should name the pull listener, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), addr) {
+		t.Errorf("error should include %s, got: %v", addr, err)
+	}
+}
+
+func getPull(t *testing.T, secret string) *httptest.ResponseRecorder {
+	t.Helper()
+	h := newPullHandler(pullPayloadCache, func() []string { return []string{secret} })
+	req := httptest.NewRequest(http.MethodGet, "/pull", nil)
+	if err := transport.SignRequest(req, secret, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
 }
