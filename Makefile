@@ -16,7 +16,7 @@
 #                     fully-portable Universal 2 binary that launches on any
 #                     Intel or Apple Silicon Mac without prompts)
 #   make verify     - print the designated requirement of bin/agentcookie
-#   make test       - go test -race ./...
+#   make test       - go test -race ./... and scripts/release_asset_test.sh
 #   make vet        - go vet ./...
 #   make clean      - remove bin/
 #
@@ -115,6 +115,7 @@ verify:
 
 test:
 	go test -race ./...
+	bash scripts/release_asset_test.sh
 
 vet:
 	go vet ./...

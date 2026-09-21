@@ -71,11 +71,13 @@ jobs:
 
       - name: setup notarytool credentials
         if: ${{ secrets.AC_NOTARY_PASSWORD != '' }}
+        env:
+          AC_NOTARY_PASSWORD: ${{ secrets.AC_NOTARY_PASSWORD }}
         run: |
           xcrun notarytool store-credentials agentcookie-notary \
             --apple-id mvanhorn@gmail.com \
             --team-id NM8VT393AR \
-            --password "${{ secrets.AC_NOTARY_PASSWORD }}"
+            --password "$AC_NOTARY_PASSWORD"
 
       # Build, sign, and notarize a Universal 2 (arm64 + x86_64) binary.
       # After this step bin/agentcookie runs natively on Intel and Apple
@@ -84,7 +86,9 @@ jobs:
         run: make release
 
       - name: build release tarball
-        run: scripts/release-tarball.sh "${{ github.ref_name }}"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: scripts/release-tarball.sh "$RELEASE_TAG"
 
       # Fail before upload when the tarball was named for a single arch
       # (or never produced). upload-artifact's default if-no-files-found
@@ -139,12 +143,14 @@ jobs:
 
       - name: require universal darwin tarball before publish
         shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           shopt -s nullglob
           files=(dist/*darwin*universal*.tar.gz)
           if [[ ${#files[@]} -eq 0 ]]; then
-            echo "error: refusing to publish ${{ github.ref_name }} without a universal darwin tarball." >&2
+            printf 'error: refusing to publish %s without a universal darwin tarball.\n' "$RELEASE_TAG" >&2
             echo "dist/ has no *darwin*universal*.tar.gz asset, so a macOS installer would have nothing to download." >&2
             ls -la dist >&2 || true
             exit 1
@@ -160,10 +166,11 @@ jobs:
       # Create the GitHub release with all assets
       - name: create release
         run: |
-          gh release create "${{ github.ref_name }}" \
+          gh release create "$RELEASE_TAG" \
             dist/*.tar.gz \
             dist/checksums.txt \
-            --title "agentcookie ${{ github.ref_name }}" \
+            --title "agentcookie ${RELEASE_TAG}" \
             --generate-notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}

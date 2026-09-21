@@ -20,6 +20,12 @@ jobs:
         run: go vet ./...
       - name: go test
         run: go test -race ./...
+      - name: release asset shell tests
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            brew install jq
+          fi
+          bash scripts/release_asset_test.sh
       - name: go build
         run: go build ./...
 
@@ -38,5 +44,12 @@ jobs:
       # macOS-specific code paths that are stubbed but still compiled.
       - name: go test
         run: go test ./...
+      - name: release asset shell tests
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y jq
+          fi
+          bash scripts/release_asset_test.sh
       - name: go build
         run: go build ./...

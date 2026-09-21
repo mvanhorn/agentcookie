@@ -283,6 +283,23 @@ fi
 if ! grep -q 'dist/\*darwin\*universal\*.tar.gz' "$ROOT/.github/workflows/release.yml"; then
   fail "release.yml does not require a universal darwin archive"
 fi
+# A v* tag is attacker-controlled. ${{ github.ref_name }} must be assigned
+# to RELEASE_TAG and only then expanded as "$RELEASE_TAG" inside run scripts.
+ref_lines="$(grep -n 'github\.ref_name' "$ROOT/.github/workflows/release.yml" || true)"
+if [[ -z "$ref_lines" ]]; then
+  fail "release.yml no longer passes the tag through RELEASE_TAG"
+fi
+while IFS= read -r line; do
+  if [[ "$line" != *'RELEASE_TAG:'* ]]; then
+    fail "github.ref_name is expanded outside a RELEASE_TAG env assignment: $line"
+  fi
+done <<< "$ref_lines"
+if ! grep -q 'bash scripts/release_asset_test.sh' "$ROOT/.github/workflows/ci.yml"; then
+  fail "ci.yml does not run scripts/release_asset_test.sh"
+fi
+if ! grep -q 'bash scripts/release_asset_test.sh' "$ROOT/Makefile"; then
+  fail "make test does not run scripts/release_asset_test.sh"
+fi
 
 if [[ $failures -ne 0 ]]; then
   echo "$failures test(s) failed" >&2
