@@ -301,6 +301,59 @@ if ! grep -q 'bash scripts/release_asset_test.sh' "$ROOT/Makefile"; then
   fail "make test does not run scripts/release_asset_test.sh"
 fi
 
+# --- wizard_skip_candidate ---
+# The installer may only consider skipping the wizard when the requested
+# role is already configured and no pairing argument was passed.
+cfg="$(mktemp -d)"
+trap 'rm -rf "$tmp" "$cfg"' EXIT
+
+assert_eq "$(role_config_path source "$cfg")" "$cfg/source.yaml" "source config path"
+assert_eq "$(role_config_path sink "$cfg")" "$cfg/sink.yaml" "sink config path"
+
+# Nothing configured yet: a first install must always run the wizard.
+if wizard_skip_candidate source "$cfg" 0; then
+  fail "unconfigured source must run the wizard"
+fi
+if wizard_skip_candidate sink "$cfg" 0; then
+  fail "unconfigured sink must run the wizard"
+fi
+
+printf 'peer:\n  hostname: example\n' > "$cfg/source.yaml"
+
+# Configured role, no pairing args: eligible for the health check.
+if ! wizard_skip_candidate source "$cfg" 0; then
+  fail "configured source with no pairing args should be a skip candidate"
+fi
+
+# The role-mismatch case this guard exists for. doctor exits 0 on a
+# healthy source-only box because every sink check is SKIPPED, not FAIL.
+# Asking for a sink there must still run the wizard.
+if wizard_skip_candidate sink "$cfg" 0; then
+  fail "source config must not satisfy an --as sink install"
+fi
+
+# Pairing arguments mean the caller is deliberately re-pairing.
+if wizard_skip_candidate source "$cfg" 1; then
+  fail "pairing args must force the wizard to run"
+fi
+
+# A role the script never accepts is never a skip candidate.
+printf 'x\n' > "$cfg/bogus.yaml"
+if wizard_skip_candidate bogus "$cfg" 0; then
+  fail "unknown role must not be a skip candidate"
+fi
+
+# The guard has to be wired in, not just defined.
+if ! grep -q 'wizard_skip_candidate "$ROLE" "$CONFIG_DIR" "$HAS_PAIRING_ARGS"' "$ROOT/scripts/install-beta.sh"; then
+  fail "install-beta.sh does not consult wizard_skip_candidate before the wizard"
+fi
+# ...and it has to sit before the wizard invocation, or it guards nothing.
+guard_line="$(grep -n 'if wizard_skip_candidate' "$ROOT/scripts/install-beta.sh" | head -n1 | cut -d: -f1)"
+wizard_line="$(grep -n '"\$TARGET" "\${WIZARD_ARGS\[@\]}"' "$ROOT/scripts/install-beta.sh" | head -n1 | cut -d: -f1)"
+if [[ -z "$guard_line" || -z "$wizard_line" || "$guard_line" -ge "$wizard_line" ]]; then
+  fail "idempotency guard must precede the wizard invocation (guard=$guard_line wizard=$wizard_line)"
+fi
+
 if [[ $failures -ne 0 ]]; then
   echo "$failures test(s) failed" >&2
   exit 1

@@ -53,6 +53,12 @@ TARBALL=""
 
 REPO="mvanhorn/agentcookie"
 
+# Where the wizard writes source.yaml / sink.yaml. Mirrors
+# defaultConfigDir() in internal/cli/root.go. The binary accepts
+# --config-dir, but this script never passes it, so the wizard it invokes
+# always uses this default.
+CONFIG_DIR="${HOME}/.config/agentcookie"
+
 # ---- helpers ----
 
 die() {
@@ -228,6 +234,40 @@ pick_downloaded_tarball() {
     return 1
   fi
   printf '%s\n' "$found"
+}
+
+# role_config_path ROLE CONFIG_DIR
+# Path to the config file the wizard writes for ROLE.
+role_config_path() {
+  local role="$1" config_dir="$2"
+  printf '%s/%s.yaml\n' "$config_dir" "$role"
+}
+
+# wizard_skip_candidate ROLE CONFIG_DIR HAS_PAIRING_ARGS
+# True when the installer should test the existing install's health
+# before running the wizard; false when the wizard must run regardless.
+# The caller runs `doctor` only when this returns true, so a first-time
+# install pays nothing for the check.
+#
+# Both conditions are required:
+#
+#   - No pairing arguments. --peer, --code, and --pair-url all mean the
+#     caller is deliberately (re-)pairing, so never skip.
+#
+#   - The requested role already has a config. `doctor` alone cannot
+#     carry this test. On a healthy source-only box every sink check
+#     reports SKIPPED rather than FAIL, so doctor exits 0 there, and
+#     `--as sink` would be skipped without ever installing a sink.
+wizard_skip_candidate() {
+  local role="$1" config_dir="$2" has_pairing_args="$3"
+  if [[ "$has_pairing_args" == "1" ]]; then
+    return 1
+  fi
+  case "$role" in
+    source|sink) ;;
+    *) return 1 ;;
+  esac
+  [[ -f "$(role_config_path "$role" "$config_dir")" ]]
 }
 
 if [[ "${AGENTCOOKIE_INSTALL_BETA_LIB_ONLY:-}" == "1" ]]; then
@@ -413,6 +453,36 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   warn "add this line to your shell profile (~/.zshrc on macOS default):"
   warn "    export PATH=\"$BIN_DIR:\$PATH\""
   warn "Then run \`exec \$SHELL -l\` to reload."
+fi
+
+# ---- idempotency: skip the wizard on a healthy install ----
+#
+# Re-running on a healthy install reports state and exits 0 without
+# re-running the wizard (see the design notes at the top of this file).
+# The binary above is still refreshed first, so a re-run remains the way
+# to upgrade in place; only the pairing wizard is skipped.
+#
+# `doctor` is the health oracle. Its exit code is 0 exactly when no check
+# FAILs -- WARN is informational and does not fail the run -- which is
+# the same signal this script already uses at the end to decide whether
+# the install succeeded.
+HAS_PAIRING_ARGS=0
+if [[ -n "$PEER" || -n "$CODE" || -n "$PAIR_URL" ]]; then
+  HAS_PAIRING_ARGS=1
+fi
+
+if wizard_skip_candidate "$ROLE" "$CONFIG_DIR" "$HAS_PAIRING_ARGS"; then
+  step "existing $ROLE config found; checking install health"
+  EXISTING_DOCTOR_OUT=""
+  if EXISTING_DOCTOR_OUT="$("$TARGET" doctor 2>&1)"; then
+    printf '%s\n' "$EXISTING_DOCTOR_OUT"
+    ok "existing $ROLE install is healthy; skipping wizard"
+    ok "to re-pair anyway, re-run with --peer <hostname>"
+    exit 0
+  fi
+  printf '%s\n' "$EXISTING_DOCTOR_OUT"
+  warn "existing $ROLE config is present but doctor reports a FAIL"
+  warn "re-running the wizard to repair it"
 fi
 
 # ---- run wizard ----
