@@ -13,6 +13,12 @@
 # binary can be re-signed in place (steady-state behavior after every
 # `go install`).
 #
+# scripts/agentcookie.entitlements grants
+# com.apple.security.automation.apple-events. Hardened Runtime blocks
+# Apple Events without it, so chromectl's `osascript ... to quit` is
+# denied by TCC and the Automation toggle for Chrome cannot be enabled
+# in System Settings.
+#
 # Usage:
 #   scripts/sign.sh <binary> [<binary> ...]
 #
@@ -34,6 +40,10 @@ set -euo pipefail
 
 readonly DEFAULT_IDENTITY="Developer ID Application: Matthew Charles Van Horn (NM8VT393AR)"
 readonly RUNBOOK="docs/runbook-v0.12-codesign.md"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+readonly ENTITLEMENTS="$SCRIPT_DIR/agentcookie.entitlements"
+readonly APPLE_EVENTS_ENTITLEMENT="com.apple.security.automation.apple-events"
 
 IDENTITY="${AGENTCOOKIE_SIGN_IDENTITY:-$DEFAULT_IDENTITY}"
 
@@ -73,11 +83,16 @@ for binary in "$@"; do
     --force \
     --options runtime \
     --timestamp \
+    --entitlements "$ENTITLEMENTS" \
     --sign "$IDENTITY" \
     "$binary"
 
   echo "scripts/sign.sh: verifying $binary"
   codesign --verify --deep --strict --verbose=2 "$binary"
+  if ! codesign -d --entitlements - "$binary" 2>/dev/null | grep -qF "$APPLE_EVENTS_ENTITLEMENT"; then
+    echo "scripts/sign.sh: $binary is missing the $APPLE_EVENTS_ENTITLEMENT entitlement" >&2
+    exit 3
+  fi
 done
 
 echo "scripts/sign.sh: done"
