@@ -10,7 +10,7 @@ package sinkpush
 func NewEbay() *PycookiecheatStyleAdapter {
 	return newPycookiecheatStyleAdapter(
 		"ebay-pp-cli",
-		"%ebay%",
+		"ebay.com",
 		"ebay-pp-cli",
 		"https://www.ebay.com",
 	)

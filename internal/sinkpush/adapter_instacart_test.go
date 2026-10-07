@@ -40,8 +40,9 @@ func TestInstacartAdapter_Name(t *testing.T) {
 func TestInstacartAdapter_CookieHostPatterns(t *testing.T) {
 	a := NewInstacart()
 	patterns := a.CookieHostPatterns()
-	if len(patterns) != 1 || patterns[0] != "%instacart%" {
-		t.Errorf("patterns: got %v, want [%%instacart%%]", patterns)
+	want := []string{"instacart.com", "%.instacart.com"}
+	if len(patterns) != len(want) || patterns[0] != want[0] || patterns[1] != want[1] {
+		t.Errorf("patterns: got %v, want %v", patterns, want)
 	}
 }
 

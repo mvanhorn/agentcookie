@@ -9,7 +9,7 @@ package sinkpush
 func NewAirbnb() *PycookiecheatStyleAdapter {
 	return newPycookiecheatStyleAdapter(
 		"airbnb-pp-cli",
-		"%airbnb%",
+		"airbnb.com",
 		"airbnb-pp-cli",
 		"https://www.airbnb.com",
 	)

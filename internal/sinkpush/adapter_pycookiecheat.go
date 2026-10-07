@@ -33,25 +33,25 @@ import (
 // NewPagliacci. Each fills in: CLI name, host pattern, config-dir
 // basename, base_url default for fresh installs.
 type PycookiecheatStyleAdapter struct {
-	name        string // e.g. "airbnb-pp-cli"
-	binary      string // resolved absolute path
-	hostPattern string // single LIKE pattern
-	configDir   string // resolved absolute path to ~/.config/<cli>/
-	baseURL     string // default base_url for fresh config.toml
+	name      string // e.g. "airbnb-pp-cli"
+	binary    string // resolved absolute path
+	domain    string // cookie domain; patterns derived via DomainHostPatterns
+	configDir string // resolved absolute path to ~/.config/<cli>/
+	baseURL   string // default base_url for fresh config.toml
 }
 
 // newPycookiecheatStyleAdapter is the internal constructor. Concrete
 // adapter constructors (NewAirbnb, etc.) call this with their per-CLI
 // values; tests can construct the struct directly to point at a temp
 // dir.
-func newPycookiecheatStyleAdapter(name, hostPattern, configBasename, baseURL string) *PycookiecheatStyleAdapter {
+func newPycookiecheatStyleAdapter(name, domain, configBasename, baseURL string) *PycookiecheatStyleAdapter {
 	home, _ := os.UserHomeDir()
 	return &PycookiecheatStyleAdapter{
-		name:        name,
-		binary:      findPPCLI(name),
-		hostPattern: hostPattern,
-		configDir:   filepath.Join(home, ".config", configBasename),
-		baseURL:     baseURL,
+		name:      name,
+		binary:    findPPCLI(name),
+		domain:    domain,
+		configDir: filepath.Join(home, ".config", configBasename),
+		baseURL:   baseURL,
 	}
 }
 
@@ -75,7 +75,7 @@ func (a *PycookiecheatStyleAdapter) IsInstalled() bool {
 }
 
 func (a *PycookiecheatStyleAdapter) CookieHostPatterns() []string {
-	return []string{a.hostPattern}
+	return DomainHostPatterns(a.domain)
 }
 
 // Push writes the cookies into the CLI's config.toml access_token field

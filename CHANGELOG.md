@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Security: adapter cookie patterns bound to the real domain
+
+- Sink adapters (airbnb, ebay, pagliacci, instacart, table-reservation) selected cookies with substring patterns such as `%ebay%`, which also matched look-alike hosts like `webay.com` or `ebay.attacker.com`. Those cookies were merged into the Cookie header sent to the real site (CWE-200, CWE-384). Adapters now match only the exact domain or its subdomains via `DomainHostPatterns`, and `doctor` uses the same matcher (#136).
+
 ### Universal 2 macOS releases
 
 - `make release` builds one Universal 2 binary (arm64 + x86_64). The darwin archive is `agentcookie_<version>_darwin_universal.tar.gz`, so Intel Macs get the same signed, notarized binary as Apple Silicon.

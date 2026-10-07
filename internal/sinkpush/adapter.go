@@ -132,6 +132,29 @@ func filterByHostPatterns(cookies []chrome.Cookie, patterns []string) []chrome.C
 	return out
 }
 
+// DomainHostPatterns returns the two SQLite-LIKE patterns that select
+// cookies belonging to domain and its subdomains, and nothing else:
+// the bare domain (exact match on host_key) and "%.domain" (any
+// subdomain, with the dot forcing a label boundary). Adapters must use
+// this instead of a bare substring like "%ebay%", which also matches
+// unrelated hosts such as ebay.attacker.com or webay.com and would
+// leak those hosts' cookies into the Cookie header sent to the real
+// site. Mirrors the shape the accounts allowlist writes.
+func DomainHostPatterns(domain string) []string {
+	return []string{domain, "%." + domain}
+}
+
+// HostMatchesAnyPattern reports whether hostKey matches at least one
+// pattern under the same SQLite-LIKE semantics the push filter uses.
+func HostMatchesAnyPattern(hostKey string, patterns []string) bool {
+	for _, p := range patterns {
+		if matchLike(hostKey, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // matchLike implements a small subset of SQLite LIKE: '%' matches
 // any sequence of characters; everything else is literal. The
 // match is case-sensitive (Chrome host_key values are lowercase by
