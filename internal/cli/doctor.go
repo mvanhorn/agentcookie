@@ -1125,15 +1125,17 @@ func checkAdapterCoverage(_ *config.SinkConfig) Check {
 }
 
 // hostMatchesAnyAdapter returns true if hostKey matches at least one
-// of any adapter's CookieHostPatterns. Patterns are SQLite LIKE syntax
-// with `%` wildcards; the doctor approximates them as case-sensitive
-// substring matches with `%` stripped (good enough for warn-level
-// visibility; exact match semantics live in the writer path).
+// of any adapter's CookieHostPatterns, using the same SQLite-LIKE
+// matcher the writer path uses so doctor and push never disagree.
+// Wildcard-only patterns ("%") are ignored: they carry no domain, so
+// they say nothing about whether this host is covered.
 func hostMatchesAnyAdapter(hostKey string, adapters []sinkpush.Adapter) bool {
 	for _, a := range adapters {
 		for _, p := range a.CookieHostPatterns() {
-			needle := strings.TrimSuffix(strings.TrimPrefix(p, "%"), "%")
-			if needle != "" && strings.Contains(hostKey, needle) {
+			if strings.Trim(p, "%") == "" {
+				continue
+			}
+			if sinkpush.HostMatchesAnyPattern(hostKey, []string{p}) {
 				return true
 			}
 		}

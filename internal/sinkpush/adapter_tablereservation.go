@@ -72,7 +72,7 @@ func (a *TableReservationAdapter) CookieHostPatterns() []string {
 	// Two networks share one session file. Resy is handled out-of-band
 	// (email+password exchange for a long-lived token, not a Chrome
 	// cookie import), so the adapter does not push Resy cookies.
-	return []string{"%opentable.com", "%exploretock.com"}
+	return append(DomainHostPatterns("opentable.com"), DomainHostPatterns("exploretock.com")...)
 }
 
 // sessionCookie is the JSON shape one cookie takes inside session.json.

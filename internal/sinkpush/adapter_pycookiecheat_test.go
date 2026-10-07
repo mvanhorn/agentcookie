@@ -13,7 +13,7 @@ import (
 // newTestAdapter builds a PycookiecheatStyleAdapter pointing at a temp
 // config dir with the binary placed inside the temp dir so IsInstalled
 // returns true. Returns the adapter and the temp dir for assertions.
-func newTestAdapter(t *testing.T, name, hostPattern, baseURL string) (*PycookiecheatStyleAdapter, string) {
+func newTestAdapter(t *testing.T, name, domain, baseURL string) (*PycookiecheatStyleAdapter, string) {
 	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, name)
@@ -21,11 +21,11 @@ func newTestAdapter(t *testing.T, name, hostPattern, baseURL string) (*Pycookiec
 		t.Fatalf("write bin: %v", err)
 	}
 	a := &PycookiecheatStyleAdapter{
-		name:        name,
-		binary:      bin,
-		hostPattern: hostPattern,
-		configDir:   filepath.Join(dir, "config"),
-		baseURL:     baseURL,
+		name:      name,
+		binary:    bin,
+		domain:    domain,
+		configDir: filepath.Join(dir, "config"),
+		baseURL:   baseURL,
 	}
 	return a, dir
 }
@@ -37,16 +37,17 @@ func TestPycookiecheatAdapter_Identity(t *testing.T) {
 		host    string
 		baseURL string
 	}{
-		{NewAirbnb, "airbnb-pp-cli", "%airbnb%", "https://www.airbnb.com"},
-		{NewEbay, "ebay-pp-cli", "%ebay%", "https://www.ebay.com"},
-		{NewPagliacci, "pagliacci-pp-cli", "%pagliacci%", "https://pagliacci.com"},
+		{NewAirbnb, "airbnb-pp-cli", "airbnb.com", "https://www.airbnb.com"},
+		{NewEbay, "ebay-pp-cli", "ebay.com", "https://www.ebay.com"},
+		{NewPagliacci, "pagliacci-pp-cli", "pagliacci.com", "https://pagliacci.com"},
 	} {
 		a := tc.make()
 		if a.Name() != tc.name {
 			t.Errorf("Name: got %q, want %q", a.Name(), tc.name)
 		}
-		if got := a.CookieHostPatterns(); len(got) != 1 || got[0] != tc.host {
-			t.Errorf("HostPatterns for %s: got %v, want [%s]", tc.name, got, tc.host)
+		want := DomainHostPatterns(tc.host)
+		if got := a.CookieHostPatterns(); len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Errorf("HostPatterns for %s: got %v, want %v", tc.name, got, want)
 		}
 		if a.baseURL != tc.baseURL {
 			t.Errorf("baseURL for %s: got %q, want %q", tc.name, a.baseURL, tc.baseURL)
@@ -55,7 +56,7 @@ func TestPycookiecheatAdapter_Identity(t *testing.T) {
 }
 
 func TestPycookiecheatAdapter_PushCreatesFreshConfig(t *testing.T) {
-	a, _ := newTestAdapter(t, "airbnb-pp-cli", "%airbnb%", "https://www.airbnb.com")
+	a, _ := newTestAdapter(t, "airbnb-pp-cli", "airbnb.com", "https://www.airbnb.com")
 	cookies := []chrome.Cookie{
 		{HostKey: ".airbnb.com", Name: "_session", Value: "sess123"},
 		{HostKey: ".airbnb.com", Name: "csrf", Value: "abc"},
@@ -104,7 +105,7 @@ func TestPycookiecheatAdapter_PushCreatesFreshConfig(t *testing.T) {
 }
 
 func TestPycookiecheatAdapter_PushPreservesExistingConfig(t *testing.T) {
-	a, _ := newTestAdapter(t, "ebay-pp-cli", "%ebay%", "https://www.ebay.com")
+	a, _ := newTestAdapter(t, "ebay-pp-cli", "ebay.com", "https://www.ebay.com")
 	if err := os.MkdirAll(a.configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +145,7 @@ func TestPycookiecheatAdapter_PushPreservesExistingConfig(t *testing.T) {
 }
 
 func TestPycookiecheatAdapter_PushFiltersEmptyValueCookies(t *testing.T) {
-	a, _ := newTestAdapter(t, "airbnb-pp-cli", "%airbnb%", "https://www.airbnb.com")
+	a, _ := newTestAdapter(t, "airbnb-pp-cli", "airbnb.com", "https://www.airbnb.com")
 	cookies := []chrome.Cookie{
 		{HostKey: ".airbnb.com", Name: "_session", Value: "real"},
 		{HostKey: ".airbnb.com", Name: "consent_flag", Value: ""}, // dropped
@@ -163,7 +164,7 @@ func TestPycookiecheatAdapter_PushFiltersEmptyValueCookies(t *testing.T) {
 }
 
 func TestPycookiecheatAdapter_PushNoCookies_NoOp(t *testing.T) {
-	a, _ := newTestAdapter(t, "airbnb-pp-cli", "%airbnb%", "https://www.airbnb.com")
+	a, _ := newTestAdapter(t, "airbnb-pp-cli", "airbnb.com", "https://www.airbnb.com")
 	if err := a.Push([]chrome.Cookie{
 		{HostKey: ".airbnb.com", Name: "n", Value: ""}, // all empty
 	}); err != nil {
@@ -177,7 +178,7 @@ func TestPycookiecheatAdapter_PushNoCookies_NoOp(t *testing.T) {
 }
 
 func TestPycookiecheatAdapter_AtomicWrite(t *testing.T) {
-	a, _ := newTestAdapter(t, "airbnb-pp-cli", "%airbnb%", "https://www.airbnb.com")
+	a, _ := newTestAdapter(t, "airbnb-pp-cli", "airbnb.com", "https://www.airbnb.com")
 	_ = a.Push([]chrome.Cookie{{HostKey: ".airbnb.com", Name: "n", Value: "v"}})
 	// After Push, no .tmp file should remain.
 	for _, suffix := range []string{".agentcookie.tmp"} {
@@ -191,24 +192,30 @@ func TestPycookiecheatAdapter_AtomicWrite(t *testing.T) {
 }
 
 func TestPycookiecheatAdapter_HostFilterIsolation(t *testing.T) {
-	// Each adapter's CookieHostPatterns should be its CLI's domain
-	// only -- no leakage from other adapters' domains.
+	// Each adapter's CookieHostPatterns should select its CLI's domain
+	// and subdomains only. Look-alike hosts that merely contain the
+	// brand as a substring must not match, or their cookies would be
+	// flattened into the Cookie header sent to the real site.
 	for _, tc := range []struct {
 		make    func() *PycookiecheatStyleAdapter
-		match   string
-		nomatch string
+		match   []string
+		nomatch []string
 	}{
-		{NewAirbnb, ".airbnb.com", ".ebay.com"},
-		{NewEbay, ".ebay.com", ".airbnb.com"},
-		{NewPagliacci, ".pagliacci.com", ".airbnb.com"},
+		{NewAirbnb, []string{"airbnb.com", ".airbnb.com", "www.airbnb.com", "sub.airbnb.com"}, []string{".ebay.com", "airbnb.evil.com", "myairbnb.com", "airbnb.com.attacker.net"}},
+		{NewEbay, []string{"ebay.com", ".ebay.com", "www.ebay.com"}, []string{".airbnb.com", "ebay.evil.com", "webay.com", "ebay.attacker.com"}},
+		{NewPagliacci, []string{"pagliacci.com", ".pagliacci.com", "www.pagliacci.com"}, []string{".airbnb.com", "pagliacci.evil.com", "notpagliacci.com"}},
 	} {
 		a := tc.make()
 		patterns := a.CookieHostPatterns()
-		if !matchLike(tc.match, patterns[0]) {
-			t.Errorf("%s adapter pattern %q should match %q", a.Name(), patterns[0], tc.match)
+		for _, h := range tc.match {
+			if !HostMatchesAnyPattern(h, patterns) {
+				t.Errorf("%s adapter patterns %q should match %q", a.Name(), patterns, h)
+			}
 		}
-		if matchLike(tc.nomatch, patterns[0]) {
-			t.Errorf("%s adapter pattern %q should NOT match %q (cross-domain leak)", a.Name(), patterns[0], tc.nomatch)
+		for _, h := range tc.nomatch {
+			if HostMatchesAnyPattern(h, patterns) {
+				t.Errorf("%s adapter patterns %q should NOT match %q (cross-domain leak)", a.Name(), patterns, h)
+			}
 		}
 	}
 }
@@ -246,7 +253,7 @@ func TestEscapeTOMLSingleQuoted_StripsEmbeddedSingleQuotes(t *testing.T) {
 }
 
 func TestPycookiecheatAdapter_PushIsIdempotent(t *testing.T) {
-	a, _ := newTestAdapter(t, "airbnb-pp-cli", "%airbnb%", "https://www.airbnb.com")
+	a, _ := newTestAdapter(t, "airbnb-pp-cli", "airbnb.com", "https://www.airbnb.com")
 	cookies := []chrome.Cookie{{HostKey: ".airbnb.com", Name: "x", Value: "1"}}
 	if err := a.Push(cookies); err != nil {
 		t.Fatal(err)

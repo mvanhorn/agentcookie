@@ -196,3 +196,29 @@ func TestMatchLike_VariousPatterns(t *testing.T) {
 		}
 	}
 }
+
+func TestDomainHostPatterns_RejectsLookalikes(t *testing.T) {
+	cases := []struct {
+		domain, host string
+		want         bool
+	}{
+		{"ebay.com", "ebay.com", true},
+		{"ebay.com", ".ebay.com", true},
+		{"ebay.com", "www.ebay.com", true},
+		{"ebay.com", "signin.ebay.com", true},
+		{"ebay.com", "webay.com", false},
+		{"ebay.com", "ebay.evil.com", false},
+		{"ebay.com", "ebay.attacker.com", false},
+		{"ebay.com", "ebay.com.attacker.net", false},
+		{"ebay.com", "ebay.co.uk", false},
+		{"instacart.com", "instacart.attacker.com", false},
+		{"opentable.com", "evilopentable.com", false},
+		{"opentable.com", ".opentable.com", true},
+		{"airbnb.com", "sub.airbnb.com", true},
+	}
+	for _, tc := range cases {
+		if got := HostMatchesAnyPattern(tc.host, DomainHostPatterns(tc.domain)); got != tc.want {
+			t.Errorf("DomainHostPatterns(%q) match %q = %v, want %v", tc.domain, tc.host, got, tc.want)
+		}
+	}
+}

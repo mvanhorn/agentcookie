@@ -60,9 +60,9 @@ func (a *InstacartAdapter) IsInstalled() bool {
 
 func (a *InstacartAdapter) CookieHostPatterns() []string {
 	// Instacart sets cookies on multiple instacart.com subdomains
-	// (www.instacart.com, .instacart.com, etc.). Single LIKE pattern
-	// covers them all without enumerating subdomains.
-	return []string{"%instacart%"}
+	// (www.instacart.com, .instacart.com, etc.). The domain pair covers
+	// them all without matching look-alike hosts (instacart.attacker.com).
+	return DomainHostPatterns("instacart.com")
 }
 
 // Push shells out to `<cli> auth paste`, sending the Cookie header

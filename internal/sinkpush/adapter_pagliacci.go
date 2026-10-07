@@ -13,7 +13,7 @@ package sinkpush
 func NewPagliacci() *PycookiecheatStyleAdapter {
 	return newPycookiecheatStyleAdapter(
 		"pagliacci-pp-cli",
-		"%pagliacci%",
+		"pagliacci.com",
 		"pagliacci-pp-cli",
 		"https://pagliacci.com",
 	)

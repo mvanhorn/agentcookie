@@ -28,10 +28,10 @@ func TestTableReservation_Identity(t *testing.T) {
 		t.Errorf("Name: got %q", a.Name())
 	}
 	patterns := a.CookieHostPatterns()
-	if len(patterns) != 2 {
-		t.Fatalf("expected 2 host patterns, got %d", len(patterns))
+	if len(patterns) != 4 {
+		t.Fatalf("expected 4 host patterns, got %d", len(patterns))
 	}
-	want := map[string]bool{"%opentable.com": true, "%exploretock.com": true}
+	want := map[string]bool{"opentable.com": true, "%.opentable.com": true, "exploretock.com": true, "%.exploretock.com": true}
 	for _, p := range patterns {
 		if !want[p] {
 			t.Errorf("unexpected pattern: %q", p)
