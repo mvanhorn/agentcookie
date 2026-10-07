@@ -727,6 +727,19 @@ func TestHostMatchesAnyAdapter(t *testing.T) {
 	if hostMatchesAnyAdapter(".example.com", adapters) {
 		t.Errorf("did not expect match for .example.com")
 	}
+	// Look-alike hosts must not count as covered. The old substring
+	// approximation matched these.
+	domainAdapters := []sinkpush.Adapter{&stubAdapter{patterns: sinkpush.DomainHostPatterns("ebay.com")}}
+	for _, h := range []string{"ebay.com", ".ebay.com", "www.ebay.com"} {
+		if !hostMatchesAnyAdapter(h, domainAdapters) {
+			t.Errorf("expected match for %s", h)
+		}
+	}
+	for _, h := range []string{"webay.com", "ebay.evil.com", "ebay.com.attacker.net"} {
+		if hostMatchesAnyAdapter(h, domainAdapters) {
+			t.Errorf("did not expect match for look-alike %s", h)
+		}
+	}
 	// Empty pattern shouldn't crash; treated as non-matching.
 	emptyAdapter := []sinkpush.Adapter{&stubAdapter{patterns: []string{"%"}}}
 	if hostMatchesAnyAdapter("anything", emptyAdapter) {
