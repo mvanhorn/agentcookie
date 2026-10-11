@@ -17,6 +17,9 @@ type fakeChrome struct {
 	running  bool
 	osaCalls int
 	signals  []string
+	// termDelay keeps Chrome alive for this long after SIGTERM, the way a
+	// real Chrome takes a moment to shut down. Zero means TERM is instant.
+	termDelay time.Duration
 }
 
 func (f *fakeChrome) setRunning(v bool) {
@@ -57,6 +60,10 @@ func stubChrome(t *testing.T, osa func(ctx context.Context) ([]byte, error)) *fa
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.signals = append(f.signals, sig)
+		if sig == "TERM" && f.termDelay > 0 {
+			time.AfterFunc(f.termDelay, func() { f.setRunning(false) })
+			return nil
+		}
 		f.running = false
 		return nil
 	}
@@ -186,5 +193,16 @@ func TestQuitAndWait_SigtermHasItsOwnDeadline(t *testing.T) {
 	}
 	if _, sigs := f.snapshot(); !reflect.DeepEqual(sigs, []string{"TERM"}) {
 		t.Errorf("signals = %v, want [TERM]", sigs)
+	}
+}
+
+func TestQuitAndWait_SlowSigtermIsNotEscalated(t *testing.T) {
+	f := stubChrome(t, osaUserCanceled)
+	f.termDelay = 300 * time.Millisecond
+	if _, err := quit(t, 2*time.Second); err != nil {
+		t.Fatalf("QuitAndWait: %v", err)
+	}
+	if _, sigs := f.snapshot(); !reflect.DeepEqual(sigs, []string{"TERM"}) {
+		t.Errorf("signals = %v, want [TERM]: SIGKILL must wait for the SIGTERM deadline", sigs)
 	}
 }
