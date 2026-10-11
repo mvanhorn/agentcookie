@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -86,12 +87,16 @@ func collectDomainCookiesUnion(sidecarPath, domain string, matcher *protocol.Blo
 	// Include config's CDP.ProfileDir if set.
 	if runtime.GOOS == "darwin" {
 		profileDir := ""
-		sinkCfg, _ := config.LoadSink(common.ConfigDir) // nil when absent or invalid
+		sinkCfg, loadErr := config.LoadSink(common.ConfigDir) // nil when absent or invalid
 		if sinkCfg != nil {
 			profileDir = sinkCfg.CDP.ProfileDir
 		}
+		// A sink.yaml that exists but fails to load may still set
+		// skip_chrome_sqlite, so fail closed rather than reading Safe Storage.
+		_, statErr := os.Stat(filepath.Join(common.ConfigDir, "sink.yaml"))
+		unloadableSinkConfig := loadErr != nil && statErr == nil
 		// skip_chrome_sqlite means no Safe Storage read: sidecar only.
-		if safeStorageReadAllowed(sinkCfg) {
+		if !unloadableSinkConfig && safeStorageReadAllowed(sinkCfg) {
 			chromeCookies := collectDomainCookiesFromChrome(domain, matcher, seen, profileDir)
 			sidecarCookies = append(sidecarCookies, chromeCookies...)
 		}

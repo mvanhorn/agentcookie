@@ -483,3 +483,32 @@ skip_chrome_sqlite: true
 		t.Errorf("want only the sidecar cookie; got %+v", got)
 	}
 }
+
+func TestCollectDomainCookiesUnion_UnloadableSinkConfigNeverReadsSafeStorage(t *testing.T) {
+	skipUnlessDarwin(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := t.TempDir()
+	withConfigDir(t, configDir)
+	// No listen.addr, so LoadSink rejects the file even though it opts out.
+	writeFile(t, filepath.Join(configDir, "sink.yaml"), `peer:
+  hostname: macbook-pro
+skip_chrome_sqlite: true
+`)
+	seedExtraChromeProfile(t, home, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "extra", Value: "from-profile", Path: "/"},
+	})
+	stub := stubChromeDecryptKey(t, func(int) ([]byte, error) { return safeStorageTestKey, nil })
+	path := makeSidecar(t, [][3]string{{".example.com", "sess", "from-sidecar"}})
+
+	got, err := collectDomainCookiesUnion(path, "example.com", nil)
+	if err != nil {
+		t.Fatalf("collectDomainCookiesUnion: %v", err)
+	}
+	if n := stub.count(); n != 0 {
+		t.Errorf("Chrome Safe Storage read %d time(s) with an unloadable sink.yaml; want 0", n)
+	}
+	if len(got) != 1 || got[0].Value != "from-sidecar" {
+		t.Errorf("want only the sidecar cookie; got %+v", got)
+	}
+}
