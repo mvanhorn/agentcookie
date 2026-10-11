@@ -206,3 +206,62 @@ func TestQuitAndWait_SlowSigtermIsNotEscalated(t *testing.T) {
 		t.Errorf("signals = %v, want [TERM]: SIGKILL must wait for the SIGTERM deadline", sigs)
 	}
 }
+
+// A caller ending the quit is not a refusal: QuitAndWait returns the
+// caller's error, sends no signal, and the next quit still tries AppleScript.
+func TestQuitAndWait_CallerEndIsNotARefusal(t *testing.T) {
+	cases := []struct {
+		name    string
+		ctx     func() (context.Context, context.CancelFunc)
+		wantErr error
+	}{
+		{
+			name: "canceled",
+			ctx: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				time.AfterFunc(100*time.Millisecond, cancel)
+				return ctx, cancel
+			},
+			wantErr: context.Canceled,
+		},
+		{
+			name: "shorter deadline",
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 200*time.Millisecond)
+			},
+			wantErr: context.DeadlineExceeded,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := stubChrome(t, osaHangs)
+			ctx, cancel := tc.ctx()
+			defer cancel()
+			if err := QuitAndWait(ctx, 2*time.Second); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("QuitAndWait err = %v, want %v", err, tc.wantErr)
+			}
+			if _, sigs := f.snapshot(); len(sigs) != 0 {
+				t.Errorf("signals = %v, want none when the caller ended the quit", sigs)
+			}
+			if appleEventsRefused.Load() {
+				t.Fatal("caller cancellation was remembered as an Automation refusal")
+			}
+			runOsascript = func(context.Context, string) ([]byte, error) {
+				f.mu.Lock()
+				f.osaCalls++
+				f.mu.Unlock()
+				return nil, nil
+			}
+			f.setRunning(false)
+			before, _ := f.snapshot()
+			f.setRunning(true)
+			go func() { time.Sleep(50 * time.Millisecond); f.setRunning(false) }()
+			if _, err := quit(t, 2*time.Second); err != nil {
+				t.Fatalf("second QuitAndWait: %v", err)
+			}
+			if after, _ := f.snapshot(); after != before+1 {
+				t.Errorf("second quit made %d AppleScript call(s), want 1", after-before)
+			}
+		})
+	}
+}
