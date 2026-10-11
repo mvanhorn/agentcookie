@@ -81,18 +81,18 @@ func osaSucceeds(context.Context) ([]byte, error) { return nil, nil }
 
 // quit runs QuitAndWait under a parent context long enough that only the
 // code under test can make it return early.
-func quit(t *testing.T, timeout time.Duration) (error, time.Duration) {
+func quit(t *testing.T, timeout time.Duration) (time.Duration, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	start := time.Now()
 	err := QuitAndWait(ctx, timeout)
-	return err, time.Since(start)
+	return time.Since(start), err
 }
 
 func TestQuitAndWait_NotAuthorizedFallsBackEarly(t *testing.T) {
 	f := stubChrome(t, osaNotAuthorized)
-	err, elapsed := quit(t, 5*time.Second)
+	elapsed, err := quit(t, 5*time.Second)
 	if err != nil {
 		t.Fatalf("QuitAndWait: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestQuitAndWait_NotAuthorizedFallsBackEarly(t *testing.T) {
 func TestQuitAndWait_UnansweredAppleScriptIsBounded(t *testing.T) {
 	f := stubChrome(t, osaHangs)
 	appleScriptTimeout = 100 * time.Millisecond
-	err, elapsed := quit(t, 5*time.Second)
+	elapsed, err := quit(t, 5*time.Second)
 	if err != nil {
 		t.Fatalf("QuitAndWait: %v", err)
 	}
@@ -131,11 +131,11 @@ func TestQuitAndWait_RefusalIsRememberedForTheProcess(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := stubChrome(t, tc.osa)
 			appleScriptTimeout = 100 * time.Millisecond
-			if err, _ := quit(t, 5*time.Second); err != nil {
+			if _, err := quit(t, 5*time.Second); err != nil {
 				t.Fatalf("first QuitAndWait: %v", err)
 			}
 			f.setRunning(true)
-			err, elapsed := quit(t, 5*time.Second)
+			elapsed, err := quit(t, 5*time.Second)
 			if err != nil {
 				t.Fatalf("second QuitAndWait: %v", err)
 			}
@@ -157,7 +157,7 @@ func TestQuitAndWait_RefusalIsRememberedForTheProcess(t *testing.T) {
 // tries AppleScript again.
 func TestQuitAndWait_UserCanceledUnchanged(t *testing.T) {
 	f := stubChrome(t, osaUserCanceled)
-	err, elapsed := quit(t, 5*time.Second)
+	elapsed, err := quit(t, 5*time.Second)
 	if err != nil {
 		t.Fatalf("QuitAndWait: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestQuitAndWait_UserCanceledUnchanged(t *testing.T) {
 		t.Errorf("took %v; -128 must skip the polite poll", elapsed)
 	}
 	f.setRunning(true)
-	if err, _ := quit(t, 5*time.Second); err != nil {
+	if _, err := quit(t, 5*time.Second); err != nil {
 		t.Fatalf("second QuitAndWait: %v", err)
 	}
 	calls, sigs := f.snapshot()
@@ -181,7 +181,7 @@ func TestQuitAndWait_UserCanceledUnchanged(t *testing.T) {
 // polite window, SIGTERM still gets its own window before SIGKILL.
 func TestQuitAndWait_SigtermHasItsOwnDeadline(t *testing.T) {
 	f := stubChrome(t, osaSucceeds)
-	if err, _ := quit(t, 400*time.Millisecond); err != nil {
+	if _, err := quit(t, 400*time.Millisecond); err != nil {
 		t.Fatalf("QuitAndWait: %v", err)
 	}
 	if _, sigs := f.snapshot(); !reflect.DeepEqual(sigs, []string{"TERM"}) {
