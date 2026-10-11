@@ -39,8 +39,9 @@
 #   --extra-binary <path>      Repeatable. Makes no Keychain change. Prints
 #                              the manual `agentcookie wizard
 #                              set-keychain-access --recreate --extra-binary
-#                              <path>` command. Developer-ID-signed CLIs are
-#                              already covered by the default partition list.
+#                              <path>` command. CLIs signed by the same
+#                              Developer ID team as agentcookie are already
+#                              covered by the default partition list.
 #   --bin-dir <dir>            Where to place the agentcookie binary.
 #                              Default: /usr/local/bin if writable,
 #                              else $HOME/bin. A different dir than the
@@ -292,24 +293,32 @@ wizard_skip_candidate() {
   [[ -f "$(role_config_path "$role" "$config_dir")" ]]
 }
 
-# role_peer_hostname CONFIG_FILE
-# Print the top-level peer.hostname from a source.yaml or sink.yaml, or
-# nothing when the file or key is missing. The wizard writes block-style
-# YAML, so a line scan is enough: `peer:` at column 0, then an indented
-# `hostname:` before the next top-level key.
-role_peer_hostname() {
+# role_peer_hostnames CONFIG_FILE
+# Print every peer hostname a source.yaml or sink.yaml is paired with, one
+# per line: the top-level peer.hostname and each `sinks:` entry's peer (a
+# multi-sink source written by `wizard install --add-sink` has only the
+# latter). Prints nothing when the file is missing. The wizard writes
+# block-style YAML, so a line scan is enough.
+role_peer_hostnames() {
   local file="$1"
   [[ -f "$file" ]] || return 0
   awk '
+    function clean(v) {
+      sub(/[[:space:]]+#.*$/, "", v)
+      sub(/[[:space:]]+$/, "", v)
+      gsub(/^["\047]|["\047]$/, "", v)
+      return v
+    }
+    /^[^[:space:]#]/ { inpeer = 0; insinks = 0 }
     /^peer:[[:space:]]*$/ { inpeer = 1; next }
-    inpeer && /^[^[:space:]#]/ { inpeer = 0 }
+    /^sinks:[[:space:]]*$/ { insinks = 1; next }
     inpeer && /^[[:space:]]+hostname:/ {
-      sub(/^[[:space:]]+hostname:[[:space:]]*/, "")
-      sub(/[[:space:]]+#.*$/, "")
-      sub(/[[:space:]]+$/, "")
-      gsub(/^["\047]|["\047]$/, "")
-      print
-      exit
+      v = $0; sub(/^[[:space:]]+hostname:[[:space:]]*/, "", v); v = clean(v)
+      if (v != "") print v
+    }
+    insinks && /^[[:space:]]+(-[[:space:]]+)?peer:/ {
+      v = $0; sub(/^[[:space:]]+(-[[:space:]]+)?peer:[[:space:]]*/, "", v); v = clean(v)
+      if (v != "") print v
     }
   ' "$file"
 }
@@ -410,10 +419,10 @@ print_extra_binary_guidance() {
   done
   echo
   echo "  --extra-binary: this installer does not change Keychain access."
-  echo "  CLIs signed with a Developer ID are already covered by the default"
-  echo "  partition list. For an unsigned or ad-hoc signed CLI, run this at"
-  echo "  the Mac's screen (it recreates the Chrome Safe Storage item and may"
-  echo "  prompt):"
+  echo "  CLIs signed by the same Developer ID team as agentcookie are already"
+  echo "  covered by the default partition list. For any other CLI (another"
+  echo "  team, ad-hoc signed, or unsigned), run this at the Mac's screen (it"
+  echo "  recreates the Chrome Safe Storage item and may prompt):"
   echo
   echo "    $cmd"
   echo
@@ -622,9 +631,9 @@ fi
 # key exists, and the documented sink command passes them. A --peer only
 # forces it when it names a different host than the role's config.
 if [[ -n "$PEER" && -f "$(role_config_path "$ROLE" "$CONFIG_DIR")" ]]; then
-  CONFIGURED_PEER="$(role_peer_hostname "$(role_config_path "$ROLE" "$CONFIG_DIR")")"
-  if [[ "$PEER" != "$CONFIGURED_PEER" ]]; then
-    FORCE_REASONS+=("--peer $PEER (configured: ${CONFIGURED_PEER:-none})")
+  CONFIGURED_PEERS="$(role_peer_hostnames "$(role_config_path "$ROLE" "$CONFIG_DIR")")"
+  if ! grep -qxF -- "$PEER" <<< "$CONFIGURED_PEERS"; then
+    FORCE_REASONS+=("--peer $PEER (configured: $(tr '\n' ' ' <<< "${CONFIGURED_PEERS:-none}"))")
   fi
 fi
 if [[ ${#FORCE_REASONS[@]} -gt 0 ]]; then

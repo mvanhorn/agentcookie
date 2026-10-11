@@ -344,8 +344,8 @@ if wizard_skip_candidate bogus "$cfg" 0; then
   fail "unknown role must not be a skip candidate"
 fi
 
-# --- role_peer_hostname / plist_program_path ---
-assert_eq "$(role_peer_hostname "$cfg/source.yaml")" "example" "peer hostname from source.yaml"
+# --- role_peer_hostnames / plist_program_path ---
+assert_eq "$(role_peer_hostnames "$cfg/source.yaml")" "example" "peer hostname from source.yaml"
 cat > "$cfg/sink.yaml" <<'YAML'
 listen:
   addr: 0.0.0.0:9999
@@ -356,8 +356,18 @@ peer:
   hostname: "mac-mini" # quoted, with a comment
 skip_chrome_sqlite: true
 YAML
-assert_eq "$(role_peer_hostname "$cfg/sink.yaml")" "mac-mini" "peer hostname ignores nested peer keys"
-assert_eq "$(role_peer_hostname "$cfg/missing.yaml")" "" "missing config has no peer"
+assert_eq "$(role_peer_hostnames "$cfg/sink.yaml" | tr '\n' ' ')" "not-this-one mac-mini " "peer hostnames include sinks[].peer and peer.hostname"
+cat > "$cfg/multi.yaml" <<'YAML'
+sinks:
+  - url: http://mini:9999/sync
+    peer: mac-mini
+  - peer: 'studio' # second sink
+    url: http://studio:9999/sync
+cdp_source:
+  enabled: false
+YAML
+assert_eq "$(role_peer_hostnames "$cfg/multi.yaml" | tr '\n' ' ')" "mac-mini studio " "peer hostnames from a multi-sink source.yaml"
+assert_eq "$(role_peer_hostnames "$cfg/missing.yaml")" "" "missing config has no peer"
 
 # --- installer re-run flow ---
 # Each scenario runs the real script end to end against a stub tarball,
@@ -547,6 +557,12 @@ expect_healthy "no-TTY sink" sink
 new_box documented sink
 run_installer --as sink --peer peerhost --code AAAA-BBBB-CCCC --pair-url http://peerhost:9998/pair
 expect_healthy "documented sink re-run" sink
+
+# a multi-sink source re-run with one of its configured sink peers is healthy.
+new_box multisink source
+printf 'sinks:\n  - url: http://peerhost:9999/sync\n    peer: peerhost\n  - url: http://studio:9999/sync\n    peer: studio\n' > "$box/home/.config/agentcookie/source.yaml"
+run_installer --as source --peer studio
+expect_healthy "multi-sink source re-run" source
 
 # a different --peer runs the wizard.
 new_box newpeer source

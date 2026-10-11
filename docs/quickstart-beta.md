@@ -95,7 +95,7 @@ To force a fresh pairing handshake, re-run with `--repair`. On the source that p
 agentcookie wizard set-keychain-access --recreate --extra-binary <path>
 ```
 
-PP CLIs signed with a Developer ID are already covered by the default partition list, so most installs do not need it. Run it at the Mac's screen, because it recreates the Chrome Safe Storage item and may prompt.
+PP CLIs signed by the same Developer ID team as agentcookie are already covered by the default partition list. A CLI signed by another team, ad-hoc signed, or unsigned still needs it. Run it at the Mac's screen, because it recreates the Chrome Safe Storage item and may prompt.
 
 ## Install at least one PP CLI on the sink
 
