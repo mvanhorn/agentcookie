@@ -374,7 +374,9 @@ echo "launchctl $*" >> "$STUB_LOG"
 case "$1" in
   print)
     [[ "${STUB_LC_LOADED:-1}" == "1" ]] || exit 113
-    printf '%s = {\n\tstate = %s\n}\n' "$2" "${STUB_LC_STATE:-running}"
+    printf '%s = {\n\tstate = %s\n' "$2" "${STUB_LC_STATE:-running}"
+    [[ -z "${STUB_LC_PROGRAM:-}" ]] || printf '\tprogram = %s\n' "$STUB_LC_PROGRAM"
+    printf '}\n'
     ;;
   kickstart) exit "${STUB_LC_KICK_EXIT:-0}" ;;
 esac
@@ -495,6 +497,17 @@ run_installer --as source --peer peerhost
 expect_wizard "plist path mismatch"
 if called "launchctl kickstart"; then fail "plist path mismatch: must not kickstart"; fi
 
+# launchd still holds a job definition for another binary than the plist.
+new_box staleloaded source
+STUB_LC_PROGRAM="/old/agentcookie" run_installer --as source --peer peerhost
+expect_wizard "loaded job runs another binary"
+if called "launchctl kickstart"; then fail "loaded job mismatch: must not kickstart"; fi
+
+# The loaded job runs the target: still healthy.
+new_box loadedmatch source
+STUB_LC_PROGRAM="$box/bin/agentcookie" run_installer --as source
+expect_healthy "loaded job runs the target" source
+
 # kickstart fails.
 new_box kickfail source
 STUB_LC_KICK_EXIT=1 run_installer --as source --peer peerhost
@@ -555,7 +568,7 @@ fi
 new_box extrahealthy sink
 run_installer --as sink --extra-binary /path/cli
 expect_healthy "--extra-binary healthy" sink
-if ! said "agentcookie wizard set-keychain-access --recreate --extra-binary /path/cli"; then
+if ! said "$box/bin/agentcookie wizard set-keychain-access --recreate --extra-binary /path/cli"; then
   fail "--extra-binary healthy: manual set-keychain-access command not printed"
 fi
 if ! said "Developer ID"; then fail "--extra-binary healthy: Developer ID note missing"; fi
@@ -566,7 +579,7 @@ new_box extrawizard sink
 run_installer --as sink --peer peerhost --code AAAA-BBBB-CCCC --pair-url http://peerhost:9998/pair --extra-binary /path/cli --repair
 expect_wizard "--extra-binary wizard"
 assert_eq "$run_exit" "0" "--extra-binary wizard: exit code"
-if ! said "agentcookie wizard set-keychain-access --recreate --extra-binary /path/cli"; then
+if ! said "$box/bin/agentcookie wizard set-keychain-access --recreate --extra-binary /path/cli"; then
   fail "--extra-binary wizard: manual set-keychain-access command not printed"
 fi
 if called "set-keychain-access"; then fail "--extra-binary wizard: must not run set-keychain-access"; fi

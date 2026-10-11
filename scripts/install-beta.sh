@@ -358,13 +358,21 @@ restart_healthy_install() {
     warn "existing $role config is present but doctor reports a FAIL"
     return 1
   fi
-  if ! launchctl print "$service" >/dev/null 2>&1; then
+  local loaded loaded_program
+  if ! loaded="$(launchctl print "$service" 2>/dev/null)"; then
     warn "LaunchAgent $service is not loaded"
     return 1
   fi
   program="$(plist_program_path "$plist" || true)"
   if [[ "$program" != "$target" ]]; then
     warn "$plist runs ${program:-an unreadable path}, not $target"
+    return 1
+  fi
+  # launchd may still hold an older job definition than the plist on disk;
+  # kickstart restarts what is loaded, so check that too.
+  loaded_program="$(printf '%s\n' "$loaded" | awk '/^[[:space:]]*program = / { sub(/^[[:space:]]*program = /, ""); print; exit }')"
+  if [[ -n "$loaded_program" && "$loaded_program" != "$target" ]]; then
+    warn "loaded job $service runs $loaded_program, not $target"
     return 1
   fi
   step "restarting $label on the new binary"
@@ -395,7 +403,8 @@ restart_healthy_install() {
 # the Chrome Safe Storage item and can prompt mid-install.
 print_extra_binary_guidance() {
   [[ $# -gt 0 ]] || return 0
-  local cmd="agentcookie wizard set-keychain-access --recreate" b
+  local cmd b
+  cmd="$(printf '%q' "${TARGET:-agentcookie}") wizard set-keychain-access --recreate"
   for b in "$@"; do
     cmd+=" --extra-binary $(printf '%q' "$b")"
   done
