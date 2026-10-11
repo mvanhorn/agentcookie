@@ -43,11 +43,22 @@ Every subsequent rebuild matches the same ACL entry without a prompt.
 - `make install` runs `go install ./cmd/agentcookie` then signs
   `$(go env GOBIN)/agentcookie`. This is the steady-state developer
   flow.
-- CI release builds use GoReleaser. `.goreleaser.yaml` declares a build
-  post-hook that invokes `scripts/sign.sh` on every darwin binary
-  before archives are zipped. The release workflow
-  (`.github/workflows/release.yml`) imports the cert from the
-  `CERTIFICATE_OSX_APPLICATION` secret on every tagged release.
+- `make release` builds a Universal 2 `bin/agentcookie`, signs it via
+  `scripts/sign.sh`, and notarizes it. The release workflow
+  (`.github/workflows/release.yml`) runs `make release` on a macOS
+  runner after importing the cert from the `CERTIFICATE_OSX_APPLICATION`
+  secret on every tagged release. GoReleaser builds only the Linux
+  binaries, which are not signed.
+
+Every path goes through `scripts/sign.sh`, which signs with Hardened
+Runtime, a secure timestamp, and `scripts/agentcookie.entitlements`.
+That file grants `com.apple.security.automation.apple-events`. Hardened
+Runtime blocks Apple Events without it, so chromectl's
+`osascript ... to quit` is denied and the Google Chrome toggle under
+Privacy & Security > Automation cannot be turned on. After signing,
+`sign.sh` reads the entitlements back with
+`codesign -d --entitlements :-` and exits 3 unless the key is present
+with a true value.
 
 ## Verify on the build machine
 
@@ -70,6 +81,16 @@ make verify
 
 `make verify` runs `codesign -d -r-` and prints the designated
 requirement. The last line should contain `subject.OU = NM8VT393AR`.
+
+Confirm the Apple Events entitlement is on:
+
+```
+codesign -d --entitlements :- bin/agentcookie
+```
+
+The output should contain
+`<key>com.apple.security.automation.apple-events</key>` followed by
+`<true/>`.
 
 Two consecutive clean rebuilds should produce identical designated
 requirements:
@@ -155,10 +176,12 @@ make build
 ```
 go build -o /tmp/agentcookie-smoke ./cmd/agentcookie
 codesign --force --options runtime --timestamp \
+  --entitlements scripts/agentcookie.entitlements \
   --sign "Developer ID Application: Matthew Charles Van Horn (NM8VT393AR)" \
   /tmp/agentcookie-smoke
 codesign --verify --deep --strict --verbose=2 /tmp/agentcookie-smoke
 codesign -d -r- /tmp/agentcookie-smoke
+codesign -d --entitlements :- /tmp/agentcookie-smoke
 /tmp/agentcookie-smoke --version
 ```
 
@@ -241,3 +264,21 @@ GitHub Actions. Add the app-specific password as the
   private key. Confirm the `.p12` exported both the cert and the
   private key (Keychain Access shows the private key under the
   disclosure triangle).
+- `sign.sh` exits 3 with `is missing the
+  com.apple.security.automation.apple-events entitlement`: the signed
+  binary does not carry the key with a true value. Check that
+  `scripts/agentcookie.entitlements` still sets it to `<true/>` and
+  that the codesign call in `sign.sh` still passes `--entitlements`.
+- Chrome does not quit cleanly, or the Google Chrome toggle under
+  System Settings > Privacy & Security > Automation is missing or
+  cannot be turned on: the agentcookie binary predates the Apple Events
+  entitlement. Install a build signed by the current `sign.sh`, confirm
+  the entitlement with `codesign -d --entitlements :-`, then turn the
+  toggle on for agentcookie. A Mac that refused or ignored an earlier
+  prompt can keep a stale denied record that hides the toggle. Clear it
+  with `tccutil reset AppleEvents` (this resets Automation consent for
+  every app, so other apps will ask again), then run a sync and allow
+  the prompt. Until access is granted, chromectl waits at most a few
+  seconds for the AppleScript quit, falls back to SIGTERM, and keeps
+  using signals for the rest of that process. Restart the daemon after
+  granting access so it tries the polite quit again.

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Signed binaries can quit Chrome through Apple Events
+
+- Signed release and `make install` binaries now carry the `com.apple.security.automation.apple-events` entitlement. Hardened Runtime blocked chromectl's AppleScript quit without it, and the Google Chrome toggle under Privacy & Security > Automation could not be turned on. `scripts/sign.sh` fails with exit 3 unless the signed binary has the key set to true.
+- chromectl bounds the AppleScript quit with its own short timeout. A not-authorized (-1743) result or an unanswered Automation prompt falls back to SIGTERM right away, and later quits in the same process skip AppleScript, so a sink sync never waits on a prompt nobody answers. Thanks to @CedricKhuaYanHan for the entitlement fix (#135).
+
 ### Security: adapter cookie patterns bound to the real domain
 
 - Sink adapters (airbnb, ebay, pagliacci, instacart, table-reservation) selected cookies with substring patterns such as `%ebay%`, which also matched look-alike hosts like `webay.com` or `ebay.attacker.com`. Those cookies were merged into the Cookie header sent to the real site (CWE-200, CWE-384). Adapters now match only the exact domain or its subdomains via `DomainHostPatterns`, and `doctor` uses the same matcher (#136).

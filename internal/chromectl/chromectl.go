@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -38,9 +39,36 @@ var ErrQuitTimeout = errors.New("chromectl: Chrome did not exit within the deadl
 // missing or unsigned.
 var ErrLaunchTimeout = errors.New("chromectl: Chrome did not become ready within the deadline")
 
+// Test seams. Production code runs the real /usr/bin tools; tests swap
+// all three so no test can quit or signal the developer's real Chrome.
+var (
+	// runOsascript runs one AppleScript and returns its combined output.
+	runOsascript = func(ctx context.Context, script string) ([]byte, error) {
+		return exec.CommandContext(ctx, "/usr/bin/osascript", "-e", script).CombinedOutput()
+	}
+	// isRunning probes for a live Chrome process.
+	isRunning = pgrepRunning
+	// sendSignal delivers sig ("TERM" or "KILL") to every Chrome process.
+	sendSignal = func(ctx context.Context, sig string) error {
+		return exec.CommandContext(ctx, "/usr/bin/pkill", "-"+sig, "-x", "Google Chrome").Run()
+	}
+)
+
+// appleScriptTimeout bounds the osascript quit on its own, apart from the
+// caller's context.
+var appleScriptTimeout = 5 * time.Second
+
+// appleEventsRefused remembers, for the life of the process, that Chrome
+// automation was refused or went unanswered.
+var appleEventsRefused atomic.Bool
+
 // IsRunning reports whether any Google Chrome process is currently up.
 // Uses pgrep against the process name (not the full command line).
 func IsRunning() (bool, error) {
+	return isRunning()
+}
+
+func pgrepRunning() (bool, error) {
 	out, err := exec.Command("/usr/bin/pgrep", "-x", "Google Chrome").CombinedOutput()
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -62,7 +90,20 @@ func IsRunning() (bool, error) {
 // warning is on AND a page has beforeunload AND Chrome decides to
 // suppress the AppleEvent), the function falls back to SIGTERM via pkill,
 // then SIGKILL if SIGTERM doesn't take.
+//
+// The osascript call has its own bound (appleScriptTimeout), apart from
+// ctx. A -1743 (not authorized) result or that bound running out takes
+// the same early fallback as -128. Both are remembered for the rest of
+// the process, so later quits go straight to signals: a universal-mode
+// sink quits Chrome on every sync, and an Automation prompt nobody
+// answers must not stall each one. Restart the process after granting
+// Automation access to use the polite quit again.
+//
+// timeout bounds the polite phase and, separately, the SIGTERM phase.
 func QuitAndWait(ctx context.Context, timeout time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	running, err := IsRunning()
 	if err != nil {
 		return err
@@ -71,38 +112,53 @@ func QuitAndWait(ctx context.Context, timeout time.Duration) error {
 		return nil
 	}
 
-	// First try: AppleScript with "saving no" to bypass beforeunload prompts.
-	cmd := exec.CommandContext(ctx, "/usr/bin/osascript", "-e", `tell application "Google Chrome" to quit saving no`)
-	out, err := cmd.CombinedOutput()
-	stderr := strings.TrimSpace(string(out))
-	appleScriptFailed := err != nil
+	var stderr string
+	appleScriptFailed := false
+	if !appleEventsRefused.Load() {
+		// First try: AppleScript with "saving no" to bypass beforeunload prompts.
+		osaCtx, cancel := context.WithTimeout(ctx, appleScriptTimeout)
+		out, err := runOsascript(osaCtx, `tell application "Google Chrome" to quit saving no`)
+		timedOut := err != nil && errors.Is(osaCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+		cancel()
+		stderr = strings.TrimSpace(string(out))
+		appleScriptFailed = err != nil
+		if timedOut {
+			stderr = fmt.Sprintf("no answer within %s", appleScriptTimeout)
+		}
+		refused := timedOut || (appleScriptFailed && strings.Contains(stderr, "-1743"))
+		if refused {
+			appleEventsRefused.Store(true)
+		}
 
-	// Even if AppleScript reported success, poll briefly to confirm. Chrome
-	// can swallow the quit AppleEvent and stay running.
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(200 * time.Millisecond):
-		}
-		running, err := IsRunning()
-		if err != nil {
-			return err
-		}
-		if !running {
-			return nil
-		}
-		// If the AppleScript reported "user canceled" and Chrome is still up,
-		// bail out of the polite path early and use signals.
-		if appleScriptFailed && strings.Contains(stderr, "-128") {
-			break
+		// Even if AppleScript reported success, poll briefly to confirm. Chrome
+		// can swallow the quit AppleEvent and stay running.
+		deadline := time.Now().Add(timeout)
+		for time.Now().Before(deadline) {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(200 * time.Millisecond):
+			}
+			running, err := IsRunning()
+			if err != nil {
+				return err
+			}
+			if !running {
+				return nil
+			}
+			// If the AppleScript reported "user canceled", was refused, or
+			// went unanswered and Chrome is still up, bail out of the polite
+			// path early and use signals.
+			if appleScriptFailed && (refused || strings.Contains(stderr, "-128")) {
+				break
+			}
 		}
 	}
 
 	// Fallback: SIGTERM the Chrome processes directly.
-	_ = exec.CommandContext(ctx, "/usr/bin/pkill", "-TERM", "-x", "Google Chrome").Run()
-	for time.Now().Before(deadline) {
+	_ = sendSignal(ctx, "TERM")
+	termDeadline := time.Now().Add(timeout)
+	for time.Now().Before(termDeadline) {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -118,7 +174,7 @@ func QuitAndWait(ctx context.Context, timeout time.Duration) error {
 	}
 
 	// Last resort: SIGKILL.
-	_ = exec.CommandContext(ctx, "/usr/bin/pkill", "-KILL", "-x", "Google Chrome").Run()
+	_ = sendSignal(ctx, "KILL")
 	hardDeadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(hardDeadline) {
 		select {

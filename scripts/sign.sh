@@ -89,7 +89,12 @@ for binary in "$@"; do
 
   echo "scripts/sign.sh: verifying $binary"
   codesign --verify --deep --strict --verbose=2 "$binary"
-  if ! codesign -d --entitlements - "$binary" 2>/dev/null | grep -qF "$APPLE_EVENTS_ENTITLEMENT"; then
+  # The key must be present with a true value, not merely named. Capture
+  # the output before matching: under pipefail, `grep -q` on a pipe can
+  # SIGPIPE codesign and turn a pass into a failure.
+  signed_entitlements="$(codesign -d --entitlements :- "$binary" 2>/dev/null || true)"
+  signed_entitlements="${signed_entitlements//[[:space:]]/}"
+  if [[ "$signed_entitlements" != *"<key>$APPLE_EVENTS_ENTITLEMENT</key><true/>"* ]]; then
     echo "scripts/sign.sh: $binary is missing the $APPLE_EVENTS_ENTITLEMENT entitlement" >&2
     exit 3
   fi

@@ -301,6 +301,83 @@ if ! grep -q 'bash scripts/release_asset_test.sh' "$ROOT/Makefile"; then
   fail "make test does not run scripts/release_asset_test.sh"
 fi
 
+# Apple Events entitlement (#135). Hardened Runtime blocks chromectl's
+# osascript quit unless the signed binary carries the key with a true
+# value. Plain grep keeps these checks runnable on the Linux CI runner.
+readonly APPLE_EVENTS_KEY="com.apple.security.automation.apple-events"
+
+# entitlements_enable_apple_events FILE: the plist sets the key to <true/>.
+entitlements_enable_apple_events() {
+  local flat
+  flat="$(tr -d '[:space:]' < "$1")"
+  [[ "$flat" == *"<key>$APPLE_EVENTS_KEY</key><true/>"* ]]
+}
+
+# sign_passes_entitlements FILE: sign.sh hands the entitlements file to
+# codesign.
+sign_passes_entitlements() {
+  # shellcheck disable=SC2016 # the literal $ENTITLEMENTS is the match target
+  grep -qE -- '--entitlements "\$ENTITLEMENTS"' "$1"
+}
+
+if ! entitlements_enable_apple_events "$ROOT/scripts/agentcookie.entitlements"; then
+  fail "agentcookie.entitlements does not set $APPLE_EVENTS_KEY to true"
+fi
+if command -v plutil >/dev/null 2>&1; then
+  if ! plutil -lint "$ROOT/scripts/agentcookie.entitlements" >/dev/null; then
+    fail "agentcookie.entitlements is not a valid plist"
+  fi
+fi
+if ! sign_passes_entitlements "$ROOT/scripts/sign.sh"; then
+  fail "sign.sh does not pass --entitlements to codesign"
+fi
+
+# The static checks must reject a false value and a dropped flag.
+sed 's|<true/>|<false/>|' "$ROOT/scripts/agentcookie.entitlements" > "$tmp/false.entitlements"
+if entitlements_enable_apple_events "$tmp/false.entitlements"; then
+  fail "entitlements check accepted a false Apple Events value"
+fi
+grep -v -- '--entitlements' "$ROOT/scripts/sign.sh" > "$tmp/sign-no-entitlements.sh"
+if sign_passes_entitlements "$tmp/sign-no-entitlements.sh"; then
+  fail "sign.sh check accepted a script without --entitlements"
+fi
+
+# sign.sh's post-sign check, run against stub security and codesign
+# binaries. The stub codesign reports the Apple Events value from
+# STUB_APPLE_EVENTS (true or false) and succeeds for every other call.
+stubs="$tmp/stubs"
+mkdir -p "$stubs"
+cat > "$stubs/security" <<'STUB'
+#!/usr/bin/env bash
+echo '  1) 0000000000000000000000000000000000000000 "stub identity"'
+STUB
+cat > "$stubs/codesign" <<'STUB'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  if [[ "$arg" == "-d" ]]; then
+    printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>com.apple.security.automation.apple-events</key>\n\t<%s/>\n</dict></plist>\n' "$STUB_APPLE_EVENTS"
+    exit 0
+  fi
+done
+exit 0
+STUB
+chmod +x "$stubs/security" "$stubs/codesign"
+printf 'bin' > "$tmp/agentcookie-stub"
+
+# run_sign_with_stub VALUE: prints sign.sh's exit code, stderr to $tmp/sign.err.
+run_sign_with_stub() {
+  local rc=0
+  PATH="$stubs:$PATH" STUB_APPLE_EVENTS="$1" AGENTCOOKIE_SIGN_IDENTITY="stub identity" \
+    bash "$ROOT/scripts/sign.sh" "$tmp/agentcookie-stub" >/dev/null 2>"$tmp/sign.err" || rc=$?
+  echo "$rc"
+}
+
+assert_eq "$(run_sign_with_stub false)" "3" "sign.sh exits 3 when the entitlement is false"
+if ! grep -qF "is missing the $APPLE_EVENTS_KEY entitlement" "$tmp/sign.err"; then
+  fail "sign.sh did not print the missing-entitlement message for a false value"
+fi
+assert_eq "$(run_sign_with_stub true)" "0" "sign.sh passes when the entitlement is true"
+
 if [[ $failures -ne 0 ]]; then
   echo "$failures test(s) failed" >&2
   exit 1
