@@ -580,13 +580,17 @@ if ! grep -q '^agentcookie wizard install .*--repair' "$box/calls.log"; then
   fail "--repair must be forwarded to wizard install"
 fi
 
-# --extra-binary on the healthy path prints the manual command only.
+# --extra-binary on the healthy path prints guidance only.
 new_box extrahealthy sink
 run_installer --as sink --extra-binary /path/cli
 expect_healthy "--extra-binary healthy" sink
-if ! said "$box/bin/agentcookie wizard set-keychain-access --recreate --extra-binary /path/cli"; then
-  fail "--extra-binary healthy: manual set-keychain-access command not printed"
+# The guidance must never recommend --recreate: it replaces the Chrome Safe
+# Storage key with a random value and makes existing Chrome cookies unreadable.
+if said "--recreate"; then fail "--extra-binary healthy: must not recommend --recreate"; fi
+if ! said "$box/bin/agentcookie cookies --domain"; then
+  fail "--extra-binary healthy: cookies --domain guidance not printed"
 fi
+if ! said "/path/cli"; then fail "--extra-binary healthy: guidance must name the binary"; fi
 if ! said "Developer ID"; then fail "--extra-binary healthy: Developer ID note missing"; fi
 if called "set-keychain-access"; then fail "--extra-binary healthy: must not run set-keychain-access"; fi
 
@@ -595,8 +599,9 @@ new_box extrawizard sink
 run_installer --as sink --peer peerhost --code AAAA-BBBB-CCCC --pair-url http://peerhost:9998/pair --extra-binary /path/cli --repair
 expect_wizard "--extra-binary wizard"
 assert_eq "$run_exit" "0" "--extra-binary wizard: exit code"
-if ! said "$box/bin/agentcookie wizard set-keychain-access --recreate --extra-binary /path/cli"; then
-  fail "--extra-binary wizard: manual set-keychain-access command not printed"
+if said "--recreate"; then fail "--extra-binary wizard: must not recommend --recreate"; fi
+if ! said "$box/bin/agentcookie cookies --domain"; then
+  fail "--extra-binary wizard: cookies --domain guidance not printed"
 fi
 if called "set-keychain-access"; then fail "--extra-binary wizard: must not run set-keychain-access"; fi
 

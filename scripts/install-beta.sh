@@ -36,12 +36,11 @@
 #                              [sink] Forwarded to wizard install.
 #                              --repair, these three, and an explicit
 #                              --skip-keychain-prompt always run the wizard.
-#   --extra-binary <path>      Repeatable. Makes no Keychain change. Prints
-#                              the manual `agentcookie wizard
-#                              set-keychain-access --recreate --extra-binary
-#                              <path>` command. CLIs signed by the same
-#                              Developer ID team as agentcookie are already
-#                              covered by the default partition list.
+#   --extra-binary <path>      Repeatable. Makes no Keychain change. CLIs
+#                              signed by the same Developer ID team as
+#                              agentcookie already read Chrome Safe Storage;
+#                              any other CLI should read synced cookies with
+#                              `agentcookie cookies --domain` instead.
 #   --bin-dir <dir>            Where to place the agentcookie binary.
 #                              Default: /usr/local/bin if writable,
 #                              else $HOME/bin. A different dir than the
@@ -407,24 +406,28 @@ restart_healthy_install() {
 }
 
 # print_extra_binary_guidance BIN...
-# The installer makes no Keychain change for --extra-binary. Print the
-# manual command instead. Running it ourselves would delete and recreate
-# the Chrome Safe Storage item and can prompt mid-install.
+# The installer makes no Keychain change for --extra-binary, and it does
+# not suggest one: the only command that adds a per-binary grant
+# (`wizard set-keychain-access --recreate`) replaces the Chrome Safe
+# Storage key with a random value, which makes existing Chrome cookies
+# unreadable. Point at the Keychain-free consumption path instead.
 print_extra_binary_guidance() {
   [[ $# -gt 0 ]] || return 0
-  local cmd b
-  cmd="$(printf '%q' "${TARGET:-agentcookie}") wizard set-keychain-access --recreate"
+  local bin b
+  bin="$(printf '%q' "${TARGET:-agentcookie}")"
+  echo
+  echo "  --extra-binary: this installer does not change Keychain access for:"
   for b in "$@"; do
-    cmd+=" --extra-binary $(printf '%q' "$b")"
+    echo "    $b"
   done
+  echo "  CLIs signed by the same Developer ID team as agentcookie can already"
+  echo "  read Chrome Safe Storage. Any other CLI (another team, ad-hoc signed,"
+  echo "  or unsigned) should read the synced cookies through agentcookie rather"
+  echo "  than the Keychain:"
   echo
-  echo "  --extra-binary: this installer does not change Keychain access."
-  echo "  CLIs signed by the same Developer ID team as agentcookie are already"
-  echo "  covered by the default partition list. For any other CLI (another"
-  echo "  team, ad-hoc signed, or unsigned), run this at the Mac's screen (it"
-  echo "  recreates the Chrome Safe Storage item and may prompt):"
+  echo "    $bin cookies --domain <domain>"
   echo
-  echo "    $cmd"
+  echo "  See docs/consumption.md."
   echo
 }
 

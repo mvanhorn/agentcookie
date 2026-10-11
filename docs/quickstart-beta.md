@@ -89,13 +89,13 @@ The wizard runs instead when:
 
 To force a fresh pairing handshake, re-run with `--repair`. On the source that prints a new pairing code; on the sink pass the new `--code` and `--pair-url` along with `--repair`.
 
-`--extra-binary <path>` makes no Keychain change. The script prints the manual command instead:
+`--extra-binary <path>` makes no Keychain change. PP CLIs signed by the same Developer ID team as agentcookie can already read Chrome Safe Storage. Any other CLI (another team, ad-hoc signed, or unsigned) should read the synced cookies through agentcookie instead of the Keychain:
 
 ```
-agentcookie wizard set-keychain-access --recreate --extra-binary <path>
+agentcookie cookies --domain <domain>
 ```
 
-PP CLIs signed by the same Developer ID team as agentcookie are already covered by the default partition list. A CLI signed by another team, ad-hoc signed, or unsigned still needs it. Run it at the Mac's screen, because it recreates the Chrome Safe Storage item and may prompt.
+See [consumption.md](consumption.md). Do not reach for `agentcookie wizard set-keychain-access --recreate` on a Mac whose Chrome cookies you need: it replaces the Chrome Safe Storage key with a random value, which makes the existing cookies unreadable.
 
 ## Install at least one PP CLI on the sink
 
