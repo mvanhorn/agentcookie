@@ -35,7 +35,14 @@ Behavior:
 
 - Universal. Any tool, any domain, regardless of how the CLI was built. Cookies
   need no per-tool configuration; a Cookie header is a Cookie header.
-- Keychain-free. Reads the plaintext sidecar; never touches Chrome Safe Storage.
+- Keychain-free on a headless sink. When `sink.yaml` sets
+  `skip_chrome_sqlite: true`, it reads only the plaintext sidecar and never
+  touches Chrome Safe Storage. Otherwise, on macOS it also decrypts cookies
+  from Chrome profiles discovered on this machine, which reads each browser's
+  Safe Storage key from the Keychain (and can prompt if this binary has no
+  grant). The sink daemon follows the same rule, and with `skip_chrome_sqlite`
+  off it reads those profiles only when a push adapter's CLI is installed. A
+  refused read (no grant or timeout) is not retried until the sink restarts.
 - Scoped. Matches the exact host and its subdomains, never look-alikes
   (`.amazon.com` matches `amazon.com` and `www.amazon.com`, never
   `evilamazon.com`).
@@ -92,7 +99,7 @@ emits; the alias above is the operator-set bridge until then.
 
 | Surface | Command | Keychain | Per-tool config |
 | --- | --- | --- | --- |
-| Cookies | `agentcookie cookies --domain <d>` | none | none (universal) |
+| Cookies | `agentcookie cookies --domain <d>` | none with `skip_chrome_sqlite`; Safe Storage read on macOS otherwise | none (universal) |
 | Secrets | `eval "$(agentcookie secret env <cli>)"` | none | alias when names differ |
 
 Per-app push adapters (`internal/sinkpush`) remain as a legacy fallback; the

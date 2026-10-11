@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +20,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
+	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 	"github.com/mvanhorn/agentcookie/internal/state"
 	"github.com/mvanhorn/agentcookie/internal/transport"
 	"github.com/mvanhorn/agentcookie/pkg/sidecar"
@@ -720,7 +723,7 @@ func TestUnionCookiesWithExtraProfiles_NilBlocklistAllowsAll(t *testing.T) {
 // TestSinkHandler_EmptyEnvelopeStillUnionsExtraProfiles is a behavioral test
 // that verifies the P1 fix #2: the sink handler should union extra-profile
 // cookies even when the envelope is empty/fully filtered. On Linux this is
-// a no-op (no extra profiles), but the code path should be exercised.
+// A no-op (no extra profiles), but the code path should be exercised.
 func TestSinkHandler_EmptyEnvelopeStillUnionsExtraProfiles(t *testing.T) {
 	// This test verifies that the union function is called even with empty
 	// envelope cookies (P1 fix #2). On Linux, this returns empty, but the
@@ -801,5 +804,266 @@ func TestMaybeRebindListenAddr_ParseError(t *testing.T) {
 	got := maybeRebindListenAddr(context.Background(), addr)
 	if got != addr {
 		t.Errorf("unparseable address should pass through unchanged: got %q, want %q", got, addr)
+	}
+}
+
+// --- #137: Chrome Safe Storage gate ---
+
+// safeStorageTestKey is the AES key the stubbed Safe Storage read returns
+// and the seeded extra-profile Cookies DB is encrypted with.
+var safeStorageTestKey = []byte("fedcba9876543210")
+
+// decryptKeyStub counts calls to the stubbed Chrome Safe Storage read.
+type decryptKeyStub struct {
+	mu    sync.Mutex
+	calls int
+	fn    func(call int) ([]byte, error)
+	log   bytes.Buffer // written only under decryptKeyMu
+}
+
+func (s *decryptKeyStub) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+// stubChromeDecryptKey replaces the Keychain read with fn (which receives
+// the 1-based call number), starts from an empty refusal cache, captures
+// the refusal log, and returns the call counter.
+func stubChromeDecryptKey(t *testing.T, fn func(call int) ([]byte, error)) *decryptKeyStub {
+	t.Helper()
+	stub := &decryptKeyStub{fn: fn}
+	decryptKeyMu.Lock()
+	origRefusals, origLog := decryptKeyRefusals, decryptKeyRefusalLog
+	decryptKeyRefusals = map[string]error{}
+	decryptKeyRefusalLog = &stub.log
+	decryptKeyMu.Unlock()
+	t.Cleanup(func() {
+		decryptKeyMu.Lock()
+		decryptKeyRefusals, decryptKeyRefusalLog = origRefusals, origLog
+		decryptKeyMu.Unlock()
+	})
+	orig := chromeDecryptKeyRead
+	chromeDecryptKeyRead = func(string) ([]byte, error) {
+		stub.mu.Lock()
+		stub.calls++
+		n := stub.calls
+		stub.mu.Unlock()
+		return stub.fn(n)
+	}
+	t.Cleanup(func() { chromeDecryptKeyRead = orig })
+	return stub
+}
+
+// seedExtraChromeProfile writes an encrypted Cookies DB into the agent
+// chrome-profile under home, which chromepaths discovery always scans.
+func seedExtraChromeProfile(t *testing.T, home string, cookies []chrome.Cookie) {
+	t.Helper()
+	t.Setenv("CHROME_USER_DATA_DIR", "")
+	dir := filepath.Join(home, ".agentcookie", "chrome-profile")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir chrome-profile: %v", err)
+	}
+	seedSourceCookiesDB(t, filepath.Join(dir, "Cookies"), cookies, safeStorageTestKey)
+}
+
+// recordingAdapter is a sinkpush.Adapter that records every Push.
+type recordingAdapter struct {
+	installed bool
+	mu        sync.Mutex
+	pushes    [][]chrome.Cookie
+}
+
+func (a *recordingAdapter) Name() string                 { return "recording-test-adapter" }
+func (a *recordingAdapter) CLIBinary() string            { return "/nonexistent/recording-test-adapter" }
+func (a *recordingAdapter) IsInstalled() bool            { return a.installed }
+func (a *recordingAdapter) CookieHostPatterns() []string { return nil }
+func (a *recordingAdapter) Push(c []chrome.Cookie) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.pushes = append(a.pushes, append([]chrome.Cookie(nil), c...))
+	return nil
+}
+
+func (a *recordingAdapter) lastPush(t *testing.T) []chrome.Cookie {
+	t.Helper()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.pushes) == 0 {
+		t.Fatal("adapter was never pushed")
+	}
+	return a.pushes[len(a.pushes)-1]
+}
+
+func cookieValuesByName(cookies []chrome.Cookie) map[string]string {
+	m := make(map[string]string, len(cookies))
+	for _, c := range cookies {
+		m[c.HostKey+"/"+c.Name+c.Path] = c.Value
+	}
+	return m
+}
+
+func skipUnlessDarwin(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "darwin" {
+		t.Skip("extra-profile discovery and decrypt run on darwin only")
+	}
+}
+
+// TestApplySealedEnvelope_SkipChromeSQLiteNeverReadsSafeStorage is the #137
+// regression: a skip_chrome_sqlite sink with an installed adapter and an
+// extra Chrome profile on disk must not read Chrome Safe Storage on any
+// batch.
+func TestApplySealedEnvelope_SkipChromeSQLiteNeverReadsSafeStorage(t *testing.T) {
+	skipUnlessDarwin(t)
+	f := newSinkHandlerFixture(t, false)
+	seedExtraChromeProfile(t, f.home, []chrome.Cookie{
+		{HostKey: ".extra.example.com", Name: "extra", Value: "from-profile", Path: "/"},
+	})
+	adapter := &recordingAdapter{installed: true}
+	t.Cleanup(sinkpush.SetRegistryForTesting([]sinkpush.Adapter{adapter}))
+	stub := stubChromeDecryptKey(t, func(int) ([]byte, error) { return safeStorageTestKey, nil })
+
+	envelope := []chrome.Cookie{{HostKey: ".example.com", Name: "sess", Value: "env", Path: "/"}}
+	for seq := int64(1); seq <= 2; seq++ {
+		rec := f.postSync(seq, envelope)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("batch %d: status %d: %s", seq, rec.Code, rec.Body.String())
+		}
+		if got := stub.count(); got != 0 {
+			t.Fatalf("batch %d: Chrome Safe Storage read %d time(s) under skip_chrome_sqlite; want 0", seq, got)
+		}
+	}
+	got := cookieValuesByName(adapter.lastPush(t))
+	if _, ok := got[".extra.example.com/extra/"]; ok || len(got) != 1 {
+		t.Errorf("adapter should receive envelope cookies only; got %v", got)
+	}
+}
+
+// unionTestFixture sets up a non-skip sink with an extra Chrome profile on
+// disk, the given adapters registered, and a blocklist that blocks
+// .blocked.com.
+func unionTestFixture(t *testing.T, adapters ...sinkpush.Adapter) (*config.SinkConfig, *protocol.BlocklistMatcher) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedExtraChromeProfile(t, home, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "sess", Value: "profile-loses", Path: "/"},
+		{HostKey: ".example.com", Name: "extra", Value: "from-profile", Path: "/"},
+		{HostKey: ".blocked.com", Name: "secret", Value: "must-not-leak", Path: "/"},
+	})
+	t.Cleanup(sinkpush.SetRegistryForTesting(adapters))
+	bl := &config.Blocklist{Version: 1, Policy: "blocklist", Domains: []config.BlocklistEntry{{Pattern: "%.blocked.com"}}}
+	return &config.SinkConfig{SkipChromeSQLite: false}, protocol.NewBlocklistMatcherForSink(bl)
+}
+
+var unionTestEnvelope = []chrome.Cookie{{HostKey: ".example.com", Name: "sess", Value: "envelope-wins", Path: "/"}}
+
+// A non-skip sink with no installed adapter never reads Safe Storage.
+func TestAdapterCookieSet_NoInstalledAdapterSkipsSafeStorage(t *testing.T) {
+	skipUnlessDarwin(t)
+	cfg, bm := unionTestFixture(t, &recordingAdapter{installed: false})
+	stub := stubChromeDecryptKey(t, func(int) ([]byte, error) { return safeStorageTestKey, nil })
+
+	got := adapterCookieSet(cfg, unionTestEnvelope, bm)
+	if n := stub.count(); n != 0 {
+		t.Errorf("Safe Storage read %d time(s) with no installed adapter; want 0", n)
+	}
+	if !reflect.DeepEqual(got, unionTestEnvelope) {
+		t.Errorf("want envelope cookies only; got %+v", got)
+	}
+}
+
+// A non-skip sink with an installed adapter still unions
+// extra-profile cookies into what the adapter receives. Envelope cookies win
+// collisions and blocklisted hosts stay filtered.
+func TestAdapterCookieSet_InstalledAdapterReceivesUnion(t *testing.T) {
+	skipUnlessDarwin(t)
+	adapter := &recordingAdapter{installed: true}
+	cfg, bm := unionTestFixture(t, adapter)
+	stub := stubChromeDecryptKey(t, func(int) ([]byte, error) { return safeStorageTestKey, nil })
+
+	sinkpush.RunAll(adapterCookieSet(cfg, unionTestEnvelope, bm))
+	if n := stub.count(); n != 1 {
+		t.Errorf("Safe Storage reads = %d, want 1", n)
+	}
+	got := cookieValuesByName(adapter.lastPush(t))
+	want := map[string]string{
+		".example.com/sess/":  "envelope-wins",
+		".example.com/extra/": "from-profile",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("adapter received %v, want %v", got, want)
+	}
+}
+
+// A permanent refusal is read once, cached for the process, and
+// logged once.
+func TestAdapterCookieSet_PermanentRefusalNotRetried(t *testing.T) {
+	skipUnlessDarwin(t)
+	for _, sentinel := range []error{chrome.ErrKeychainNoGrant, chrome.ErrKeychainTimeout} {
+		t.Run(sentinel.Error(), func(t *testing.T) {
+			cfg, bm := unionTestFixture(t, &recordingAdapter{installed: true})
+			stub := stubChromeDecryptKey(t, func(int) ([]byte, error) {
+				return nil, fmt.Errorf("read Chrome Safe Storage: %w", sentinel)
+			})
+			for batch := 1; batch <= 2; batch++ {
+				got := adapterCookieSet(cfg, unionTestEnvelope, bm)
+				if !reflect.DeepEqual(got, unionTestEnvelope) {
+					t.Errorf("batch %d: want envelope cookies only; got %+v", batch, got)
+				}
+			}
+			if n := stub.count(); n != 1 {
+				t.Errorf("Safe Storage reads across 2 batches = %d, want 1", n)
+			}
+			if n := strings.Count(stub.log.String(), "Restart the sink to retry"); n != 1 {
+				t.Errorf("refusal logged %d time(s), want 1; log:\n%s", n, stub.log.String())
+			}
+		})
+	}
+}
+
+// A locked keychain is transient and is retried on the next batch.
+func TestAdapterCookieSet_LockedKeychainRetried(t *testing.T) {
+	skipUnlessDarwin(t)
+	cfg, bm := unionTestFixture(t, &recordingAdapter{installed: true})
+	stub := stubChromeDecryptKey(t, func(call int) ([]byte, error) {
+		if call == 1 {
+			return nil, fmt.Errorf("read Chrome Safe Storage: %w", chrome.ErrKeychainLocked)
+		}
+		return safeStorageTestKey, nil
+	})
+
+	if got := adapterCookieSet(cfg, unionTestEnvelope, bm); len(got) != 1 {
+		t.Errorf("batch 1 (locked): want envelope only; got %+v", got)
+	}
+	got := cookieValuesByName(adapterCookieSet(cfg, unionTestEnvelope, bm))
+	if n := stub.count(); n != 2 {
+		t.Errorf("Safe Storage reads = %d, want 2 (locked is retried)", n)
+	}
+	if got[".example.com/extra/"] != "from-profile" {
+		t.Errorf("batch 2 should include extra-profile cookies; got %v", got)
+	}
+	if stub.log.Len() != 0 {
+		t.Errorf("a locked keychain must not log a cached refusal; got %q", stub.log.String())
+	}
+}
+
+// Concurrent /sync handlers with a refusing Keychain make at most one read
+// per browser and are race-free.
+func TestAdapterCookieSet_ConcurrentRefusalReadOnce(t *testing.T) {
+	skipUnlessDarwin(t)
+	cfg, bm := unionTestFixture(t, &recordingAdapter{installed: true})
+	stub := stubChromeDecryptKey(t, func(int) ([]byte, error) {
+		return nil, fmt.Errorf("read Chrome Safe Storage: %w", chrome.ErrKeychainNoGrant)
+	})
+
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() { adapterCookieSet(cfg, unionTestEnvelope, bm) })
+	}
+	wg.Wait()
+	if n := stub.count(); n != 1 {
+		t.Errorf("Safe Storage reads across 16 concurrent batches = %d, want 1", n)
 	}
 }
