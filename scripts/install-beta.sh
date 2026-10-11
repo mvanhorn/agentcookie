@@ -372,11 +372,15 @@ restart_healthy_install() {
     warn "launchctl kickstart -k $service failed"
     return 1
   fi
-  sleep 2
-  # Capture before matching: under pipefail, `grep -q` on a pipe can
-  # SIGPIPE launchctl and report a running agent as stopped.
-  local agent_state
-  agent_state="$(launchctl print "$service" 2>/dev/null || true)"
+  # Poll briefly for the restarted agent. Capture before matching: under
+  # pipefail, `grep -q` on a pipe can SIGPIPE launchctl and report a
+  # running agent as stopped.
+  local agent_state="" _
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    agent_state="$(launchctl print "$service" 2>/dev/null || true)"
+    [[ "$agent_state" == *"state = running"* ]] && break
+    sleep 0.5
+  done
   if [[ "$agent_state" != *"state = running"* ]]; then
     warn "$label is not running after the restart"
     return 1

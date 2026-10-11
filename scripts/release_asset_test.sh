@@ -467,7 +467,7 @@ expect_wizard() {
   if ! wizard_ran; then fail "$label: wizard must run"; cat "$box/out" >&2; fi
 }
 
-# R7: healthy configured source upgrades in place without the wizard.
+# healthy configured source upgrades in place without the wizard.
 new_box healthy source
 run_installer --as source
 expect_healthy "healthy source" source
@@ -476,31 +476,31 @@ if called "launchctl kickstart" && ! grep -q 'launchctl print' "$box/calls.log";
   fail "healthy source: loaded check must run before kickstart"
 fi
 
-# R8: doctor FAIL falls through to the wizard, before any restart.
+# doctor FAIL falls through to the wizard, before any restart.
 new_box doctorfail source
 STUB_DOCTOR_EXIT=1 run_installer --as source --peer peerhost
 expect_wizard "doctor fail"
 if called "launchctl kickstart"; then fail "doctor fail: must not restart the daemon"; fi
 
-# R8: LaunchAgent not loaded.
+# LaunchAgent not loaded.
 new_box notloaded source
 STUB_LC_LOADED=0 run_installer --as source --peer peerhost
 expect_wizard "agent not loaded"
 if called "launchctl kickstart"; then fail "agent not loaded: must not kickstart"; fi
 
-# R8: plist runs a different binary path (also how a --bin-dir change shows up).
+# plist runs a different binary path (also how a --bin-dir change shows up).
 new_box otherpath source
 write_plist source "/somewhere/else/agentcookie"
 run_installer --as source --peer peerhost
 expect_wizard "plist path mismatch"
 if called "launchctl kickstart"; then fail "plist path mismatch: must not kickstart"; fi
 
-# R8: kickstart fails.
+# kickstart fails.
 new_box kickfail source
 STUB_LC_KICK_EXIT=1 run_installer --as source --peer peerhost
 expect_wizard "kickstart fails"
 
-# R8: kickstart succeeds but the agent is not running afterward.
+# kickstart succeeds but the agent is not running afterward.
 new_box notrunning source
 STUB_LC_STATE=waiting run_installer --as source --peer peerhost
 expect_wizard "agent not running after restart"
@@ -513,29 +513,29 @@ if guard_ran_doctor; then
   fail "sink on source-only box: guard must not run doctor"
 fi
 
-# R9: --no-cdp forces the wizard on a configured sink.
+# --no-cdp forces the wizard on a configured sink.
 new_box nocdp sink
 run_installer --as sink --peer peerhost --code AAAA-BBBB-CCCC --pair-url http://peerhost:9998/pair --no-cdp
 expect_wizard "--no-cdp"
 if ! called "--no-cdp"; then fail "--no-cdp must be forwarded"; fi
 
-# R9: explicit --skip-keychain-prompt forces the wizard.
+# explicit --skip-keychain-prompt forces the wizard.
 new_box explicitskp sink
 run_installer --as sink --peer peerhost --code AAAA-BBBB-CCCC --pair-url http://peerhost:9998/pair --skip-keychain-prompt
 expect_wizard "explicit --skip-keychain-prompt"
 
-# R9: no TTY on a configured sink (installer adds --skip-keychain-prompt
+# no TTY on a configured sink (installer adds --skip-keychain-prompt
 # itself on the wizard path) still takes the healthy path.
 new_box notty sink
 run_installer --as sink
 expect_healthy "no-TTY sink" sink
 
-# R9: the documented sink command re-run from history takes the healthy path.
+# the documented sink command re-run from history takes the healthy path.
 new_box documented sink
 run_installer --as sink --peer peerhost --code AAAA-BBBB-CCCC --pair-url http://peerhost:9998/pair
 expect_healthy "documented sink re-run" sink
 
-# R9: a different --peer runs the wizard.
+# a different --peer runs the wizard.
 new_box newpeer source
 run_installer --as source --peer otherhost
 expect_wizard "different --peer"
@@ -543,7 +543,7 @@ if guard_ran_doctor; then
   fail "different --peer: guard must not run doctor"
 fi
 
-# R10: --repair runs the wizard and forwards --repair.
+# --repair runs the wizard and forwards --repair.
 new_box repair source
 run_installer --as source --peer peerhost --repair
 expect_wizard "--repair"
@@ -551,7 +551,7 @@ if ! grep -q '^agentcookie wizard install .*--repair' "$box/calls.log"; then
   fail "--repair must be forwarded to wizard install"
 fi
 
-# R11: --extra-binary on the healthy path prints the manual command only.
+# --extra-binary on the healthy path prints the manual command only.
 new_box extrahealthy sink
 run_installer --as sink --extra-binary /path/cli
 expect_healthy "--extra-binary healthy" sink
@@ -561,7 +561,7 @@ fi
 if ! said "Developer ID"; then fail "--extra-binary healthy: Developer ID note missing"; fi
 if called "set-keychain-access"; then fail "--extra-binary healthy: must not run set-keychain-access"; fi
 
-# R11: --extra-binary on the wizard path is not forwarded to wizard install.
+# --extra-binary on the wizard path is not forwarded to wizard install.
 new_box extrawizard sink
 run_installer --as sink --peer peerhost --code AAAA-BBBB-CCCC --pair-url http://peerhost:9998/pair --extra-binary /path/cli --repair
 expect_wizard "--extra-binary wizard"
@@ -571,7 +571,7 @@ if ! said "agentcookie wizard set-keychain-access --recreate --extra-binary /pat
 fi
 if called "set-keychain-access"; then fail "--extra-binary wizard: must not run set-keychain-access"; fi
 
-# KTD7: the binary is renamed into place, leaving no temp file behind.
+# the binary is renamed into place, leaving no temp file behind.
 new_box placement source
 printf 'old\n' > "$box/bin/agentcookie"
 chmod +x "$box/bin/agentcookie"
