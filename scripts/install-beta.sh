@@ -4,9 +4,16 @@
 #
 # Friends run this script with `--as source` (on the laptop they browse on)
 # or `--as sink` (on the second Mac their agents run on). It verifies
-# prereqs, places the notarized agentcookie binary, and kicks off the
-# wizard install interactively. End-state on success: `agentcookie
-# doctor` reports all-green.
+# prereqs and places the notarized agentcookie binary. On a first install
+# it then runs the wizard install interactively. End-state on success:
+# `agentcookie doctor` reports all-green.
+#
+# Re-running upgrades in place. When the role is already configured, no
+# wizard-affecting flag is passed, doctor exits 0, and the role's
+# LaunchAgent is loaded and runs the binary just placed, the script
+# restarts that daemon on the new binary, confirms it is running, prints
+# the doctor output, and exits 0 without the wizard. Anything short of
+# that runs the wizard.
 #
 # Usage:
 #   ./install-beta.sh --as source
@@ -15,17 +22,29 @@
 # Optional flags:
 #   --peer <hostname>          Tailscale hostname of the OTHER machine.
 #                              If omitted, the script prompts interactively.
+#                              On a re-run, forces the wizard only when it
+#                              differs from the configured peer.
 #   --code <code>              [sink] Pairing code printed by the source's
 #                              wizard install. Forwarded to wizard install.
 #   --pair-url <url>           [sink] Source's pairing URL (e.g.
 #                              http://<source>:9998/pair). Forwarded to wizard install.
+#   --repair                   Run the wizard with --repair: a fresh
+#                              pairing handshake even if a key exists.
 #   --skip-keychain-prompt     [sink] Forwarded to wizard install. Auto-set
 #                              when no TTY is attached (e.g. SSH non-pty).
-#   --extra-binary <path>      Repeatable. PP CLI binaries to grant
-#                              Chrome Safe Storage access. Sink-side only.
+#   --skip-chrome-sqlite, --write-chrome-sqlite, --no-cdp
+#                              [sink] Forwarded to wizard install.
+#                              --repair, these three, and an explicit
+#                              --skip-keychain-prompt always run the wizard.
+#   --extra-binary <path>      Repeatable. Makes no Keychain change. Prints
+#                              the manual `agentcookie wizard
+#                              set-keychain-access --recreate --extra-binary
+#                              <path>` command. Developer-ID-signed CLIs are
+#                              already covered by the default partition list.
 #   --bin-dir <dir>            Where to place the agentcookie binary.
 #                              Default: /usr/local/bin if writable,
-#                              else $HOME/bin.
+#                              else $HOME/bin. A different dir than the
+#                              LaunchAgent runs makes a re-run use the wizard.
 #   --tarball <path>           Use a local tarball instead of fetching
 #                              the newest macOS release asset.
 #
@@ -34,8 +53,8 @@
 #     read a 17 MB binary.
 #   - No sudo. If a step needs elevated privileges, we print the command
 #     and ask the user to run it themselves.
-#   - Idempotent. Re-running on a healthy install reports state and
-#     exits 0 without re-running the wizard.
+#   - Idempotent. Re-running on a healthy install restarts the daemon
+#     on the new binary, reports state, and exits 0 without the wizard.
 #   - Fails loud. Every step that can fail prints a remediation
 #     pointer to the closed-beta quickstart.
 
@@ -46,6 +65,9 @@ PEER=""
 CODE=""
 PAIR_URL=""
 SKIP_KEYCHAIN_PROMPT=""
+REPAIR=""
+FORCE_WIZARD=0
+FORCE_REASONS=()
 EXTRA_WIZARD_ARGS=()
 EXTRA_BINS=()
 BIN_DIR=""
@@ -243,7 +265,7 @@ role_config_path() {
   printf '%s/%s.yaml\n' "$config_dir" "$role"
 }
 
-# wizard_skip_candidate ROLE CONFIG_DIR HAS_PAIRING_ARGS
+# wizard_skip_candidate ROLE CONFIG_DIR FORCE_WIZARD
 # True when the installer should test the existing install's health
 # before running the wizard; false when the wizard must run regardless.
 # The caller runs `doctor` only when this returns true, so a first-time
@@ -251,16 +273,16 @@ role_config_path() {
 #
 # Both conditions are required:
 #
-#   - No pairing arguments. --peer, --code, and --pair-url all mean the
-#     caller is deliberately (re-)pairing, so never skip.
+#   - FORCE_WIZARD is not 1. The caller sets it when a wizard-affecting
+#     argument was passed (see the argument parser).
 #
 #   - The requested role already has a config. `doctor` alone cannot
 #     carry this test. On a healthy source-only box every sink check
 #     reports SKIPPED rather than FAIL, so doctor exits 0 there, and
 #     `--as sink` would be skipped without ever installing a sink.
 wizard_skip_candidate() {
-  local role="$1" config_dir="$2" has_pairing_args="$3"
-  if [[ "$has_pairing_args" == "1" ]]; then
+  local role="$1" config_dir="$2" force_wizard="$3"
+  if [[ "$force_wizard" == "1" ]]; then
     return 1
   fi
   case "$role" in
@@ -268,6 +290,120 @@ wizard_skip_candidate() {
     *) return 1 ;;
   esac
   [[ -f "$(role_config_path "$role" "$config_dir")" ]]
+}
+
+# role_peer_hostname CONFIG_FILE
+# Print the top-level peer.hostname from a source.yaml or sink.yaml, or
+# nothing when the file or key is missing. The wizard writes block-style
+# YAML, so a line scan is enough: `peer:` at column 0, then an indented
+# `hostname:` before the next top-level key.
+role_peer_hostname() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+  awk '
+    /^peer:[[:space:]]*$/ { inpeer = 1; next }
+    inpeer && /^[^[:space:]#]/ { inpeer = 0 }
+    inpeer && /^[[:space:]]+hostname:/ {
+      sub(/^[[:space:]]+hostname:[[:space:]]*/, "")
+      sub(/[[:space:]]+#.*$/, "")
+      sub(/[[:space:]]+$/, "")
+      gsub(/^["\047]|["\047]$/, "")
+      print
+      exit
+    }
+  ' "$file"
+}
+
+# launchagent_label ROLE / launchagent_plist ROLE
+# Mirror Spec.Label and Spec.Path in internal/launchd/plist.go.
+launchagent_label() { printf 'dev.agentcookie.%s\n' "$1"; }
+launchagent_plist() { printf '%s/Library/LaunchAgents/%s.plist\n' "$HOME" "$(launchagent_label "$1")"; }
+
+# plist_program_path PLIST
+# Print ProgramArguments[0] from a plist written by internal/launchd.
+# A text scan rather than plutil, so the same code runs on Linux CI.
+plist_program_path() {
+  local plist="$1"
+  [[ -f "$plist" ]] || return 1
+  awk '
+    /<key>ProgramArguments<\/key>/ { inargs = 1; next }
+    inargs && /<string>/ {
+      sub(/.*<string>/, "")
+      sub(/<\/string>.*/, "")
+      print
+      exit
+    }
+  ' "$plist"
+}
+
+# restart_healthy_install ROLE TARGET
+# The healthy re-run path. Returns 0 only when every step holds:
+#   1. `TARGET doctor` exits 0 (no FAIL; WARN is informational).
+#   2. dev.agentcookie.ROLE is loaded in gui/<uid>.
+#   3. Its plist's ProgramArguments[0] is TARGET, the path just written.
+#      A --bin-dir change shows up here as a mismatch.
+#   4. `launchctl kickstart -k` restarts it on the new binary.
+#   5. It is still running a moment later.
+# Prints the doctor output (and the failed step on failure). Any
+# non-zero return means the caller runs the wizard instead.
+restart_healthy_install() {
+  local role="$1" target="$2"
+  local label service plist program doctor_out
+  label="$(launchagent_label "$role")"
+  service="gui/$(id -u)/$label"
+  plist="$(launchagent_plist "$role")"
+
+  if ! doctor_out="$("$target" doctor 2>&1)"; then
+    printf '%s\n' "$doctor_out"
+    warn "existing $role config is present but doctor reports a FAIL"
+    return 1
+  fi
+  if ! launchctl print "$service" >/dev/null 2>&1; then
+    warn "LaunchAgent $service is not loaded"
+    return 1
+  fi
+  program="$(plist_program_path "$plist" || true)"
+  if [[ "$program" != "$target" ]]; then
+    warn "$plist runs ${program:-an unreadable path}, not $target"
+    return 1
+  fi
+  step "restarting $label on the new binary"
+  if ! launchctl kickstart -k "$service" >/dev/null 2>&1; then
+    warn "launchctl kickstart -k $service failed"
+    return 1
+  fi
+  sleep 2
+  # Capture before matching: under pipefail, `grep -q` on a pipe can
+  # SIGPIPE launchctl and report a running agent as stopped.
+  local agent_state
+  agent_state="$(launchctl print "$service" 2>/dev/null || true)"
+  if [[ "$agent_state" != *"state = running"* ]]; then
+    warn "$label is not running after the restart"
+    return 1
+  fi
+  printf '%s\n' "$doctor_out"
+  return 0
+}
+
+# print_extra_binary_guidance BIN...
+# The installer makes no Keychain change for --extra-binary. Print the
+# manual command instead. Running it ourselves would delete and recreate
+# the Chrome Safe Storage item and can prompt mid-install.
+print_extra_binary_guidance() {
+  [[ $# -gt 0 ]] || return 0
+  local cmd="agentcookie wizard set-keychain-access --recreate" b
+  for b in "$@"; do
+    cmd+=" --extra-binary $(printf '%q' "$b")"
+  done
+  echo
+  echo "  --extra-binary: this installer does not change Keychain access."
+  echo "  CLIs signed with a Developer ID are already covered by the default"
+  echo "  partition list. For an unsigned or ad-hoc signed CLI, run this at"
+  echo "  the Mac's screen (it recreates the Chrome Safe Storage item and may"
+  echo "  prompt):"
+  echo
+  echo "    $cmd"
+  echo
 }
 
 if [[ "${AGENTCOOKIE_INSTALL_BETA_LIB_ONLY:-}" == "1" ]]; then
@@ -291,13 +427,11 @@ while [[ $# -gt 0 ]]; do
     --pair-url)
       PAIR_URL="$2"; shift 2 ;;
     --skip-keychain-prompt)
-      SKIP_KEYCHAIN_PROMPT="1"; shift ;;
-    --skip-chrome-sqlite)
-      EXTRA_WIZARD_ARGS+=("--skip-chrome-sqlite"); shift ;;
-    --write-chrome-sqlite)
-      EXTRA_WIZARD_ARGS+=("--write-chrome-sqlite"); shift ;;
-    --no-cdp)
-      EXTRA_WIZARD_ARGS+=("--no-cdp"); shift ;;
+      SKIP_KEYCHAIN_PROMPT="1"; FORCE_REASONS+=("$1"); shift ;;
+    --repair)
+      REPAIR="1"; FORCE_REASONS+=("$1"); shift ;;
+    --skip-chrome-sqlite|--write-chrome-sqlite|--no-cdp)
+      EXTRA_WIZARD_ARGS+=("$1"); FORCE_REASONS+=("$1"); shift ;;
     --extra-binary)
       EXTRA_BINS+=("$2"); shift 2 ;;
     --bin-dir)
@@ -305,7 +439,7 @@ while [[ $# -gt 0 ]]; do
     --tarball)
       TARBALL="$2"; shift 2 ;;
     -h|--help)
-      sed -n '1,35p' "$0" >&2
+      awk 'NR > 1 && !/^#/ { exit } { print }' "$0" >&2
       exit 0 ;;
     *)
       die "unknown argument: $1" ;;
@@ -440,11 +574,21 @@ if [[ -z "$BIN_DIR" ]]; then
   fi
 fi
 mkdir -p "$BIN_DIR"
+# Absolute, so it compares equal to the path the wizard writes into the
+# LaunchAgent plist.
+BIN_DIR="$(cd "$BIN_DIR" && pwd)"
 TARGET="$BIN_DIR/agentcookie"
 
 step "installing to $TARGET"
-cp "$NEW_BIN" "$TARGET"
-chmod +x "$TARGET"
+# Write beside the target, then rename over it. Copying over a running
+# signed binary in place can get later launches of that path killed for
+# an invalid code signature; a rename gives the restarted daemon a fresh
+# inode and never leaves a half-written target.
+TMP_BIN="$(mktemp "$BIN_DIR/.agentcookie.XXXXXX")"
+if ! cp "$NEW_BIN" "$TMP_BIN" || ! chmod 755 "$TMP_BIN" || ! mv -f "$TMP_BIN" "$TARGET"; then
+  rm -f "$TMP_BIN"
+  die "could not install $TARGET"
+fi
 ok "installed"
 
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
@@ -457,32 +601,34 @@ fi
 
 # ---- idempotency: skip the wizard on a healthy install ----
 #
-# Re-running on a healthy install reports state and exits 0 without
-# re-running the wizard (see the design notes at the top of this file).
-# The binary above is still refreshed first, so a re-run remains the way
-# to upgrade in place; only the pairing wizard is skipped.
+# Re-running on a healthy install restarts the daemon on the binary just
+# placed and exits 0 without re-running the wizard. Anything short of
+# verified healthy runs the wizard (restart_healthy_install).
 #
-# `doctor` is the health oracle. Its exit code is 0 exactly when no check
-# FAILs -- WARN is informational and does not fail the run -- which is
-# the same signal this script already uses at the end to decide whether
-# the install succeeded.
-HAS_PAIRING_ARGS=0
-if [[ -n "$PEER" || -n "$CODE" || -n "$PAIR_URL" ]]; then
-  HAS_PAIRING_ARGS=1
+# --code and --pair-url do not force the wizard: it ignores them while a
+# key exists, and the documented sink command passes them. A --peer only
+# forces it when it names a different host than the role's config.
+if [[ -n "$PEER" && -f "$(role_config_path "$ROLE" "$CONFIG_DIR")" ]]; then
+  CONFIGURED_PEER="$(role_peer_hostname "$(role_config_path "$ROLE" "$CONFIG_DIR")")"
+  if [[ "$PEER" != "$CONFIGURED_PEER" ]]; then
+    FORCE_REASONS+=("--peer $PEER (configured: ${CONFIGURED_PEER:-none})")
+  fi
+fi
+if [[ ${#FORCE_REASONS[@]} -gt 0 ]]; then
+  FORCE_WIZARD=1
 fi
 
-if wizard_skip_candidate "$ROLE" "$CONFIG_DIR" "$HAS_PAIRING_ARGS"; then
+if wizard_skip_candidate "$ROLE" "$CONFIG_DIR" "$FORCE_WIZARD"; then
   step "existing $ROLE config found; checking install health"
-  EXISTING_DOCTOR_OUT=""
-  if EXISTING_DOCTOR_OUT="$("$TARGET" doctor 2>&1)"; then
-    printf '%s\n' "$EXISTING_DOCTOR_OUT"
-    ok "existing $ROLE install is healthy; skipping wizard"
-    ok "to re-pair anyway, re-run with --peer <hostname>"
+  if restart_healthy_install "$ROLE" "$TARGET"; then
+    print_extra_binary_guidance "${EXTRA_BINS[@]+"${EXTRA_BINS[@]}"}"
+    ok "existing $ROLE install is healthy; restarted on the new binary; skipping wizard"
+    ok "to force a fresh pairing, re-run with --repair"
     exit 0
   fi
-  printf '%s\n' "$EXISTING_DOCTOR_OUT"
-  warn "existing $ROLE config is present but doctor reports a FAIL"
   warn "re-running the wizard to repair it"
+elif [[ $FORCE_WIZARD -eq 1 ]]; then
+  step "running the wizard because of: ${FORCE_REASONS[*]}"
 fi
 
 # ---- run wizard ----
@@ -515,10 +661,9 @@ WIZARD_ARGS=(wizard install --as "$ROLE" --peer "$PEER")
 if [[ "$ROLE" == "sink" ]]; then
   WIZARD_ARGS+=(--code "$CODE" --pair-url "$PAIR_URL")
 fi
-for b in "${EXTRA_BINS[@]:-}"; do
-  [[ -z "$b" ]] && continue
-  WIZARD_ARGS+=(--extra-binary "$b")
-done
+if [[ -n "$REPAIR" ]]; then
+  WIZARD_ARGS+=(--repair)
+fi
 # v0.12.0-beta.3: forward --skip-chrome-sqlite, --write-chrome-sqlite,
 # and --no-cdp explicitly if the operator passed them. The wizard
 # itself auto-detects headless context when none are passed.
@@ -548,6 +693,8 @@ if [[ -n "$SKIP_KEYCHAIN_PROMPT" ]]; then
 fi
 
 "$TARGET" "${WIZARD_ARGS[@]}"
+
+print_extra_binary_guidance "${EXTRA_BINS[@]+"${EXTRA_BINS[@]}"}"
 
 # ---- final doctor check ----
 
