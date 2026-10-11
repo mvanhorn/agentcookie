@@ -380,11 +380,29 @@ func CountSafeStorageItems() (int, error) {
 	if out == "" && err != nil {
 		return 0, fmt.Errorf("dump keychain: %w", err)
 	}
+	return countSafeStorageInDump(out), nil
+}
+
+// countSafeStorageInDump counts Chrome Safe Storage items in dump output.
+func countSafeStorageInDump(out string) int {
 	n := 0
 	for line := range strings.SplitSeq(out, "\n") {
 		if strings.Contains(line, safeStorageItemMarker) {
 			n++
 		}
+	}
+	return n
+}
+
+// CountSafeStorageItemsStrict is CountSafeStorageItems for callers that act
+// on a zero count. A dump that fails yet finds no Chrome Safe Storage item
+// (for example, one that prints only an error message) returns the error
+// instead of 0, because 0 would wrongly authorize creating a fresh key.
+func CountSafeStorageItemsStrict() (int, error) {
+	out, err := dumpKeychainRunner()
+	n := countSafeStorageInDump(out)
+	if n == 0 && err != nil {
+		return 0, fmt.Errorf("dump keychain: %w: %s", err, strings.TrimSpace(out))
 	}
 	return n, nil
 }

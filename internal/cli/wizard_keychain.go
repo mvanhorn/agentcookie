@@ -4,6 +4,7 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -190,7 +191,10 @@ func runInlinePartitionAccess() error {
 // without touching the real Keychain.
 var (
 	countSafeStorageItemsFunc = chrome.CountSafeStorageItems
-	unlockKeychainFunc        = func(pw string) error {
+	// countSafeStorageItemsStrictFunc backs recreateValueForSafeStorage:
+	// a zero count it cannot vouch for is an error, never "no item".
+	countSafeStorageItemsStrictFunc = chrome.CountSafeStorageItemsStrict
+	unlockKeychainFunc              = func(pw string) error {
 		if pw == "" {
 			return nil // GUI session is already unlocked; nothing to do.
 		}
@@ -509,7 +513,7 @@ func agentcookieBinaryPath() string {
 // cannot be read (or the item count is unknown), because recreating with a
 // different value would make every existing Chrome cookie unreadable.
 func recreateValueForSafeStorage() (string, error) {
-	n, err := countSafeStorageItemsFunc()
+	n, err := countSafeStorageItemsStrictFunc()
 	if err != nil {
 		return "", fmt.Errorf("cannot count Chrome Safe Storage items (%w); refusing to recreate the item because a different value would permanently destroy all existing Chrome cookies", err)
 	}
@@ -517,6 +521,9 @@ func recreateValueForSafeStorage() (string, error) {
 		return randomKeychainPassword(), nil
 	}
 	existing, err := safeStoragePasswordFunc()
+	if err == nil && existing == "" {
+		err = errors.New("the read returned an empty value")
+	}
 	if err != nil {
 		return "", fmt.Errorf("cannot read existing Chrome Safe Storage value (%w); refusing to delete the item because recreating it with a different value would permanently destroy all existing Chrome cookies. Do the one-time \"Always Allow\" grant in Keychain Access (see docs/runbook-v0.10-keychain-access.md), then re-run", err)
 	}

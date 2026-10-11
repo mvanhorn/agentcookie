@@ -209,18 +209,13 @@ func TestAnyApp_DefaultUnchanged(t *testing.T) {
 		t.Fatalf("default primary should be delete-and-recreate-with-T, got %q", s[0].name)
 	}
 
-	prevExec := execSecurityFunc
-	defer func() { execSecurityFunc = prevExec }()
-	var calls [][]string
-	execSecurityFunc = func(args ...string) (string, error) {
-		calls = append(calls, args)
-		return "", nil
-	}
+	// No real Keychain: an existing, readable item.
+	f := stubRecreateKeychain(t, 1, func() (string, error) { return "EXISTING", nil })
 	if _, err := s[0].apply(); err != nil {
 		t.Fatalf("default strategy apply error: %v", err)
 	}
 	var add []string
-	for _, c := range calls {
+	for _, c := range f.calls {
 		if c[0] == "add-generic-password" {
 			add = c
 		}

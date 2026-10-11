@@ -14,11 +14,11 @@ type recreateFakes struct{ calls [][]string }
 func stubRecreateKeychain(t *testing.T, items int, read func() (string, error)) *recreateFakes {
 	t.Helper()
 	f := &recreateFakes{}
-	origCount, origPw, origSec, origMaster := countSafeStorageItemsFunc, safeStoragePasswordFunc, execSecurityFunc, createMasterKeyFunc
+	origCount, origPw, origSec, origMaster := countSafeStorageItemsStrictFunc, safeStoragePasswordFunc, execSecurityFunc, createMasterKeyFunc
 	t.Cleanup(func() {
-		countSafeStorageItemsFunc, safeStoragePasswordFunc, execSecurityFunc, createMasterKeyFunc = origCount, origPw, origSec, origMaster
+		countSafeStorageItemsStrictFunc, safeStoragePasswordFunc, execSecurityFunc, createMasterKeyFunc = origCount, origPw, origSec, origMaster
 	})
-	countSafeStorageItemsFunc = func() (int, error) { return items, nil }
+	countSafeStorageItemsStrictFunc = func() (int, error) { return items, nil }
 	safeStoragePasswordFunc = read
 	execSecurityFunc = func(args ...string) (string, error) {
 		f.calls = append(f.calls, append([]string(nil), args...))
@@ -119,5 +119,29 @@ func TestAnyAppChain_UnreadableValueDeletesNothing(t *testing.T) {
 	}
 	if n := len(f.called("delete-generic-password")); n != 0 {
 		t.Errorf("delete-generic-password called %d time(s) across the --any-app chain; want 0", n)
+	}
+}
+
+// An empty read is not a value: recreating with it would replace the real
+// key, so the item is left alone.
+func TestRecreateWithT_RefusesEmptyExistingValue(t *testing.T) {
+	f := stubRecreateKeychain(t, 1, func() (string, error) { return "", nil })
+	if _, err := recreateWithT(t, false).apply(); err == nil || !strings.Contains(err.Error(), "refusing") {
+		t.Fatalf("apply err = %v, want a refusal", err)
+	}
+	if n := len(f.calls); n != 0 {
+		t.Errorf("security called %d time(s); want 0", n)
+	}
+}
+
+// A count that cannot be trusted never authorizes a fresh value.
+func TestRecreateWithT_RefusesUnknownItemCount(t *testing.T) {
+	f := stubRecreateKeychain(t, 0, func() (string, error) { return "", errors.New("not found") })
+	countSafeStorageItemsStrictFunc = func() (int, error) { return 0, errors.New("dump failed") }
+	if _, err := recreateWithT(t, false).apply(); err == nil || !strings.Contains(err.Error(), "refusing") {
+		t.Fatalf("apply err = %v, want a refusal", err)
+	}
+	if n := len(f.calls); n != 0 {
+		t.Errorf("security called %d time(s); want 0", n)
 	}
 }

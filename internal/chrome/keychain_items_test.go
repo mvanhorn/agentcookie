@@ -90,3 +90,42 @@ func TestIsKeychainLocked(t *testing.T) {
 		})
 	}
 }
+
+// The strict count backs the decision to recreate Chrome Safe Storage with a
+// fresh value, so a zero it cannot vouch for must be an error.
+func TestCountSafeStorageItemsStrict(t *testing.T) {
+	orig := dumpKeychainRunner
+	t.Cleanup(func() { dumpKeychainRunner = orig })
+
+	cases := []struct {
+		name string
+		out  string
+		err  error
+		want int
+		fail bool
+	}{
+		{"one item", sampleDumpOneItem, nil, 1, false},
+		{"zero items on a clean dump", "class: \"genp\"\n    \"svce\"<blob>=\"Other\"\n", nil, 0, false},
+		{"items despite nonzero exit still count", sampleDumpOneItem, errors.New("exit 1"), 1, false},
+		{"error message only is not zero", "security: SecKeychainDump: User interaction is not allowed.\n", errors.New("exit 1"), 0, true},
+		{"empty output with error fails", "", errors.New("boom"), 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dumpKeychainRunner = func() (string, error) { return tc.out, tc.err }
+			got, err := CountSafeStorageItemsStrict()
+			if tc.fail {
+				if err == nil {
+					t.Fatalf("expected error, got nil (n=%d)", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("count = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
