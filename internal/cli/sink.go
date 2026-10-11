@@ -715,10 +715,10 @@ func replaceLevelDBDir(payload []byte, liveDir string) (int, error) {
 
 // adapterCookieSet returns the cookies handed to sinkpush adapters: the
 // envelope cookies, unioned with extra Chrome profiles only when the
-// Safe Storage gate (safeStorageReadAllowed with the adapter clause)
-// passes.
+// Safe Storage gate allows the read and an installed adapter can consume
+// the extra-profile cookies.
 func adapterCookieSet(cfg *config.SinkConfig, cookies []chrome.Cookie, blockMatcher *protocol.BlocklistMatcher) []chrome.Cookie {
-	if !safeStorageReadAllowed(cfg, true) {
+	if !safeStorageReadAllowed(cfg) || !sinkpush.AnyInstalled() {
 		return cookies
 	}
 	return unionCookiesWithExtraProfiles(cookies, cfg.CDP.ProfileDir, blockMatcher)

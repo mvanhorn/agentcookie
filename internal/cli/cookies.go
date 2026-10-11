@@ -16,7 +16,6 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
-	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 	"github.com/mvanhorn/agentcookie/pkg/sidecar"
 )
 
@@ -92,7 +91,7 @@ func collectDomainCookiesUnion(sidecarPath, domain string, matcher *protocol.Blo
 			profileDir = sinkCfg.CDP.ProfileDir
 		}
 		// skip_chrome_sqlite means no Safe Storage read: sidecar only.
-		if safeStorageReadAllowed(sinkCfg, false) {
+		if safeStorageReadAllowed(sinkCfg) {
 			chromeCookies := collectDomainCookiesFromChrome(domain, matcher, seen, profileDir)
 			sidecarCookies = append(sidecarCookies, chromeCookies...)
 		}
@@ -222,16 +221,9 @@ func collectDomainCookiesFromChrome(domain string, matcher *protocol.BlocklistMa
 // Storage to decrypt extra Chrome profiles (#137). skip_chrome_sqlite in
 // sinkCfg forbids the read everywhere: the sink daemon, `cookies --domain`,
 // and doctor. sinkCfg is nil on a box without a sink config, which allows
-// the read. requireAdapter adds the sink-union clause: the extra-profile
-// cookies only matter when an installed adapter can consume them.
-func safeStorageReadAllowed(sinkCfg *config.SinkConfig, requireAdapter bool) bool {
-	if sinkCfg != nil && sinkCfg.SkipChromeSQLite {
-		return false
-	}
-	if requireAdapter && !sinkpush.AnyInstalled() {
-		return false
-	}
-	return true
+// the read.
+func safeStorageReadAllowed(sinkCfg *config.SinkConfig) bool {
+	return sinkCfg == nil || !sinkCfg.SkipChromeSQLite
 }
 
 // chromeDecryptKeyRead is the uncached Chrome Safe Storage read. It is a

@@ -1637,7 +1637,7 @@ func checkChromeStores(sinkCfg *config.SinkConfig) Check {
 
 	// skip_chrome_sqlite: list the stores but never read Safe Storage
 	// (#137), so readability is not checked.
-	if !safeStorageReadAllowed(sinkCfg, false) {
+	if !safeStorageReadAllowed(sinkCfg) {
 		labels := make([]string, 0, len(result.Stores))
 		for _, s := range result.Stores {
 			label := s.Browser + "/" + s.Profile

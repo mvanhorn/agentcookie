@@ -723,7 +723,7 @@ func TestUnionCookiesWithExtraProfiles_NilBlocklistAllowsAll(t *testing.T) {
 // TestSinkHandler_EmptyEnvelopeStillUnionsExtraProfiles is a behavioral test
 // that verifies the P1 fix #2: the sink handler should union extra-profile
 // cookies even when the envelope is empty/fully filtered. On Linux this is
-// a no-op (no extra profiles), but the code path should be exercised.
+// A no-op (no extra profiles), but the code path should be exercised.
 func TestSinkHandler_EmptyEnvelopeStillUnionsExtraProfiles(t *testing.T) {
 	// This test verifies that the union function is called even with empty
 	// envelope cookies (P1 fix #2). On Linux, this returns empty, but the
@@ -959,7 +959,7 @@ func unionTestFixture(t *testing.T, adapters ...sinkpush.Adapter) (*config.SinkC
 
 var unionTestEnvelope = []chrome.Cookie{{HostKey: ".example.com", Name: "sess", Value: "envelope-wins", Path: "/"}}
 
-// Covers R2: a non-skip sink with no installed adapter never reads Safe Storage.
+// A non-skip sink with no installed adapter never reads Safe Storage.
 func TestAdapterCookieSet_NoInstalledAdapterSkipsSafeStorage(t *testing.T) {
 	skipUnlessDarwin(t)
 	cfg, bm := unionTestFixture(t, &recordingAdapter{installed: false})
@@ -974,7 +974,7 @@ func TestAdapterCookieSet_NoInstalledAdapterSkipsSafeStorage(t *testing.T) {
 	}
 }
 
-// Covers R4: a non-skip sink with an installed adapter still unions
+// A non-skip sink with an installed adapter still unions
 // extra-profile cookies into what the adapter receives. Envelope cookies win
 // collisions and blocklisted hosts stay filtered.
 func TestAdapterCookieSet_InstalledAdapterReceivesUnion(t *testing.T) {
@@ -997,7 +997,7 @@ func TestAdapterCookieSet_InstalledAdapterReceivesUnion(t *testing.T) {
 	}
 }
 
-// Covers R3: a permanent refusal is read once, cached for the process, and
+// A permanent refusal is read once, cached for the process, and
 // logged once.
 func TestAdapterCookieSet_PermanentRefusalNotRetried(t *testing.T) {
 	skipUnlessDarwin(t)
@@ -1023,7 +1023,7 @@ func TestAdapterCookieSet_PermanentRefusalNotRetried(t *testing.T) {
 	}
 }
 
-// Covers R3: a locked keychain is transient and is retried on the next batch.
+// A locked keychain is transient and is retried on the next batch.
 func TestAdapterCookieSet_LockedKeychainRetried(t *testing.T) {
 	skipUnlessDarwin(t)
 	cfg, bm := unionTestFixture(t, &recordingAdapter{installed: true})
