@@ -31,6 +31,28 @@ func resetForTesting() {
 	registry = nil
 }
 
+// AnyInstalled reports whether at least one registered adapter's target
+// CLI is installed. The sink uses it to skip the extra-profile Chrome
+// Safe Storage read when no adapter could consume those cookies.
+func AnyInstalled() bool {
+	for _, a := range All() {
+		if a.IsInstalled() {
+			return true
+		}
+	}
+	return false
+}
+
+// SetRegistryForTesting replaces the package registry with adapters and
+// returns a restore func. Test-only seam for callers outside this
+// package: the built-in adapters probe the real PATH, so tests that
+// depend on which adapters are installed swap the whole registry.
+func SetRegistryForTesting(adapters []Adapter) func() {
+	prev := registry
+	registry = append([]Adapter(nil), adapters...)
+	return func() { registry = prev }
+}
+
 // RunAll invokes every registered adapter against the given cookie
 // slice. For each adapter:
 //

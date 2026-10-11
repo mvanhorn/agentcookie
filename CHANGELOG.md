@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Sink: no Chrome Safe Storage reads under skip_chrome_sqlite
+
+- A sink with `skip_chrome_sqlite: true` read Chrome Safe Storage on every batch to union extra Chrome profiles for adapters, so a headless sink showed a Keychain dialog per sync. Under `skip_chrome_sqlite`, nothing reads Chrome Safe Storage now: not the sink daemon, `agentcookie cookies --domain`, or doctor's Chrome stores check, which lists the stores as INFO without checking readability.
+- With `skip_chrome_sqlite` off, the sink reads extra Chrome profiles only when at least one push adapter's CLI is installed. Installed adapters still receive the extra-profile cookies as in v0.15.
+- A permanent Keychain refusal (no grant or timeout) is cached per browser for the life of the process and logged once; restart the sink to retry after granting access. A locked keychain is still retried on the next batch. Reported by @ericxyz86 (#137).
+
 ### Security: adapter cookie patterns bound to the real domain
 
 - Sink adapters (airbnb, ebay, pagliacci, instacart, table-reservation) selected cookies with substring patterns such as `%ebay%`, which also matched look-alike hosts like `webay.com` or `ebay.attacker.com`. Those cookies were merged into the Cookie header sent to the real site (CWE-200, CWE-384). Adapters now match only the exact domain or its subdomains via `DomainHostPatterns`, and `doctor` uses the same matcher (#136).

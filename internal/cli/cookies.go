@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
+	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 	"github.com/mvanhorn/agentcookie/pkg/sidecar"
 )
 
@@ -28,9 +30,10 @@ Chrome profiles and prints the matching cookies for a domain, so any tool can
 consume a logged-in session without touching the macOS Keychain directly.
 
 On macOS, discovered Chrome profiles (Default, Profile N, agent chrome-profile
-directories) are decrypted via the existing Keychain path. On Linux, only the
-sidecar is read (Chrome SQLite decryption requires libsecret, which is not
-implemented).
+directories) are decrypted via the existing Keychain path, unless sink.yaml
+sets skip_chrome_sqlite, in which case only the sidecar is read and Chrome
+Safe Storage is never touched. On Linux, only the sidecar is read (Chrome
+SQLite decryption requires libsecret, which is not implemented).
 
 This is the supported, universal consumption path: shell out to it from a
 CLI's auth step (the way CLIs already shell out to press-auth) instead of
@@ -64,7 +67,8 @@ with --json.
 // collectDomainCookiesUnion reads cookies from both the sidecar and
 // discovered Chrome profiles, then unions them. Sidecar cookies take
 // priority when a cookie with the same host+name exists in both.
-// On Linux, Chrome SQLite profiles are skipped (no decrypt support).
+// On Linux, Chrome SQLite profiles are skipped (no decrypt support), and
+// they are skipped everywhere when sink.yaml sets skip_chrome_sqlite.
 func collectDomainCookiesUnion(sidecarPath, domain string, matcher *protocol.BlocklistMatcher) ([]sidecar.Cookie, error) {
 	// Start with sidecar cookies.
 	sidecarCookies, err := collectDomainCookiesFromSidecar(sidecarPath, domain, matcher)
@@ -83,11 +87,15 @@ func collectDomainCookiesUnion(sidecarPath, domain string, matcher *protocol.Blo
 	// Include config's CDP.ProfileDir if set.
 	if runtime.GOOS == "darwin" {
 		profileDir := ""
-		if sinkCfg, err := config.LoadSink(common.ConfigDir); err == nil && sinkCfg != nil {
+		sinkCfg, _ := config.LoadSink(common.ConfigDir) // nil when absent or invalid
+		if sinkCfg != nil {
 			profileDir = sinkCfg.CDP.ProfileDir
 		}
-		chromeCookies := collectDomainCookiesFromChrome(domain, matcher, seen, profileDir)
-		sidecarCookies = append(sidecarCookies, chromeCookies...)
+		// skip_chrome_sqlite means no Safe Storage read: sidecar only.
+		if safeStorageReadAllowed(sinkCfg, false) {
+			chromeCookies := collectDomainCookiesFromChrome(domain, matcher, seen, profileDir)
+			sidecarCookies = append(sidecarCookies, chromeCookies...)
+		}
 	}
 
 	return sidecarCookies, nil
@@ -210,9 +218,60 @@ func collectDomainCookiesFromChrome(domain string, matcher *protocol.BlocklistMa
 	return result
 }
 
+// safeStorageReadAllowed is the single gate for reading Chrome Safe
+// Storage to decrypt extra Chrome profiles (#137). skip_chrome_sqlite in
+// sinkCfg forbids the read everywhere: the sink daemon, `cookies --domain`,
+// and doctor. sinkCfg is nil on a box without a sink config, which allows
+// the read. requireAdapter adds the sink-union clause: the extra-profile
+// cookies only matter when an installed adapter can consume them.
+func safeStorageReadAllowed(sinkCfg *config.SinkConfig, requireAdapter bool) bool {
+	if sinkCfg != nil && sinkCfg.SkipChromeSQLite {
+		return false
+	}
+	if requireAdapter && !sinkpush.AnyInstalled() {
+		return false
+	}
+	return true
+}
+
+// chromeDecryptKeyRead is the uncached Chrome Safe Storage read. It is a
+// package var so tests can stub the Keychain read.
+var chromeDecryptKeyRead = readChromeDecryptKey
+
+// decryptKeyRefusals is the process-lifetime negative cache for
+// getChromeDecryptKey, keyed by browser name. It holds only permanent
+// refusals (no grant, timeout). A locked keychain is transient and is
+// retried on the next call. The mutex is held across the read so
+// concurrent /sync handlers make at most one refused read per browser.
+var (
+	decryptKeyMu       sync.Mutex
+	decryptKeyRefusals = map[string]error{}
+)
+
+// decryptKeyRefusalLog receives the one-time line logged when a browser's
+// refusal is first cached.
+var decryptKeyRefusalLog io.Writer = os.Stderr
+
 // getChromeDecryptKey retrieves the AES key for decrypting cookies from the
-// specified browser's Keychain entry.
+// specified browser's Keychain entry. A permanent refusal is cached and
+// returned without another Keychain read for the rest of the process.
 func getChromeDecryptKey(browserName string) ([]byte, error) {
+	decryptKeyMu.Lock()
+	defer decryptKeyMu.Unlock()
+	if err, ok := decryptKeyRefusals[browserName]; ok {
+		return nil, err
+	}
+	key, err := chromeDecryptKeyRead(browserName)
+	if err != nil && chrome.IsKeychainAccessError(err) {
+		decryptKeyRefusals[browserName] = err
+		fmt.Fprintf(decryptKeyRefusalLog, "agentcookie: %s Safe Storage read refused (%v); not retrying for the life of this process. Restart the sink to retry after granting access.\n", browserName, err)
+	}
+	return key, err
+}
+
+// readChromeDecryptKey reads the browser's Safe Storage password from the
+// Keychain and derives the cookie AES key from it.
+func readChromeDecryptKey(browserName string) ([]byte, error) {
 	browser, err := chrome.LookupBrowser(browserName)
 	if err != nil {
 		return nil, err

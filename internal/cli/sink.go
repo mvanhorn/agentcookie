@@ -409,12 +409,12 @@ func applySealedEnvelope(
 	// cookies are processed even when the envelope is empty/fully filtered.
 	// The union function also filters extra-profile cookies through the
 	// blocklist so opted-out domains never reach adapters.
+	//
+	// #137: the union reads Chrome Safe Storage, so it runs only when
+	// skip_chrome_sqlite is off and an installed adapter can use the
+	// extra-profile cookies. Otherwise adapters get the envelope cookies.
 	var adapterResults []sinkpush.Result
-	profileDir := ""
-	if cfg.CDP.ProfileDir != "" {
-		profileDir = cfg.CDP.ProfileDir
-	}
-	unionedCookies := unionCookiesWithExtraProfiles(cookies, profileDir, blockMatcher)
+	unionedCookies := adapterCookieSet(cfg, cookies, blockMatcher)
 	if len(unionedCookies) > 0 {
 		adapterResults = sinkpush.RunAll(unionedCookies)
 		logAdapterResults(adapterResults)
@@ -711,6 +711,17 @@ func replaceLevelDBDir(payload []byte, liveDir string) (int, error) {
 		return originCount, err
 	}
 	return originCount, nil
+}
+
+// adapterCookieSet returns the cookies handed to sinkpush adapters: the
+// envelope cookies, unioned with extra Chrome profiles only when the
+// Safe Storage gate (safeStorageReadAllowed with the adapter clause)
+// passes.
+func adapterCookieSet(cfg *config.SinkConfig, cookies []chrome.Cookie, blockMatcher *protocol.BlocklistMatcher) []chrome.Cookie {
+	if !safeStorageReadAllowed(cfg, true) {
+		return cookies
+	}
+	return unionCookiesWithExtraProfiles(cookies, cfg.CDP.ProfileDir, blockMatcher)
 }
 
 // unionCookiesWithExtraProfiles unions the envelope cookies (from source sync)

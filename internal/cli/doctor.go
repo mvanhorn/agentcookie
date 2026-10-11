@@ -351,11 +351,7 @@ func buildReport(d doctorDeps) DoctorReport {
 	// 15. Chrome stores -- lists discovered Chrome profile stores and
 	// skip reasons. Informational (INFO/OK), never FAIL.
 	// Include config's CDP.ProfileDir if set.
-	cdpProfileDir := ""
-	if sinkCfg != nil {
-		cdpProfileDir = sinkCfg.CDP.ProfileDir
-	}
-	checks = append(checks, checkChromeStores(cdpProfileDir))
+	checks = append(checks, checkChromeStores(sinkCfg))
 
 	exit := 0
 	for _, c := range checks {
@@ -1595,8 +1591,13 @@ func checkCookieDeliveryWith(sinkCfg *config.SinkConfig, probe func() (int, erro
 // Default profile, including agent Chromes that have Cookies but no Local
 // State. Never FAIL; OK when stores found, INFO when stores skipped or on
 // Linux (no decrypt), SKIPPED when no Chrome detected.
-// profileDir is passed to DiscoverForConfig to include a configured CDP profile.
-func checkChromeStores(profileDir string) Check {
+// sinkCfg (nil on a source-only box) supplies the configured CDP profile
+// dir, which is passed to DiscoverForConfig.
+func checkChromeStores(sinkCfg *config.SinkConfig) Check {
+	profileDir := ""
+	if sinkCfg != nil {
+		profileDir = sinkCfg.CDP.ProfileDir
+	}
 	result := chromepaths.DiscoverForConfig(profileDir)
 
 	if len(result.Stores) == 0 && len(result.Skipped) == 0 {
@@ -1634,6 +1635,31 @@ func checkChromeStores(profileDir string) Check {
 		}
 	}
 
+	// skip_chrome_sqlite: list the stores but never read Safe Storage
+	// (#137), so readability is not checked.
+	if !safeStorageReadAllowed(sinkCfg, false) {
+		labels := make([]string, 0, len(result.Stores))
+		for _, s := range result.Stores {
+			label := s.Browser + "/" + s.Profile
+			if s.IsDefault {
+				label += " (default)"
+			}
+			labels = append(labels, label)
+		}
+		if len(labels) > 5 {
+			labels = append(labels[:5], fmt.Sprintf("+%d more", len(result.Stores)-5))
+		}
+		detail := fmt.Sprintf("%d store(s) found", len(result.Stores))
+		if len(labels) > 0 {
+			detail += ": " + strings.Join(labels, ", ")
+		}
+		return Check{
+			Name:     "Chrome stores",
+			Severity: SeverityInfo,
+			Detail:   detail + "; readability not checked because skip_chrome_sqlite is set (agentcookie never reads Chrome Safe Storage in this mode)",
+		}
+	}
+
 	// Darwin: list stores and note which are readable.
 	var readable, unreadable []string
 	for _, s := range result.Stores {
@@ -1642,13 +1668,11 @@ func checkChromeStores(profileDir string) Check {
 			label += " (default)"
 		}
 		// Try to get the decrypt key for this browser.
-		browser, err := chrome.LookupBrowser(s.Browser)
-		if err != nil {
+		if _, err := chrome.LookupBrowser(s.Browser); err != nil {
 			unreadable = append(unreadable, label+": unsupported browser")
 			continue
 		}
-		_, err = chrome.SafeStoragePasswordFor(browser)
-		if err != nil {
+		if _, err := getChromeDecryptKey(s.Browser); err != nil {
 			if chrome.IsKeychainLocked(err) {
 				unreadable = append(unreadable, label+": keychain locked")
 			} else {

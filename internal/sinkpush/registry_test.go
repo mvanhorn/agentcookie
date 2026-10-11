@@ -222,3 +222,30 @@ func TestDomainHostPatterns_RejectsLookalikes(t *testing.T) {
 		}
 	}
 }
+
+func TestAnyInstalled(t *testing.T) {
+	resetForTesting()
+	Register(&stubAdapter{name: "missing-a", installed: false})
+	Register(&stubAdapter{name: "missing-b", installed: false})
+	if AnyInstalled() {
+		t.Error("AnyInstalled = true with only uninstalled adapters registered")
+	}
+	Register(&stubAdapter{name: "present", installed: true})
+	if !AnyInstalled() {
+		t.Error("AnyInstalled = false with an installed adapter registered")
+	}
+}
+
+func TestSetRegistryForTesting_Restores(t *testing.T) {
+	resetForTesting()
+	orig := &stubAdapter{name: "orig"}
+	Register(orig)
+	restore := SetRegistryForTesting([]Adapter{&stubAdapter{name: "swapped", installed: true}})
+	if got := All(); len(got) != 1 || got[0].Name() != "swapped" {
+		t.Fatalf("swapped registry = %v", got)
+	}
+	restore()
+	if got := All(); len(got) != 1 || got[0].Name() != "orig" {
+		t.Errorf("restored registry = %v", got)
+	}
+}

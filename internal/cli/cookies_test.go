@@ -12,6 +12,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
+	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
@@ -447,5 +448,38 @@ func TestChromeStoreSortOrderCookiesPathTiebreaker(t *testing.T) {
 		if s[0].CookiesPath != "/a/earlier" {
 			t.Fatalf("run %d: expected /a/earlier first, got %s", run, s[0].CookiesPath)
 		}
+	}
+}
+
+// TestCollectDomainCookiesUnion_SkipChromeSQLiteNeverReadsSafeStorage covers
+// #137 for `cookies --domain`: with skip_chrome_sqlite set in sink.yaml, the
+// command returns sidecar cookies and never reads Chrome Safe Storage.
+func TestCollectDomainCookiesUnion_SkipChromeSQLiteNeverReadsSafeStorage(t *testing.T) {
+	skipUnlessDarwin(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := t.TempDir()
+	withConfigDir(t, configDir)
+	writeFile(t, filepath.Join(configDir, "sink.yaml"), `listen:
+  addr: 100.80.229.80:9999
+peer:
+  hostname: macbook-pro
+skip_chrome_sqlite: true
+`)
+	seedExtraChromeProfile(t, home, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "extra", Value: "from-profile", Path: "/"},
+	})
+	stub := stubChromeDecryptKey(t, func(int) ([]byte, error) { return safeStorageTestKey, nil })
+	path := makeSidecar(t, [][3]string{{".example.com", "sess", "from-sidecar"}})
+
+	got, err := collectDomainCookiesUnion(path, "example.com", nil)
+	if err != nil {
+		t.Fatalf("collectDomainCookiesUnion: %v", err)
+	}
+	if n := stub.count(); n != 0 {
+		t.Errorf("Chrome Safe Storage read %d time(s) under skip_chrome_sqlite; want 0", n)
+	}
+	if len(got) != 1 || got[0].Value != "from-sidecar" {
+		t.Errorf("want only the sidecar cookie; got %+v", got)
 	}
 }
