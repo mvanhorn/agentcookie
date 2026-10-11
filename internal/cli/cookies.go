@@ -91,10 +91,15 @@ func collectDomainCookiesUnion(sidecarPath, domain string, matcher *protocol.Blo
 		if sinkCfg != nil {
 			profileDir = sinkCfg.CDP.ProfileDir
 		}
-		// A sink.yaml that exists but fails to load may still set
-		// skip_chrome_sqlite, so fail closed rather than reading Safe Storage.
-		_, statErr := os.Stat(filepath.Join(common.ConfigDir, "sink.yaml"))
-		unloadableSinkConfig := loadErr != nil && statErr == nil
+		// Only a sink.yaml confirmed missing allows the read without a
+		// config. One that exists but fails to load, or cannot be checked,
+		// may still set skip_chrome_sqlite, so fail closed and say why.
+		sinkPath := filepath.Join(common.ConfigDir, "sink.yaml")
+		_, statErr := os.Stat(sinkPath)
+		unloadableSinkConfig := loadErr != nil && !os.IsNotExist(statErr)
+		if unloadableSinkConfig {
+			fmt.Fprintf(os.Stderr, "agentcookie cookies: %s could not be loaded (%v); returning sidecar cookies only, not Chrome profiles\n", sinkPath, loadErr)
+		}
 		// skip_chrome_sqlite means no Safe Storage read: sidecar only.
 		if !unloadableSinkConfig && safeStorageReadAllowed(sinkCfg) {
 			chromeCookies := collectDomainCookiesFromChrome(domain, matcher, seen, profileDir)

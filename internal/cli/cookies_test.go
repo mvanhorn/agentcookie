@@ -512,3 +512,36 @@ skip_chrome_sqlite: true
 		t.Errorf("want only the sidecar cookie; got %+v", got)
 	}
 }
+
+func TestCollectDomainCookiesUnion_UnreadableConfigDirNeverReadsSafeStorage(t *testing.T) {
+	skipUnlessDarwin(t)
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := t.TempDir()
+	withConfigDir(t, configDir)
+	writeFile(t, filepath.Join(configDir, "sink.yaml"), `listen:
+  addr: 100.80.229.80:9999
+peer:
+  hostname: macbook-pro
+skip_chrome_sqlite: true
+`)
+	if err := os.Chmod(configDir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(configDir, 0o700) })
+	seedExtraChromeProfile(t, home, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "extra", Value: "from-profile", Path: "/"},
+	})
+	stub := stubChromeDecryptKey(t, func(int) ([]byte, error) { return safeStorageTestKey, nil })
+	path := makeSidecar(t, [][3]string{{".example.com", "sess", "from-sidecar"}})
+
+	if _, err := collectDomainCookiesUnion(path, "example.com", nil); err != nil {
+		t.Fatalf("collectDomainCookiesUnion: %v", err)
+	}
+	if n := stub.count(); n != 0 {
+		t.Errorf("Chrome Safe Storage read %d time(s) with an unreadable config dir; want 0", n)
+	}
+}
