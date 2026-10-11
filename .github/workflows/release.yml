@@ -49,6 +49,11 @@ jobs:
   build-darwin:
     runs-on: macos-latest
     if: ${{ vars.RELEASE_CI_ENABLED == 'true' }}
+    # Step-level `if:` cannot read the secrets context (GitHub rejects the
+    # whole workflow file), so expose whether each secret is set here.
+    env:
+      HAS_SIGNING_CERT: ${{ secrets.CERTIFICATE_OSX_APPLICATION != '' }}
+      HAS_NOTARY_PASSWORD: ${{ secrets.AC_NOTARY_PASSWORD != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,7 +65,7 @@ jobs:
           cache: true
 
       - name: import Developer ID cert
-        if: ${{ secrets.CERTIFICATE_OSX_APPLICATION != '' }}
+        if: ${{ env.HAS_SIGNING_CERT == 'true' }}
         uses: apple-actions/import-codesign-certs@v3
         with:
           p12-file-base64: ${{ secrets.CERTIFICATE_OSX_APPLICATION }}
@@ -70,7 +75,7 @@ jobs:
         run: security find-identity -v -p codesigning
 
       - name: setup notarytool credentials
-        if: ${{ secrets.AC_NOTARY_PASSWORD != '' }}
+        if: ${{ env.HAS_NOTARY_PASSWORD == 'true' }}
         env:
           AC_NOTARY_PASSWORD: ${{ secrets.AC_NOTARY_PASSWORD }}
         run: |
@@ -160,7 +165,7 @@ jobs:
       - name: generate checksums
         run: |
           cd dist
-          sha256sum *.tar.gz > checksums.txt
+          sha256sum -- *.tar.gz > checksums.txt
           cat checksums.txt
 
       # Create the GitHub release with all assets
