@@ -345,13 +345,13 @@ fi
 # sign.sh's post-sign check, run against stub security and codesign
 # binaries. The stub codesign reports the Apple Events value from
 # STUB_APPLE_EVENTS (true or false) and succeeds for every other call.
-stubs="$tmp/stubs"
-mkdir -p "$stubs"
-cat > "$stubs/security" <<'STUB'
+sign_stubs="$tmp/stubs"
+mkdir -p "$sign_stubs"
+cat > "$sign_stubs/security" <<'STUB'
 #!/usr/bin/env bash
 echo '  1) 0000000000000000000000000000000000000000 "stub identity"'
 STUB
-cat > "$stubs/codesign" <<'STUB'
+cat > "$sign_stubs/codesign" <<'STUB'
 #!/usr/bin/env bash
 for arg in "$@"; do
   if [[ "$arg" == "-d" ]]; then
@@ -361,13 +361,13 @@ for arg in "$@"; do
 done
 exit 0
 STUB
-chmod +x "$stubs/security" "$stubs/codesign"
+chmod +x "$sign_stubs/security" "$sign_stubs/codesign"
 printf 'bin' > "$tmp/agentcookie-stub"
 
 # run_sign_with_stub VALUE: prints sign.sh's exit code, stderr to $tmp/sign.err.
 run_sign_with_stub() {
   local rc=0
-  PATH="$stubs:$PATH" STUB_APPLE_EVENTS="$1" AGENTCOOKIE_SIGN_IDENTITY="stub identity" \
+  PATH="$sign_stubs:$PATH" STUB_APPLE_EVENTS="$1" AGENTCOOKIE_SIGN_IDENTITY="stub identity" \
     bash "$ROOT/scripts/sign.sh" "$tmp/agentcookie-stub" >/dev/null 2>"$tmp/sign.err" || rc=$?
   echo "$rc"
 }
