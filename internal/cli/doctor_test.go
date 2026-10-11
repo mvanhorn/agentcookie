@@ -1093,3 +1093,27 @@ func TestCheckDaemonBinaryPath(t *testing.T) {
 		}
 	})
 }
+
+// TestCheckChromeStores_SkipChromeSQLiteListsWithoutReading covers #137 for
+// doctor: under skip_chrome_sqlite the Chrome stores check still lists the
+// discovered stores, reports INFO, and never reads Chrome Safe Storage.
+func TestCheckChromeStores_SkipChromeSQLiteListsWithoutReading(t *testing.T) {
+	skipUnlessDarwin(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedExtraChromeProfile(t, home, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "extra", Value: "v", Path: "/"},
+	})
+	stub := stubChromeDecryptKey(t, func(int) ([]byte, error) { return safeStorageTestKey, nil })
+
+	c := checkChromeStores(&config.SinkConfig{SkipChromeSQLite: true})
+	if n := stub.count(); n != 0 {
+		t.Errorf("Chrome Safe Storage read %d time(s) under skip_chrome_sqlite; want 0", n)
+	}
+	if c.Severity != SeverityInfo {
+		t.Errorf("severity = %q, want INFO (detail %q)", c.Severity, c.Detail)
+	}
+	if !strings.Contains(c.Detail, "chrome/chrome-profile") || !strings.Contains(c.Detail, "skip_chrome_sqlite") {
+		t.Errorf("detail should list the store and name skip_chrome_sqlite; got %q", c.Detail)
+	}
+}
