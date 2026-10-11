@@ -15,10 +15,15 @@ import (
 func TestPrimaryStrategy_OffByDefault_DoesNotCreateMasterKey(t *testing.T) {
 	origSec := execSecurityFunc
 	origMaster := createMasterKeyFunc
+	origCount, origPw := countSafeStorageItemsFunc, safeStoragePasswordFunc
 	t.Cleanup(func() {
 		execSecurityFunc = origSec
 		createMasterKeyFunc = origMaster
+		countSafeStorageItemsFunc, safeStoragePasswordFunc = origCount, origPw
 	})
+	// No real Keychain: an existing, readable item.
+	countSafeStorageItemsFunc = func() (int, error) { return 1, nil }
+	safeStoragePasswordFunc = func() (string, error) { return "EXISTING", nil }
 
 	execSecurityFunc = func(args ...string) (string, error) {
 		return "ok", nil
@@ -54,10 +59,15 @@ func TestPrimaryStrategy_OffByDefault_DoesNotCreateMasterKey(t *testing.T) {
 func TestPrimaryStrategy_WithSealingFlag_CreatesMasterKey(t *testing.T) {
 	origSec := execSecurityFunc
 	origMaster := createMasterKeyFunc
+	origCount, origPw := countSafeStorageItemsFunc, safeStoragePasswordFunc
 	t.Cleanup(func() {
 		execSecurityFunc = origSec
 		createMasterKeyFunc = origMaster
+		countSafeStorageItemsFunc, safeStoragePasswordFunc = origCount, origPw
 	})
+	// No real Keychain: an existing, readable item.
+	countSafeStorageItemsFunc = func() (int, error) { return 1, nil }
+	safeStoragePasswordFunc = func() (string, error) { return "EXISTING", nil }
 
 	execSecurityFunc = func(args ...string) (string, error) {
 		return "ok", nil

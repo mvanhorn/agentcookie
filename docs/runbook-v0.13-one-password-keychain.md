@@ -175,10 +175,13 @@ security set-generic-password-partition-list \
 
 ## Fallbacks for the unsigned-CGO long tail
 
-`agentcookie wizard set-keychain-access --any-app` (or `--recreate`) opts
-into the legacy delete-and-recreate LaunchAgent chain that opens the item to
-**any** application (`-A`). This is the only path that covers arbitrary
+`agentcookie wizard set-keychain-access --any-app` opts into the legacy
+delete-and-recreate LaunchAgent chain and opens the item to **any**
+application (`-A`). `--recreate` runs the same chain with a per-binary `-T`
+trust list instead. `--any-app` is the only path that covers arbitrary
 unsigned CGO tools, but it is GUI-prompt-prone and security-broad — use it
 only on a dedicated sink where any local process reading Chrome cookies is
-acceptable. The value-preserving guard still refuses to delete the item if it
-cannot first read the existing value.
+acceptable. Both recreate the item with its existing value and refuse to
+delete it when that value cannot be read first. Through v1.2.2 the `-T` step
+used a random value instead, which made existing Chrome cookies unreadable,
+so do not run `--recreate` with those builds on a Mac whose cookies you need.

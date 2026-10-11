@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Keychain: --recreate keeps existing Chrome cookies readable
+
+- `agentcookie wizard set-keychain-access --recreate` deleted Chrome Safe Storage and re-added it with a random value, so every existing Chrome cookie on that Mac became unreadable. The same step also ran after `--any-app`'s guard refused to touch an unreadable item, which bypassed that guard. The step now recreates an existing item with its own value, refuses to delete an item whose value it cannot read, and uses a fresh value only when no item exists yet.
+
 ### Installer re-runs upgrade in place
 
 - Re-running `scripts/install-beta.sh` on a healthy, configured role no longer re-runs the wizard. It installs the new binary, restarts that role's LaunchAgent on it with `launchctl kickstart -k`, confirms it is running, prints `doctor`, and exits 0. A doctor FAIL, an unloaded daemon, a LaunchAgent that runs a different binary path, or a failed restart runs the wizard instead.

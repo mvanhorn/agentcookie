@@ -95,7 +95,7 @@ To force a fresh pairing handshake, re-run with `--repair`. On the source that p
 agentcookie cookies --domain <domain>
 ```
 
-See [consumption.md](consumption.md). Do not reach for `agentcookie wizard set-keychain-access --recreate` on a Mac whose Chrome cookies you need: it replaces the Chrome Safe Storage key with a random value, which makes the existing cookies unreadable.
+See [consumption.md](consumption.md). With v1.2.2 and earlier, do not run `agentcookie wizard set-keychain-access --recreate` on a Mac whose Chrome cookies you need: those builds replace the Chrome Safe Storage key with a random value, which makes the existing cookies unreadable.
 
 ## Install at least one PP CLI on the sink
 
