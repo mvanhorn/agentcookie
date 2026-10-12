@@ -32,12 +32,13 @@ import (
 )
 
 var (
-	sourceOnce       bool
-	sourceWatch      bool
-	sourceVerbose    bool
-	sourceDryRun     bool
-	sourceSkipDBSC   bool
-	sourcePullListen string
+	sourceOnce             bool
+	sourceWatch            bool
+	sourceVerbose          bool
+	sourceDryRun           bool
+	sourceSkipDBSC         bool
+	sourceSkipLocalStorage bool
+	sourcePullListen       string
 )
 
 // resolveSinkURL is the sink URL resolver used by pushOnce. Production
@@ -154,7 +155,18 @@ func init() {
 	sourceCmd.Flags().BoolVar(&sourceVerbose, "verbose", false, "log per-pattern decisions to stderr")
 	sourceCmd.Flags().BoolVar(&sourceDryRun, "dry-run", false, "read + filter but do not contact the sink")
 	sourceCmd.Flags().BoolVar(&sourceSkipDBSC, "skip-dbsc-suspect", false, "drop cookies that look device-bound (DBSC) instead of shipping them with a warning; also honored via AGENTCOOKIE_SKIP_DBSC_SUSPECT=1")
+	sourceCmd.Flags().BoolVar(&sourceSkipLocalStorage, "skip-local-storage", false, "push cookies without the browser's Local Storage (a Linux sink, or any sink with skip_chrome_sqlite, never applies it); also honored via "+envSkipLocalStorage+"=1")
 	sourceCmd.Flags().StringVar(&sourcePullListen, "pull-listen", "", "host:port for GET /pull while --watch is running (default: this machine's Tailscale 100.x:9998)")
+}
+
+// envSkipLocalStorage lets a LaunchAgent turn off Local Storage packing
+// without a flag edit, like AGENTCOOKIE_SKIP_DBSC_SUSPECT.
+const envSkipLocalStorage = "AGENTCOOKIE_SKIP_LOCAL_STORAGE"
+
+// skipLocalStorage reports whether pushes should leave out the browser's
+// Local Storage leveldb. It is read per push, like AGENTCOOKIE_SYNC_INDEXEDDB.
+func skipLocalStorage() bool {
+	return sourceSkipLocalStorage || os.Getenv(envSkipLocalStorage) == "1"
 }
 
 func runSource(cmd *cobra.Command, args []string) error {
@@ -252,9 +264,17 @@ func runSource(cmd *cobra.Command, args []string) error {
 	// --watch mode: long-running fsnotify watcher across all three sync
 	// surfaces (cookies + Local Storage + IndexedDB). v0.7 single debounce
 	// window: a write to any surface coalesces into one full envelope push.
+	// When Local Storage is skipped there is nothing to push on a Local
+	// Storage write, so don't watch it either (it changes constantly).
+	localStorageDir := ""
+	if !skipLocalStorage() {
+		localStorageDir = sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile)
+	} else {
+		fmt.Fprintf(os.Stderr, "agentcookie source --watch: skipping Local Storage (--skip-local-storage / %s=1)\n", envSkipLocalStorage)
+	}
 	w, err := watcher.New(watcher.Config{
 		CookiesPath:     cfg.Chrome.DBPath,
-		LocalStorageDir: sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile),
+		LocalStorageDir: localStorageDir,
 		IndexedDBDir:    sourceBrowser.IndexedDBDir(cfg.Browser.Profile),
 		Push:            push,
 		OnEvent: func(ev watcher.Event) {
@@ -717,10 +737,15 @@ func pushOnce(
 			pullPayloadCache.ClearIfCurrent(pullGen)
 			return nil, dbsc, err
 		}
-		if lt, _, err := chromedirsync.Pack(sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile), 0); err == nil {
-			lsTarball = lt
-		} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
-			fmt.Fprintf(os.Stderr, "agentcookie source: localStorage pack failed (%v); continuing without it\n", err)
+		// --skip-local-storage skips the pack: a Linux sink (or any sink
+		// with skip_chrome_sqlite) never applies it, and the leveldb is
+		// often tens of MB, re-sent on every push.
+		if !skipLocalStorage() {
+			if lt, _, err := chromedirsync.Pack(sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile), 0); err == nil {
+				lsTarball = lt
+			} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
+				fmt.Fprintf(os.Stderr, "agentcookie source: localStorage pack failed (%v); continuing without it\n", err)
+			}
 		}
 		// IndexedDB is opt-in for v0.7: typical user dirs are 400MB+ (Gmail caches,
 		// Slack message history) and inlining that in the JSON envelope blows

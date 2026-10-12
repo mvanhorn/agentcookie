@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Source: `--skip-local-storage` stops shipping Local Storage
+
+- Every push packs the source profile's Local Storage leveldb into the envelope, base64-encoded, and the watcher pushes as often as every 30 seconds. On one Mac the directory was 64 MB, so each push was about 90 MB and the laptop uploaded about 150 GB in 16.5 hours to a Linux sink that never applies Local Storage. On slower uplinks the push also overran the watcher's 60-second budget (`context deadline exceeded`), so cookies stopped syncing too.
+- New `agentcookie source --skip-local-storage` (or `AGENTCOOKIE_SKIP_LOCAL_STORAGE=1`, for a LaunchAgent) skips the pack and stops watching the Local Storage directory. On that Mac each push dropped to about 1.8 MB, with the same cookies delivered. Without the flag nothing changes. No `source.yaml` key is added, so older binaries still load the config, and the wire format is unchanged (the tarball field is just empty).
+
 ### Live browser injection keeps your logins
 
 - Chrome holds at most about 3300 cookies and evicts the least recently used past that, counting an injected cookie as used when it is set. A large batch (4868 cookies in the live test) silently evicted the first ~1800 it set, which included GitHub's session, so the agent's real browser stayed logged out while the push reported success. Live CDP injection now pushes only the 3000 most recently used cookies, oldest first, so the ones you use are kept. The sink log says how many were pushed and how many stayed sidecar-only.

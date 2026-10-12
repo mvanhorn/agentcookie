@@ -32,6 +32,8 @@ domains: []
 
 The 1.0 release does NOT change this default in code. A later release may flip the default, which would be a breaking change.
 
+**Bandwidth**: every push also carries the source browser's Local Storage leveldb, which a Linux sink never applies. It is often tens of MB and is re-sent on every push. For a Linux sink, run the source with `--skip-local-storage` (or set `AGENTCOOKIE_SKIP_LOCAL_STORAGE=1` in the LaunchAgent's environment) so pushes carry only cookies.
+
 ## Will syncing cookies log me out of sites on the source machine?
 
 No. The source reads cookies with `immutable=1` (Chrome's recommended read-only flag), and `agentcookie source` never writes to the source's Cookies SQLite. The only writes happen on the sink.

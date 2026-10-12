@@ -343,6 +343,43 @@ domains:
 	}
 }
 
+// AGENTCOOKIE_SKIP_LOCAL_STORAGE=1 must drop the Local Storage tarball from
+// the envelope while delivering the same cookies; the default keeps shipping it.
+func TestSourcePushLocalStorageOptOut(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "s", Value: "v", Path: "/"},
+	})
+	b, err := chrome.LookupBrowser("")
+	if err != nil {
+		t.Fatalf("LookupBrowser: %v", err)
+	}
+	lsDir := b.LocalStorageLevelDB("")
+	if err := os.MkdirAll(lsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lsDir, "000003.log"), bytes.Repeat([]byte("x"), 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("default push: %v", err)
+	}
+	if len(fx.capture.envelopeAt(0).LocalStorageTarball) == 0 {
+		t.Fatal("default config should still ship the Local Storage tarball")
+	}
+
+	t.Setenv(envSkipLocalStorage, "1")
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("skip-local-storage push: %v", err)
+	}
+	if n := len(fx.capture.envelopeAt(1).LocalStorageTarball); n != 0 {
+		t.Fatalf("skip-local-storage shipped a %d-byte Local Storage tarball", n)
+	}
+	if got, want := fx.hostsAt(1), fx.hostsAt(0); !reflect.DeepEqual(got, want) {
+		t.Fatalf("cookies changed with skip-local-storage: %v, want %v", got, want)
+	}
+}
+
 type sourcePushFixture struct {
 	configDir string
 	cfg       *config.SourceConfig
