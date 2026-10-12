@@ -361,6 +361,8 @@ func TestSourcePushLocalStorageOptOut(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The default must not depend on an inherited environment.
+	t.Setenv(envSkipLocalStorage, "")
 	if _, err := fx.push(); err != nil {
 		t.Fatalf("default push: %v", err)
 	}
@@ -375,8 +377,12 @@ func TestSourcePushLocalStorageOptOut(t *testing.T) {
 	if n := len(fx.capture.envelopeAt(1).LocalStorageTarball); n != 0 {
 		t.Fatalf("skip-local-storage shipped a %d-byte Local Storage tarball", n)
 	}
-	if got, want := fx.hostsAt(1), fx.hostsAt(0); !reflect.DeepEqual(got, want) {
-		t.Fatalf("cookies changed with skip-local-storage: %v, want %v", got, want)
+	before, after := fx.capture.envelopeAt(0).Cookies, fx.capture.envelopeAt(1).Cookies
+	if len(before) == 0 {
+		t.Fatal("default push carried no cookies")
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("cookies changed with skip-local-storage:\n got %+v\nwant %+v", after, before)
 	}
 }
 

@@ -32,7 +32,7 @@ domains: []
 
 The 1.0 release does NOT change this default in code. A later release may flip the default, which would be a breaking change.
 
-**Bandwidth**: every push also carries the source browser's Local Storage leveldb, which a Linux sink never applies. It is often tens of MB and is re-sent on every push. For a Linux sink, run the source with `--skip-local-storage` (or set `AGENTCOOKIE_SKIP_LOCAL_STORAGE=1` in the LaunchAgent's environment) so pushes carry only cookies.
+**Bandwidth**: every push also carries the source browser's Local Storage leveldb, which a Linux sink never applies. It is often tens of MB and is re-sent on every push. For a Linux sink, run the source with `--skip-local-storage` (or set `AGENTCOOKIE_SKIP_LOCAL_STORAGE=1` in the LaunchAgent's environment) so pushes no longer carry Local Storage. IndexedDB stays off unless you opted in with `AGENTCOOKIE_SYNC_INDEXEDDB=1`; leave that unset too if you want cookie-sized pushes.
 
 ## Will syncing cookies log me out of sites on the source machine?
 
