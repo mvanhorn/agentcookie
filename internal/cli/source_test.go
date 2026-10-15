@@ -247,6 +247,26 @@ func TestSourcePushDryRunDoesNotRecordSourceHealth(t *testing.T) {
 	}
 }
 
+// A dry run sends nothing, so it must not replace what doctor reports about
+// the secrets the last real push shipped.
+func TestSourcePushDryRunKeepsSecretsSummary(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "session", Value: "value", Path: "/"},
+	})
+	withSourceSkipSecrets(t, false)
+	t.Setenv(envSkipSecrets, "")
+	stubSecretsPayload(t, &secretsbus.Payload{CLIs: map[string]map[string]string{"demo-cli": {"DEMO_TOKEN": "t0k"}}})
+	fx.srcState.LastSecretsSkipped = true
+	fx.srcState.LastSecretsCLIs = 0
+
+	if _, err := pushWithFreshBlocklist(context.Background(), fx.cfg, fx.key, true, false, false, fx.srcState, nil); err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if !fx.srcState.LastSecretsSkipped || fx.srcState.LastSecretsCLIs != 0 {
+		t.Fatalf("dry run replaced the secrets summary: skipped=%v clis=%d, want skipped=true clis=0", fx.srcState.LastSecretsSkipped, fx.srcState.LastSecretsCLIs)
+	}
+}
+
 func TestSourcePushMalformedBlocklistSkipsPushAndRecordsFailure(t *testing.T) {
 	fx := newSourcePushFixture(t, []chrome.Cookie{
 		{HostKey: ".blocked.com", Name: "blocked", Value: "b", Path: "/"},
