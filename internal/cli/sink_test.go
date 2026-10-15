@@ -1269,3 +1269,78 @@ domains:
 		t.Fatalf("re-injected hosts = %v, want the newly blocked host dropped", got)
 	}
 }
+
+func TestLiveCDPReinjectSyncLandsAfterInFlightTick(t *testing.T) {
+	fx, _, _ := newLiveCDPSinkFixture(t)
+	if resp := fx.postSync(1, []chrome.Cookie{{HostKey: ".example.com", Name: "s", Value: "old", Path: "/"}}); resp.Code != http.StatusOK {
+		t.Fatalf("/sync status = %d", resp.Code)
+	}
+
+	// The tick's inject of the old set blocks until released.
+	var mu sync.Mutex
+	var injected []string
+	tickEntered := make(chan struct{})
+	releaseTick := make(chan struct{})
+	newInjected := make(chan struct{}, 1)
+	liveCDPInject = func(_ context.Context, _ string, cookies []chrome.Cookie) (int, error) {
+		v := cookies[0].Value
+		if v == "old" {
+			close(tickEntered)
+			<-releaseTick
+		}
+		mu.Lock()
+		injected = append(injected, v)
+		mu.Unlock()
+		if v == "new" {
+			newInjected <- struct{}{}
+		}
+		return 1, nil
+	}
+
+	tickDone := make(chan struct{})
+	go func() {
+		fx.reinject.tick(context.Background())
+		close(tickDone)
+	}()
+	<-tickEntered
+
+	syncDone := make(chan int, 1)
+	go func() {
+		syncDone <- fx.postSync(2, []chrome.Cookie{{HostKey: ".example.com", Name: "s", Value: "new", Path: "/"}}).Code
+	}()
+	// The /sync must not inject while the tick is mid-inject.
+	select {
+	case <-newInjected:
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(releaseTick)
+	<-tickDone
+	if code := <-syncDone; code != http.StatusOK {
+		t.Fatalf("second /sync status = %d", code)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"old", "new"}; !reflect.DeepEqual(injected, want) {
+		t.Fatalf("inject order = %v, want %v: the newer /sync set must land last", injected, want)
+	}
+}
+
+func TestLiveCDPReinjectNotStartedInDryRun(t *testing.T) {
+	rec := stubLiveCDPInject(t)
+	fx := newSinkHandlerFixture(t, true)
+	fx.cfg.LiveCDP = config.LiveCDPRef{Enabled: true, Endpoint: "http://127.0.0.1:9223"}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if startLiveCDPReinject(ctx, fx.cfg, fx.reinject) {
+		t.Fatal("re-inject ticker started in --dry-run")
+	}
+	if got := rec.callCount(); got != 0 {
+		t.Fatalf("injects in --dry-run = %d, want 0", got)
+	}
+
+	sinkDryRun = false
+	if !startLiveCDPReinject(ctx, fx.cfg, fx.reinject) {
+		t.Fatal("re-inject ticker not started with live_cdp on and --dry-run off")
+	}
+}
