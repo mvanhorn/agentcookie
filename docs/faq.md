@@ -32,6 +32,8 @@ domains: []
 
 The 1.0 release does NOT change this default in code. A later release may flip the default, which would be a breaking change.
 
+**Bandwidth**: every push also carries the source browser's Local Storage leveldb, which a Linux sink never applies. It is often tens of MB and is re-sent on every push. For a Linux sink, run the source with `--skip-local-storage` (or set `AGENTCOOKIE_SKIP_LOCAL_STORAGE=1` in the LaunchAgent's environment) so pushes no longer carry Local Storage. IndexedDB stays off unless you opted in with `AGENTCOOKIE_SYNC_INDEXEDDB=1`; leave that unset too if you want cookie-sized pushes. For a cookie-only source, also pass `--skip-secrets` (or set `AGENTCOOKIE_SKIP_SECRETS=1`) so the source never reads the secrets bus: `agentcookie source --watch --skip-local-storage --skip-secrets`.
+
 How often does the source send? `source --watch` checks every 30 seconds and on every cookie change, but it sends to a sink only when the payload changed since that sink last accepted it, or 10 minutes have passed. A sink whose last push failed gets the next one regardless. Run with `--verbose` to see the skipped sends.
 
 ## Will syncing cookies log me out of sites on the source machine?

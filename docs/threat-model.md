@@ -44,6 +44,12 @@ agentcookie trusts:
 - Cookie value tampering by the source. The source is authoritative; if the source machine pushes cookies for a domain the sink policy allows, the sink writes them. Allowlist mode limits which hosts can land, but an allowed domain still grants whatever session authority the source browser has for that site. There is no per-cookie or per-account authorization layer inside an allowed domain.
 - Local processes while an `agent-sync` debug endpoint is open. `agent-sync` runs a dedicated Chrome with a Chrome DevTools Protocol port bound to `127.0.0.1` only. While it is running, **any process running as the same user can connect to that port** and read or drive the owned browser (including its injected cookies) -- which is exactly why Chrome 136 stopped honoring `--remote-debugging-port` on the default profile. Treat a running `agent-sync` as a same-user trust boundary: run it while you are driving agent browsers and stop it (Ctrl-C) when you are done. It never opens the port on a non-loopback interface, and it uses its own profile dir so the port never exposes your everyday Chrome's session. Device-bound (DBSC) cookies are not injected and cannot transfer regardless.
 
+## Secrets bus
+
+By default each source push also carries the secrets bus: per-CLI secrets, manifest-adopted secrets files and carried files, sent to every sink and served to teammates on `GET /pull`. An owner who wants a source to ship cookies only can turn this off with `agentcookie source --skip-secrets` or `AGENTCOOKIE_SKIP_SECRETS`. With the switch on, the source never reads the bus or watches its paths. The env var fails closed: any value other than empty or `0` turns it on, so a typo does not keep shipping credentials. `agentcookie doctor` shows whether the last push skipped secrets.
+
+The switch stops future sends only. Secrets already delivered stay on the sinks and teammates that received them until removed there. `agentcookie secret revoke` on the source has the same limit: it stops a project from being sent, but does not delete what a sink already holds.
+
 ## Cryptographic specifics
 
 - Cookie at rest in Chrome's own SQLite on each machine: Chrome's existing scheme (AES-128-CBC with per-machine Safe Storage key, PBKDF2-SHA1, salt `saltysalt`, 1003 iters, IV = 16 spaces, v10 prefix). agentcookie reads with the local key and re-encrypts with the destination's local key.

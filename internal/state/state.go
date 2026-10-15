@@ -32,6 +32,13 @@ type SourceState struct {
 	LastDBSCSkipped int      `json:"last_dbsc_skipped,omitempty"`
 	LastDBSCSample  []string `json:"last_dbsc_sample,omitempty"`
 
+	// LastSecretsSkipped records that the last push ran with --skip-secrets
+	// (or AGENTCOOKIE_SKIP_SECRETS) and never read the secrets bus.
+	// LastSecretsCLIs is how many CLIs' secrets that push carried. Older
+	// state files have neither and read as false and 0.
+	LastSecretsSkipped bool `json:"last_secrets_skipped,omitempty"`
+	LastSecretsCLIs    int  `json:"last_secrets_clis,omitempty"`
+
 	// Sinks holds one record per fan-out sink (multi-sink). The top-level
 	// LastPush/TotalPushes/TotalFailures/LastError fields above remain the
 	// cross-sink aggregate so pre-multi-sink readers keep working; per-sink

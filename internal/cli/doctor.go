@@ -215,6 +215,7 @@ func buildReport(d doctorDeps) DoctorReport {
 		st, err := d.LoadSourceState()
 		checks = append(checks, checkSourceStateFrom(st, err))
 		checks = append(checks, checkDBSCFrom(st))
+		checks = append(checks, checkSecretsBusFrom(st))
 		checks = append(checks, checkSourceAdapter(srcCfg, d.SourceAdapterCookiesExists, d.SourceAdapterPassword, d.SourceAdapterDecrypt))
 	} else {
 		checks = append(checks, Check{
@@ -1065,6 +1066,24 @@ func checkDBSCFrom(st *state.SourceState) Check {
 		Detail:      detail,
 		Remediation: "these cookies are device-bound and may not work on the sink; for Google sessions, sign the sink's Chrome into the same account (see README: DBSC)",
 	}
+}
+
+// checkSecretsBusFrom is informational: it shows whether the last push skipped
+// the secrets bus (--skip-secrets / AGENTCOOKIE_SKIP_SECRETS) or how many CLIs'
+// secrets it carried, so an owner can confirm a cookie-only source without
+// reading an envelope. It never warns. Named apart from checkSecretsBus, which
+// reports what is on disk rather than what the last push sent.
+func checkSecretsBusFrom(st *state.SourceState) Check {
+	c := Check{Name: "Secrets push", Severity: SeverityOK}
+	switch {
+	case st == nil:
+		c.Detail = "no source push recorded yet"
+	case st.LastSecretsSkipped:
+		c.Detail = "skipped (--skip-secrets or AGENTCOOKIE_SKIP_SECRETS)"
+	default:
+		c.Detail = fmt.Sprintf("shipping %d cli(s)", st.LastSecretsCLIs)
+	}
+	return c
 }
 
 // checkSealingWith is informational. It reports whether the
