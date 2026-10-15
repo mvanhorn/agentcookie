@@ -167,7 +167,9 @@ func runSink(cmd *cobra.Command, args []string) error {
 	}
 
 	key, seqTracker, stateWriter, sinkState, stateMu := rt.key, rt.seq, rt.writer, rt.st, &rt.mu
-	mux := newSinkMux(cfg, transportSecret, key, seqTracker, stateWriter, sinkState, stateMu)
+	reinject := newLiveCDPReinjector(cfg)
+	mux := newSinkMux(cfg, transportSecret, key, seqTracker, stateWriter, sinkState, stateMu, reinject)
+	startLiveCDPReinject(cmd.Context(), cfg, reinject)
 
 	srv := httpserver.Configure(&http.Server{Addr: cfg.Listen.Addr, Handler: mux}, httpserver.SinkSync)
 	if sinkDryRun {
@@ -307,6 +309,7 @@ func newSinkMux(
 	stateWriter *state.Writer,
 	sinkState *state.SinkState,
 	stateMu *sync.Mutex,
+	reinject *liveCDPReinjector,
 ) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -323,7 +326,9 @@ func newSinkMux(
 			http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		reinject.beginApply()
 		res := applySealedEnvelope(r.Context(), cfg, transportSecret, key, seqTracker, stateWriter, sinkState, stateMu, sealed)
+		reinject.endApply(res)
 		if res.Status != http.StatusOK {
 			http.Error(w, res.Reply, res.Status)
 			return
@@ -339,6 +344,9 @@ func newSinkMux(
 type envelopeApplyResult struct {
 	Status int
 	Reply  string
+	// liveCDPCookies is the policy-filtered cookie set a successful apply
+	// handed to live CDP, for the /sync re-inject ticker.
+	liveCDPCookies []chrome.Cookie
 }
 
 func applySealedEnvelope(
@@ -466,7 +474,7 @@ func applySealedEnvelope(
 		if liveCDPEndpoint == "" {
 			liveCDPEndpoint = livecdp.DefaultCDPEndpoint
 		}
-		liveCDPContexts, liveCDPErr = livecdp.AttachAndInject(ctx, liveCDPEndpoint, cookies)
+		liveCDPContexts, liveCDPErr = liveCDPInject(ctx, liveCDPEndpoint, cookies)
 		if liveCDPErr != nil {
 			fmt.Fprintf(os.Stderr, "agentcookie sink: live CDP injection failed (sidecar write succeeded): %v\n", liveCDPErr)
 		} else {
@@ -592,7 +600,11 @@ func applySealedEnvelope(
 			okLine += fmt.Sprintf("; live_cdp: no cookies to inject (endpoint=%s)", endpoint)
 		}
 	}
-	return envelopeApplyResult{Status: http.StatusOK, Reply: okLine}
+	res := envelopeApplyResult{Status: http.StatusOK, Reply: okLine}
+	if cfg.LiveCDP.Enabled {
+		res.liveCDPCookies = cookies
+	}
+	return res
 }
 
 func recordSinkReject(sinkState *state.SinkState, stateWriter *state.Writer, stateMu *sync.Mutex, err error) {
@@ -1005,4 +1017,130 @@ func isIPBoundLocally(ipStr string) bool {
 		}
 	}
 	return false
+}
+
+// liveCDPInject injects cookies into the running Chrome at a CDP endpoint.
+// Tests replace it so they never dial Chrome.
+var liveCDPInject = livecdp.AttachAndInject
+
+// liveCDPReinjectInterval is how often a live CDP sink re-injects the
+// cookies from its last /sync. It matches the source's baseline tick, which
+// used to re-push every 30s and so re-injected as a side effect.
+const liveCDPReinjectInterval = 30 * time.Second
+
+// liveCDPReinjector re-injects the cookies from the last successful /sync
+// into the running Chrome on a timer (KTD10). The source now skips a sink
+// that already holds the current payload and re-sends only every 10
+// minutes, so without this a browser context an agent opened since the last
+// /sync, or a Chrome that restarted, would stay logged out until then. The
+// cookies are held in memory only; after a sink restart the source's next
+// change or heartbeat supplies them.
+type liveCDPReinjector struct {
+	cfg *config.SinkConfig
+	log io.Writer
+
+	mu       sync.Mutex
+	cookies  []chrome.Cookie
+	applying int
+
+	// failing is the last re-inject outcome, so a persistent failure logs
+	// once and recovery logs once instead of every tick. Only the ticker
+	// goroutine touches it.
+	failing bool
+}
+
+func newLiveCDPReinjector(cfg *config.SinkConfig) *liveCDPReinjector {
+	return &liveCDPReinjector{cfg: cfg, log: os.Stderr}
+}
+
+// beginApply marks a /sync apply in progress; ticks skip until endApply.
+func (r *liveCDPReinjector) beginApply() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.applying++
+}
+
+// endApply ends a /sync apply and, when it succeeded with live CDP on,
+// holds its cookie set for the next ticks.
+func (r *liveCDPReinjector) endApply(res envelopeApplyResult) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.applying--
+	if res.Status == http.StatusOK && r.cfg.LiveCDP.Enabled {
+		r.cookies = res.liveCDPCookies
+	}
+}
+
+// tick re-injects the held cookies once. It reports whether it called the
+// injector: it skips while no set is held or a /sync apply is running.
+func (r *liveCDPReinjector) tick(ctx context.Context) bool {
+	r.mu.Lock()
+	cookies, busy := r.cookies, r.applying > 0
+	r.mu.Unlock()
+	if busy || len(cookies) == 0 || !r.cfg.LiveCDP.Enabled {
+		return false
+	}
+	// Re-check the sink's current policy, as /sync would: a domain the
+	// operator blocked since the last /sync must not keep reaching new
+	// browser contexts until the source's next heartbeat.
+	bl, err := loadFreshBlocklist()
+	if err != nil {
+		r.report(0, 0, fmt.Errorf("load cookie policy: %w", err))
+		return false
+	}
+	cookies, _ = protocol.NewBlocklistMatcherForSink(bl).Filter(cookies)
+	if len(cookies) == 0 {
+		return false
+	}
+	// Bound each attempt so a hung CDP call cannot stop the ticker for good.
+	injectCtx, cancel := context.WithTimeout(ctx, liveCDPReinjectInterval)
+	defer cancel()
+	contexts, err := liveCDPInject(injectCtx, r.endpoint(), cookies)
+	r.report(len(cookies), contexts, err)
+	return true
+}
+
+// report logs a re-inject outcome only when it differs from the last one.
+func (r *liveCDPReinjector) report(cookies, contexts int, err error) {
+	switch {
+	case err != nil && !r.failing:
+		r.failing = true
+		fmt.Fprintf(r.log, "agentcookie sink: live CDP re-inject failed at %s: %v (retrying every %s; logged again on recovery)\n", r.endpoint(), err, liveCDPReinjectInterval)
+	case err == nil && r.failing:
+		r.failing = false
+		fmt.Fprintf(r.log, "agentcookie sink: live CDP re-inject recovered: %d cookies into %d context(s) at %s\n", cookies, contexts, r.endpoint())
+	}
+}
+
+func (r *liveCDPReinjector) endpoint() string {
+	if r.cfg.LiveCDP.Endpoint != "" {
+		return r.cfg.LiveCDP.Endpoint
+	}
+	return livecdp.DefaultCDPEndpoint
+}
+
+// run calls tick on every value from ticks until ctx ends.
+func (r *liveCDPReinjector) run(ctx context.Context, ticks <-chan time.Time) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+			r.tick(ctx)
+		}
+	}
+}
+
+// startLiveCDPReinject starts the re-inject ticker when live CDP is on and
+// the sink may modify Chrome (not --dry-run). It reports whether it started.
+func startLiveCDPReinject(ctx context.Context, cfg *config.SinkConfig, r *liveCDPReinjector) bool {
+	if !cfg.LiveCDP.Enabled || sinkDryRun {
+		return false
+	}
+	ticker := time.NewTicker(liveCDPReinjectInterval)
+	go func() {
+		defer ticker.Stop()
+		r.run(ctx, ticker.C)
+	}()
+	return true
 }
