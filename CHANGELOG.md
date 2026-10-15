@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Source: `--skip-local-storage` stops shipping Local Storage (#150, by @Dannyxlm; reported in #149)
+
+- Every push packs the source profile's Local Storage leveldb into the envelope, base64-encoded, and the watcher pushes as often as every 30 seconds. On one Mac the directory was 64 MB, so each push was about 90 MB and the laptop uploaded about 150 GB in 16.5 hours to a Linux sink that never applies Local Storage. On slower uplinks the push also overran the watcher's 60-second budget (`context deadline exceeded`), so cookies stopped syncing too.
+- New `agentcookie source --skip-local-storage` (or `AGENTCOOKIE_SKIP_LOCAL_STORAGE=1`, for a LaunchAgent) skips the pack and stops watching the Local Storage directory. On that Mac each push dropped to about 1.8 MB, with the same cookies delivered. Without the flag nothing changes. No `source.yaml` key is added, so older binaries still load the config, and the wire format is unchanged (the tarball field is just empty).
+
+### Source: `--skip-secrets` runs a cookie-only source
+
+- New `agentcookie source --skip-secrets` (or `AGENTCOOKIE_SKIP_SECRETS`, for a LaunchAgent) stops the source from reading the secrets bus at all: no manifests, per-CLI secrets or carried files, in `--once` and `--watch`. Pushes to sinks and the `GET /pull` envelope for teammates carry no secrets, and `--watch` no longer watches the secrets and discovery paths. The env var fails closed: any value other than empty or `0` turns it on, and a value other than `1` also prints a warning naming it. With `--skip-local-storage`, this gives a cookie-only source.
+- `agentcookie doctor` adds a Secrets push line: "skipped (--skip-secrets or AGENTCOOKIE_SKIP_SECRETS)" or "shipping N cli(s)" for the last push. It is informational and never warns.
+- The switch stops future sends only. Secrets already delivered stay on sinks and teammates until removed there.
+- Requested by @jnyross in #151.
+
 ### Linux sinks honor `live_cdp.enabled: false`
 
 - On Linux, the sink turned live CDP injection on whenever `cdp.enabled` was off, even when `sink.yaml` set `live_cdp: enabled: false`. An explicit `live_cdp.enabled` is now kept as written. Live CDP still defaults to on when the key is absent and `cdp.enabled` is off. `skip_chrome_sqlite` stays forced on for Linux sinks, and the code comment that said YAML could turn it off now says it cannot. Reported by @Dannyxlm in #149.

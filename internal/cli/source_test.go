@@ -247,6 +247,55 @@ func TestSourcePushDryRunDoesNotRecordSourceHealth(t *testing.T) {
 	}
 }
 
+// A dry run sends nothing, so it must not replace what doctor reports about
+// the secrets the last real push shipped.
+func TestSourcePushDryRunKeepsSecretsSummary(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "session", Value: "value", Path: "/"},
+	})
+	withSourceSkipSecrets(t, false)
+	t.Setenv(envSkipSecrets, "")
+	stubSecretsPayload(t, &secretsbus.Payload{CLIs: map[string]map[string]string{"demo-cli": {"DEMO_TOKEN": "t0k"}}})
+	fx.srcState.LastSecretsSkipped = true
+	fx.srcState.LastSecretsCLIs = 0
+
+	if _, err := pushWithFreshBlocklist(context.Background(), fx.cfg, fx.key, true, false, false, fx.srcState, nil); err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if !fx.srcState.LastSecretsSkipped || fx.srcState.LastSecretsCLIs != 0 {
+		t.Fatalf("dry run replaced the secrets summary: skipped=%v clis=%d, want skipped=true clis=0", fx.srcState.LastSecretsSkipped, fx.srcState.LastSecretsCLIs)
+	}
+}
+
+// A cycle that fails before publishing an envelope must keep the secrets
+// summary from the last push that did, so doctor does not report zero.
+func TestSourcePushFailedCycleKeepsSecretsSummary(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "session", Value: "value", Path: "/"},
+	})
+	withSourceSkipSecrets(t, false)
+	t.Setenv(envSkipSecrets, "")
+	stubSecretsPayload(t, &secretsbus.Payload{CLIs: map[string]map[string]string{"demo-cli": {"DEMO_TOKEN": "t0k"}}})
+
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	if fx.srcState.LastSecretsCLIs != 1 {
+		t.Fatalf("LastSecretsCLIs after a shipping push = %d, want 1", fx.srcState.LastSecretsCLIs)
+	}
+	writeCLIFile(t, filepath.Join(fx.configDir, "blocklist.yaml"), `
+version: 1
+domains: []
+unexpected: true
+`)
+	if _, err := fx.push(); err == nil {
+		t.Fatal("malformed blocklist should fail closed")
+	}
+	if fx.srcState.LastSecretsSkipped || fx.srcState.LastSecretsCLIs != 1 {
+		t.Fatalf("failed cycle replaced the secrets summary: skipped=%v clis=%d, want skipped=false clis=1", fx.srcState.LastSecretsSkipped, fx.srcState.LastSecretsCLIs)
+	}
+}
+
 func TestSourcePushMalformedBlocklistSkipsPushAndRecordsFailure(t *testing.T) {
 	fx := newSourcePushFixture(t, []chrome.Cookie{
 		{HostKey: ".blocked.com", Name: "blocked", Value: "b", Path: "/"},
@@ -340,6 +389,216 @@ domains:
 	}
 	if got := fx.hostsAt(1); !reflect.DeepEqual(got, want) {
 		t.Fatalf("second push hosts = %v, want %v", got, want)
+	}
+}
+
+// AGENTCOOKIE_SKIP_LOCAL_STORAGE=1 must drop the Local Storage tarball from
+// the envelope while delivering the same cookies; the default keeps shipping it.
+func TestSourcePushLocalStorageOptOut(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "s", Value: "v", Path: "/"},
+	})
+	b, err := chrome.LookupBrowser("")
+	if err != nil {
+		t.Fatalf("LookupBrowser: %v", err)
+	}
+	lsDir := b.LocalStorageLevelDB("")
+	if err := os.MkdirAll(lsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lsDir, "000003.log"), bytes.Repeat([]byte("x"), 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The default must not depend on an inherited environment.
+	t.Setenv(envSkipLocalStorage, "")
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("default push: %v", err)
+	}
+	if len(fx.capture.envelopeAt(0).LocalStorageTarball) == 0 {
+		t.Fatal("default config should still ship the Local Storage tarball")
+	}
+
+	t.Setenv(envSkipLocalStorage, "1")
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("skip-local-storage push: %v", err)
+	}
+	if n := len(fx.capture.envelopeAt(1).LocalStorageTarball); n != 0 {
+		t.Fatalf("skip-local-storage shipped a %d-byte Local Storage tarball", n)
+	}
+	before, after := fx.capture.envelopeAt(0).Cookies, fx.capture.envelopeAt(1).Cookies
+	if len(before) == 0 {
+		t.Fatal("default push carried no cookies")
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("cookies changed with skip-local-storage:\n got %+v\nwant %+v", after, before)
+	}
+}
+
+// stubSecretsPayload swaps loadSecretsPayload for the test. A nil payload
+// makes any call fail the test, so a push that should skip the secrets bus
+// proves it never read it.
+func stubSecretsPayload(t *testing.T, payload *secretsbus.Payload) {
+	t.Helper()
+	previous := loadSecretsPayload
+	loadSecretsPayload = func(string) (*secretsbus.Payload, []error) {
+		if payload == nil {
+			t.Fatal("secrets bus was read while --skip-secrets was on")
+		}
+		return payload, nil
+	}
+	t.Cleanup(func() { loadSecretsPayload = previous })
+}
+
+func withSourceSkipSecrets(t *testing.T, on bool) {
+	t.Helper()
+	previous := sourceSkipSecrets
+	sourceSkipSecrets = on
+	t.Cleanup(func() { sourceSkipSecrets = previous })
+}
+
+func cachedPullEnvelope(t *testing.T) (protocol.SyncEnvelope, map[string]json.RawMessage) {
+	t.Helper()
+	raw := pullPayloadCache.Load()
+	if len(raw) == 0 {
+		t.Fatal("push did not publish a pull envelope")
+	}
+	var env protocol.SyncEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("unmarshal cached envelope: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal cached envelope fields: %v", err)
+	}
+	return env, fields
+}
+
+func TestSourcePushSecretsOptOut(t *testing.T) {
+	cookies := []chrome.Cookie{{HostKey: ".example.com", Name: "s", Value: "v", Path: "/"}}
+	oneCLI := &secretsbus.Payload{CLIs: map[string]map[string]string{"demo-cli": {"DEMO_TOKEN": "t0k"}}}
+
+	t.Run("env 1 never reads the secrets bus", func(t *testing.T) {
+		fx := newSourcePushFixture(t, cookies)
+		withSourceSkipSecrets(t, false)
+		t.Setenv(envSkipSecrets, "1")
+		stubSecretsPayload(t, nil)
+
+		if _, err := fx.push(); err != nil {
+			t.Fatalf("push: %v", err)
+		}
+		if got := fx.capture.envelopeAt(0).Secrets; len(got) != 0 {
+			t.Fatalf("envelope carried secrets %v with --skip-secrets", got)
+		}
+		if len(fx.capture.envelopeAt(0).Cookies) == 0 {
+			t.Fatal("skip-secrets push carried no cookies")
+		}
+		env, fields := cachedPullEnvelope(t)
+		if len(env.Secrets) != 0 {
+			t.Fatalf("GET /pull cache carried secrets %v", env.Secrets)
+		}
+		if _, ok := fields["secrets"]; ok {
+			t.Fatal("GET /pull cache has a secrets field")
+		}
+		if !fx.srcState.LastSecretsSkipped {
+			t.Error("source state should record that secrets were skipped")
+		}
+		if fx.srcState.LastSecretsCLIs != 0 {
+			t.Errorf("LastSecretsCLIs = %d, want 0", fx.srcState.LastSecretsCLIs)
+		}
+	})
+
+	t.Run("env cleared ships secrets", func(t *testing.T) {
+		fx := newSourcePushFixture(t, cookies)
+		withSourceSkipSecrets(t, false)
+		// The default must not depend on an inherited environment.
+		t.Setenv(envSkipSecrets, "")
+		stubSecretsPayload(t, oneCLI)
+
+		if _, err := fx.push(); err != nil {
+			t.Fatalf("push: %v", err)
+		}
+		if got := fx.capture.envelopeAt(0).Secrets; !reflect.DeepEqual(got, oneCLI.CLIs) {
+			t.Fatalf("envelope secrets = %v, want %v", got, oneCLI.CLIs)
+		}
+		if env, _ := cachedPullEnvelope(t); !reflect.DeepEqual(env.Secrets, oneCLI.CLIs) {
+			t.Fatalf("GET /pull cache secrets = %v, want %v", env.Secrets, oneCLI.CLIs)
+		}
+		if fx.srcState.LastSecretsSkipped {
+			t.Error("source state recorded skipped without the switch")
+		}
+		if fx.srcState.LastSecretsCLIs != 1 {
+			t.Errorf("LastSecretsCLIs = %d, want 1", fx.srcState.LastSecretsCLIs)
+		}
+	})
+
+	t.Run("flag alone skips", func(t *testing.T) {
+		fx := newSourcePushFixture(t, cookies)
+		t.Setenv(envSkipSecrets, "")
+		withSourceSkipSecrets(t, true)
+		stubSecretsPayload(t, nil)
+
+		if _, err := fx.push(); err != nil {
+			t.Fatalf("push: %v", err)
+		}
+		if got := fx.capture.envelopeAt(0).Secrets; len(got) != 0 {
+			t.Fatalf("envelope carried secrets %v with --skip-secrets", got)
+		}
+	})
+}
+
+func TestSkipSecretsFailsClosed(t *testing.T) {
+	withSourceSkipSecrets(t, false)
+	for _, tc := range []struct {
+		value    string
+		wantSkip bool
+		wantWarn bool
+	}{
+		{value: "", wantSkip: false},
+		{value: "0", wantSkip: false},
+		{value: "1", wantSkip: true},
+		{value: "true", wantSkip: true, wantWarn: true},
+		{value: "no", wantSkip: true, wantWarn: true},
+	} {
+		t.Run(fmt.Sprintf("%q", tc.value), func(t *testing.T) {
+			resetSkipSecretsWarning()
+			t.Setenv(envSkipSecrets, tc.value)
+			var got [2]bool
+			out := captureStderr(t, func() {
+				got[0] = skipSecrets()
+				got[1] = skipSecrets()
+			})
+			if got[0] != tc.wantSkip || got[1] != tc.wantSkip {
+				t.Fatalf("skipSecrets() = %v, want %v", got, tc.wantSkip)
+			}
+			if !tc.wantWarn {
+				if out != "" {
+					t.Fatalf("unexpected stderr %q", out)
+				}
+				return
+			}
+			if n := strings.Count(out, "\n"); n != 1 {
+				t.Fatalf("want one warning line, got %d: %q", n, out)
+			}
+			if !strings.Contains(out, fmt.Sprintf("%q", tc.value)) || !strings.Contains(out, envSkipSecrets) {
+				t.Fatalf("warning should name %s and the value %q, got %q", envSkipSecrets, tc.value, out)
+			}
+		})
+	}
+}
+
+func TestSecretsBusWatchersSkipped(t *testing.T) {
+	fire := func(context.Context) {}
+	if got := secretsBusWatchers(true, t.TempDir(), false, fire); len(got) != 0 {
+		t.Fatalf("--skip-secrets constructed %d secrets-bus watcher(s), want none", len(got))
+	}
+	got := secretsBusWatchers(false, t.TempDir(), false, fire)
+	names := make([]string, 0, len(got))
+	for _, w := range got {
+		names = append(names, w.name)
+	}
+	if want := []string{"secrets-bus watcher", "discovery watcher"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("watchers = %v, want %v", names, want)
 	}
 }
 
@@ -1065,6 +1324,31 @@ func TestNewSourceStateLoadsOldFileWithoutBackoffFields(t *testing.T) {
 	}
 }
 
+// A new process (a separate `source --once --dry-run`, say) must start from
+// the saved secrets summary, so a dry run cannot erase what doctor reports.
+func TestNewSourceStateKeepsSecretsSummaryThroughDryRun(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "session", Value: "value", Path: "/"},
+	})
+	withSourceSkipSecrets(t, false)
+	t.Setenv(envSkipSecrets, "")
+	stubSecretsPayload(t, &secretsbus.Payload{})
+	statePath := filepath.Join(t.TempDir(), "source-state.json")
+	writeCLIFile(t, statePath, `{"role":"source","last_secrets_skipped":true,"last_secrets_clis":3}`)
+
+	st := newSourceState(statePath, fx.cfg.ResolvedSinks())
+	if _, err := pushWithFreshBlocklist(context.Background(), fx.cfg, fx.key, true, false, false, st, state.NewWriter(statePath)); err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	saved, err := state.LoadSource(statePath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !saved.LastSecretsSkipped || saved.LastSecretsCLIs != 3 {
+		t.Fatalf("dry run in a new process erased the secrets summary: skipped=%v clis=%d, want skipped=true clis=3", saved.LastSecretsSkipped, saved.LastSecretsCLIs)
+	}
+}
+
 func TestNewSourceStateDropsRemovedSinks(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "source-state.json")
 	writeCLIFile(t, statePath, `{"role":"source","sinks":[
@@ -1153,4 +1437,12 @@ func TestSourcePushTailnetIPSinkDialsWhenStatusUnavailable(t *testing.T) {
 	if ps := sinkStateFor(fx.srcState, urlSink); ps == nil || ps.Asleep || ps.TotalPushes != 1 {
 		t.Fatalf("expected a normal push record, got %+v", ps)
 	}
+}
+
+// resetSkipSecretsWarning forgets the last warned value so the next unusual
+// value warns again.
+func resetSkipSecretsWarning() {
+	skipSecretsWarnMu.Lock()
+	skipSecretsWarnedFor = ""
+	skipSecretsWarnMu.Unlock()
 }
