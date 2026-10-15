@@ -38,6 +38,7 @@ var (
 	sourceDryRun           bool
 	sourceSkipDBSC         bool
 	sourceSkipLocalStorage bool
+	sourceSkipSecrets      bool
 	sourcePullListen       string
 )
 
@@ -156,6 +157,7 @@ func init() {
 	sourceCmd.Flags().BoolVar(&sourceDryRun, "dry-run", false, "read + filter but do not contact the sink")
 	sourceCmd.Flags().BoolVar(&sourceSkipDBSC, "skip-dbsc-suspect", false, "drop cookies that look device-bound (DBSC) instead of shipping them with a warning; also honored via AGENTCOOKIE_SKIP_DBSC_SUSPECT=1")
 	sourceCmd.Flags().BoolVar(&sourceSkipLocalStorage, "skip-local-storage", false, "push cookies without the browser's Local Storage (a Linux sink, or any sink with skip_chrome_sqlite, never applies it); also honored via "+envSkipLocalStorage+"=1")
+	sourceCmd.Flags().BoolVar(&sourceSkipSecrets, "skip-secrets", false, "push cookies without reading the secrets bus (manifests, per-CLI secrets, carried files); also honored via "+envSkipSecrets+" set to anything but empty or 0")
 	sourceCmd.Flags().StringVar(&sourcePullListen, "pull-listen", "", "host:port for GET /pull while --watch is running (default: this machine's Tailscale 100.x:9998)")
 }
 
@@ -167,6 +169,84 @@ const envSkipLocalStorage = "AGENTCOOKIE_SKIP_LOCAL_STORAGE"
 // Local Storage leveldb. It is read per push, like AGENTCOOKIE_SYNC_INDEXEDDB.
 func skipLocalStorage() bool {
 	return sourceSkipLocalStorage || os.Getenv(envSkipLocalStorage) == "1"
+}
+
+// envSkipSecrets lets a LaunchAgent turn off the secrets bus without a flag
+// edit. Unlike its siblings it fails closed: any value other than empty or
+// "0" turns it on, so a typo such as "true" cannot keep shipping secrets.
+const envSkipSecrets = "AGENTCOOKIE_SKIP_SECRETS"
+
+var (
+	skipSecretsWarnMu    sync.Mutex
+	skipSecretsWarnedFor string
+)
+
+// skipSecrets reports whether pushes should leave out the secrets bus
+// entirely. It is read per push. A value other than "1" still turns it on
+// and prints one stderr warning per distinct value.
+func skipSecrets() bool {
+	v := os.Getenv(envSkipSecrets)
+	if v != "" && v != "0" && v != "1" {
+		skipSecretsWarnMu.Lock()
+		if skipSecretsWarnedFor != v {
+			skipSecretsWarnedFor = v
+			fmt.Fprintf(os.Stderr, "agentcookie source: %s=%q is not 1 or 0; treating it as on and skipping the secrets bus\n", envSkipSecrets, v)
+		}
+		skipSecretsWarnMu.Unlock()
+	}
+	return sourceSkipSecrets || (v != "" && v != "0")
+}
+
+// resetSkipSecretsWarning forgets the last warned value so the next unusual
+// value warns again.
+func resetSkipSecretsWarning() {
+	skipSecretsWarnMu.Lock()
+	skipSecretsWarnedFor = ""
+	skipSecretsWarnMu.Unlock()
+}
+
+// secretsSummary is what one push did with the secrets bus, recorded in
+// source state for `agentcookie doctor`.
+type secretsSummary struct {
+	skipped bool
+	clis    int
+}
+
+// secretsBusRunner is one secrets-bus watcher that source --watch runs.
+type secretsBusRunner struct {
+	name string
+	run  func(context.Context) error
+}
+
+// secretsBusWatchers builds the watchers that push on secrets-bus and
+// discovery changes. With skip on it builds none: discovery reads
+// manifests, which --skip-secrets forbids.
+func secretsBusWatchers(skip bool, home string, verbose bool, fire func(context.Context)) []secretsBusRunner {
+	if skip {
+		return nil
+	}
+	// v0.13: watch ~/.agentcookie/secrets/ so a write to a per-CLI
+	// secrets.env triggers the same push pipeline as a Chrome cookie
+	// change. The secrets watcher tolerates a missing root (waits for the
+	// friend to create it).
+	secretsWatcher := secretsbus.NewWatcher(home, 0, fire)
+	// v0.14: also watch the v2 discovery paths (~/.agentcookie/manifests/
+	// + PP library) so dropping a new agentcookie.toml or regenerating a
+	// PP CLI triggers a push without restart.
+	discoveryWatcher := secretsbus.NewDiscoveryWatcher(
+		secretsbus.DiscoveryConfig{HomeDir: home},
+		0,
+		func(ctx context.Context, delta secretsbus.RegistryDelta, _ *secretsbus.Registry) {
+			if verbose && (len(delta.Added)+len(delta.Removed) > 0) {
+				fmt.Fprintf(os.Stderr, "agentcookie source --watch: discovery: added=%v removed=%v\n", delta.Added, delta.Removed)
+			}
+			fire(ctx)
+		},
+	)
+	return []secretsBusRunner{
+		{name: "secrets-bus watcher", run: secretsWatcher.Run},
+		{name: "discovery watcher", run: discoveryWatcher.Run},
+	}
 }
 
 func runSource(cmd *cobra.Command, args []string) error {
@@ -288,44 +368,26 @@ func runSource(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "agentcookie source --watch: adapter=%s watching %s, sinks=%s\n", sourceBrowser.Name, cfg.Chrome.DBPath, sinkURLList(sinks))
 
-	// v0.13: also watch ~/.agentcookie/secrets/ so a write to a per-CLI
-	// secrets.env triggers the same push pipeline as a Chrome cookie
-	// change. The secrets watcher tolerates a missing root (waits for the
-	// friend to create it) and fires the same push callback as the
-	// cookies watcher so the payload includes whichever surface changed.
+	// The secrets-bus and discovery watchers fire the same push callback as
+	// the cookies watcher so the payload includes whichever surface
+	// changed. They share one rate cap so a burst of file writes cannot
+	// start a push per write. --skip-secrets starts neither.
 	watchHome, _ := os.UserHomeDir()
-	// The secrets and discovery watchers share one rate cap so a burst of
-	// file writes cannot start a push per write.
 	trigger := newRateCappedTrigger(pushTriggerMinInterval, func(ctx context.Context) {
 		_, _ = push(ctx)
 	})
-	secretsWatcher := secretsbus.NewWatcher(watchHome, 0, func(ctx context.Context) {
-		trigger.fire(ctx)
-	})
-	go func() {
-		if err := secretsWatcher.Run(cmd.Context()); err != nil {
-			fmt.Fprintf(os.Stderr, "agentcookie source --watch: secrets-bus watcher exited: %v\n", err)
-		}
-	}()
-
-	// v0.14: also watch the v2 discovery paths (~/.agentcookie/manifests/
-	// + PP library) so dropping a new agentcookie.toml or regenerating a
-	// PP CLI triggers a push without restart.
-	discoveryWatcher := secretsbus.NewDiscoveryWatcher(
-		secretsbus.DiscoveryConfig{HomeDir: watchHome},
-		0,
-		func(ctx context.Context, delta secretsbus.RegistryDelta, _ *secretsbus.Registry) {
-			if sourceVerbose && (len(delta.Added)+len(delta.Removed) > 0) {
-				fmt.Fprintf(os.Stderr, "agentcookie source --watch: discovery: added=%v removed=%v\n", delta.Added, delta.Removed)
+	skipBus := skipSecrets()
+	if skipBus {
+		fmt.Fprintf(os.Stderr, "agentcookie source --watch: skipping the secrets bus (--skip-secrets / %s)\n", envSkipSecrets)
+	}
+	fire := func(ctx context.Context) { trigger.fire(ctx) }
+	for _, sw := range secretsBusWatchers(skipBus, watchHome, sourceVerbose, fire) {
+		go func() {
+			if err := sw.run(cmd.Context()); err != nil {
+				fmt.Fprintf(os.Stderr, "agentcookie source --watch: %s exited: %v\n", sw.name, err)
 			}
-			trigger.fire(ctx)
-		},
-	)
-	go func() {
-		if err := discoveryWatcher.Run(cmd.Context()); err != nil {
-			fmt.Fprintf(os.Stderr, "agentcookie source --watch: discovery watcher exited: %v\n", err)
-		}
-	}()
+		}()
+	}
 
 	return w.Run(cmd.Context())
 }
@@ -447,11 +509,11 @@ func pushWithFreshBlocklist(
 		// Fail closed at the sync boundary: do not keep serving a previously
 		// filtered envelope from GET /pull after policy cannot be loaded.
 		pullPayloadCache.ClearIfCurrent(pullGen)
-		recordSourcePushResult(srcState, stateWriter, nil, dbsc, err)
+		recordSourcePushResult(srcState, stateWriter, nil, dbsc, secretsSummary{skipped: skipSecrets()}, err)
 		return 0, err
 	}
-	results, dbsc, err := pushOnce(ctx, cfg, blocklist, key, dryRun, verbose, skipDBSC, pullGen, srcState)
-	recordSourcePushResult(srcState, stateWriter, results, dbsc, err)
+	results, dbsc, secrets, err := pushOnce(ctx, cfg, blocklist, key, dryRun, verbose, skipDBSC, pullGen, srcState)
+	recordSourcePushResult(srcState, stateWriter, results, dbsc, secrets, err)
 	if err != nil {
 		return 0, err
 	}
@@ -514,6 +576,7 @@ func recordSourcePushResult(
 	stateWriter *state.Writer,
 	results []sinkResult,
 	dbsc dbscSummary,
+	secrets secretsSummary,
 	err error,
 ) {
 	if srcState == nil {
@@ -572,6 +635,8 @@ func recordSourcePushResult(
 	srcState.LastDBSCWarned = dbsc.warned
 	srcState.LastDBSCSkipped = dbsc.skipped
 	srcState.LastDBSCSample = dbsc.sample
+	srcState.LastSecretsSkipped = secrets.skipped
+	srcState.LastSecretsCLIs = secrets.clis
 	if stateWriter != nil {
 		_ = stateWriter.Save(srcState)
 	}
@@ -614,8 +679,9 @@ func pushOnce(
 	skipDBSC bool,
 	pullGen uint64,
 	srcState *state.SourceState,
-) ([]sinkResult, dbscSummary, error) {
+) ([]sinkResult, dbscSummary, secretsSummary, error) {
 	var dbsc dbscSummary
+	secrets := secretsSummary{skipped: skipSecrets()}
 
 	// Shared read pipeline (decrypt -> cookie policy -> DBSC). See
 	// readFilteredCookies in cookie_pipeline.go; `source` and `cmux-sync`
@@ -627,14 +693,14 @@ func pushOnce(
 		all, err = readCDPSource(ctx, cfg.CDPSource.Endpoint)
 		if err != nil {
 			pullPayloadCache.ClearIfCurrent(pullGen)
-			return nil, dbsc, fmt.Errorf("read cookies from cdp source: %w", err)
+			return nil, dbsc, secrets, fmt.Errorf("read cookies from cdp source: %w", err)
 		}
 		all, st = filterCookies(all, blocklist, skipDBSC, time.Now().UTC())
 	} else {
 		all, st, err = readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
 		if err != nil {
 			pullPayloadCache.ClearIfCurrent(pullGen)
-			return nil, dbsc, err
+			return nil, dbsc, secrets, err
 		}
 	}
 	totalRead := st.totalRead
@@ -668,10 +734,11 @@ func pushOnce(
 	// runs v1 LoadPayload AND v2 Discover, reads each discovered project's
 	// [secrets.file] in place, applies sync policy, and merges. v1 bus
 	// wins per-key over v2 read-in-place per spec section 10.3.
+	// --skip-secrets never reads the bus: no manifests, no carried files.
 	home, _ := os.UserHomeDir()
 	var secretsPayload *secretsbus.Payload
 	var secretsErrs []error
-	if !cfg.CDPSource.Enabled {
+	if !cfg.CDPSource.Enabled && !secrets.skipped {
 		secretsPayload, secretsErrs = loadSecretsPayload(home)
 	}
 	for _, e := range secretsErrs {
@@ -681,6 +748,7 @@ func pushOnce(
 	if secretsPayload != nil {
 		secretsCLICount = len(secretsPayload.CLIs)
 	}
+	secrets.clis = secretsCLICount
 	if verbose && secretsCLICount > 0 {
 		fmt.Fprintf(os.Stderr, "agentcookie source: secrets-bus: shipping %d cli(s)\n", secretsCLICount)
 	}
@@ -701,7 +769,7 @@ func pushOnce(
 
 	if dryRun {
 		_ = emit(result, fmt.Sprintf("agentcookie source: %d cookies after cookie policy (%s), %d secrets clis (dry-run=%v)%s\n", len(all), blocklist.CookiePolicySummary(), secretsCLICount, dryRun, dbscNote(dbsc)))
-		return nil, dbsc, nil
+		return nil, dbsc, secrets, nil
 	}
 	if len(all) == 0 && secretsCLICount == 0 {
 		_ = emit(result, fmt.Sprintf("agentcookie source: %d cookies after cookie policy (%s), %d secrets clis (dry-run=%v)%s\n", len(all), blocklist.CookiePolicySummary(), secretsCLICount, dryRun, dbscNote(dbsc)))
@@ -713,7 +781,7 @@ func pushOnce(
 		// A non-nil empty result records that this was a successful source
 		// cycle with no delivery attempt. nil remains reserved for dry-runs,
 		// which must not make source health look current.
-		return []sinkResult{}, dbsc, nil
+		return []sinkResult{}, dbsc, secrets, nil
 	}
 
 	// v0.7: pack Local Storage and IndexedDB alongside cookies from the
@@ -735,7 +803,7 @@ func pushOnce(
 		sourceBrowser, err := chrome.LookupBrowser(cfg.Browser.Name)
 		if err != nil {
 			pullPayloadCache.ClearIfCurrent(pullGen)
-			return nil, dbsc, err
+			return nil, dbsc, secrets, err
 		}
 		// --skip-local-storage skips the pack: a Linux sink (or any sink
 		// with skip_chrome_sqlite) never applies it, and the leveldb is
@@ -777,7 +845,7 @@ func pushOnce(
 	payload, err := json.Marshal(envelope)
 	if err != nil {
 		pullPayloadCache.ClearIfCurrent(pullGen)
-		return nil, dbsc, fmt.Errorf("marshal envelope: %w", err)
+		return nil, dbsc, secrets, fmt.Errorf("marshal envelope: %w", err)
 	}
 	pullPayloadCache.StoreIfCurrent(pullGen, payload)
 	// Fan out: read and filtering above happened once; only sealing and
@@ -880,7 +948,7 @@ func pushOnce(
 	result["sinks"] = sinkReports
 	result["posted"] = delivered > 0 && len(aggregateFailedLabels(results)) == 0
 	_ = emit(result, strings.Join(humanLines, "\n")+"\n")
-	return results, dbsc, nil
+	return results, dbsc, secrets, nil
 }
 
 // aggregateFailedLabels returns the URLs of sinks whose push failed.

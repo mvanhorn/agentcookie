@@ -137,3 +137,18 @@ func TestLoadSourceLegacySinkURLDecodesWithoutError(t *testing.T) {
 		t.Errorf("legacy file has no per-sink records, got %d", len(st.Sinks))
 	}
 }
+
+func TestLoadSourceWithoutSecretsFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "source-state.json")
+	old := `{"role":"source","last_push_count":4,"total_pushes":9,"total_failures":0,"sink_url":"http://test:9999/sync"}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadSource(path)
+	if err != nil {
+		t.Fatalf("LoadSource: %v", err)
+	}
+	if got.LastSecretsSkipped || got.LastSecretsCLIs != 0 {
+		t.Fatalf("old state = skipped %v, clis %d; want false, 0", got.LastSecretsSkipped, got.LastSecretsCLIs)
+	}
+}

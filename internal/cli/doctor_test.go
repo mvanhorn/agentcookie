@@ -404,6 +404,32 @@ func TestCheckDBSC(t *testing.T) {
 	})
 }
 
+func TestCheckSecretsBus(t *testing.T) {
+	t.Run("skipped", func(t *testing.T) {
+		c := checkSecretsBusFrom(&state.SourceState{LastPush: time.Now(), LastSecretsSkipped: true})
+		if c.Severity != SeverityOK {
+			t.Fatalf("got %q (%q)", c.Severity, c.Detail)
+		}
+		if c.Detail != "skipped by --skip-secrets" {
+			t.Fatalf("detail = %q", c.Detail)
+		}
+	})
+	t.Run("shipping", func(t *testing.T) {
+		c := checkSecretsBusFrom(&state.SourceState{LastPush: time.Now(), LastSecretsCLIs: 3})
+		if c.Severity != SeverityOK {
+			t.Fatalf("got %q (%q)", c.Severity, c.Detail)
+		}
+		if c.Detail != "shipping 3 cli(s)" {
+			t.Fatalf("detail = %q", c.Detail)
+		}
+	})
+	t.Run("no state is OK", func(t *testing.T) {
+		if c := checkSecretsBusFrom(nil); c.Severity != SeverityOK {
+			t.Fatalf("got %q (%q)", c.Severity, c.Detail)
+		}
+	})
+}
+
 // TestCheckSealing emits an informational OK either way.
 func TestCheckSealing(t *testing.T) {
 	t.Run("enabled", func(t *testing.T) {
@@ -817,8 +843,9 @@ peer:
 	// session health check (source role only; present here since this fixture
 	// is source). Linux sink polish added Live CDP endpoint + Daemon binary
 	// path checks. Chrome extra profile discovery added the Chrome stores check.
-	if got := len(report.Checks); got != 23 {
-		t.Fatalf("got %d checks, want 23", got)
+	// --skip-secrets added the Secrets push check (source role only).
+	if got := len(report.Checks); got != 24 {
+		t.Fatalf("got %d checks, want 24", got)
 	}
 
 	// Serialize the envelope and confirm it round-trips.
