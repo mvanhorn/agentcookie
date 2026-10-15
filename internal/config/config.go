@@ -451,17 +451,12 @@ func loadYAML(path string, out any) error {
 
 // readYAMLFile reads a config file, naming it in the error.
 func readYAMLFile(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("not found: %s (start from examples/ in this repo)", path)
 		}
 		return nil, fmt.Errorf("open %s: %w", path, err)
-	}
-	defer f.Close()
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	return data, nil
 }
