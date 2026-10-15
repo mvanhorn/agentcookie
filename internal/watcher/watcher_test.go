@@ -267,3 +267,129 @@ func TestStatsAfterSuccessfulPush(t *testing.T) {
 		t.Errorf("expected ErrorCount == 0, got %d", s.ErrorCount)
 	}
 }
+
+func TestConfigPushTimeoutDefault(t *testing.T) {
+	if got := (Config{}).pushTimeout(); got != 60*time.Second {
+		t.Errorf("default pushTimeout = %s, want 60s", got)
+	}
+	if got := (Config{PushTimeout: 5 * time.Minute}).pushTimeout(); got != 5*time.Minute {
+		t.Errorf("override pushTimeout = %s, want 5m", got)
+	}
+}
+
+// pushDeadline runs a watcher with the given PushTimeout and returns how far
+// in the future the startup push's context deadline was.
+func pushDeadline(t *testing.T, timeout time.Duration) time.Duration {
+	t.Helper()
+	dir := t.TempDir()
+	cookies := filepath.Join(dir, "Cookies")
+	if err := os.WriteFile(cookies, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan time.Duration, 1)
+	w, err := New(Config{
+		CookiesPath: cookies,
+		Push: func(ctx context.Context) (int, error) {
+			dl, ok := ctx.Deadline()
+			if !ok {
+				got <- 0
+				return 0, nil
+			}
+			select {
+			case got <- time.Until(dl):
+			default:
+			}
+			return 0, nil
+		},
+		PushTimeout:  timeout,
+		BaselineTick: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No parent deadline, so the push context's deadline is PushTimeout's.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = w.Run(ctx) }()
+	select {
+	case d := <-got:
+		return d
+	case <-time.After(time.Second):
+		t.Fatal("expected startup push within 1s")
+		return 0
+	}
+}
+
+func TestWatcherPushUsesPushTimeout(t *testing.T) {
+	d := pushDeadline(t, 5*time.Minute)
+	if d < 4*time.Minute || d > 5*time.Minute {
+		t.Errorf("push deadline in %s, want about 5m", d)
+	}
+}
+
+func TestWatcherPushTimeoutDefaultsTo60s(t *testing.T) {
+	d := pushDeadline(t, 0)
+	if d < 50*time.Second || d > 60*time.Second {
+		t.Errorf("push deadline in %s, want about 60s", d)
+	}
+}
+
+func TestWatcherSkipsTriggersWhilePushInFlight(t *testing.T) {
+	dir := t.TempDir()
+	cookies := filepath.Join(dir, "Cookies")
+	if err := os.WriteFile(cookies, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	var calls, active, maxActive atomic.Int64
+	w, err := New(Config{
+		CookiesPath: cookies,
+		Push: func(ctx context.Context) (int, error) {
+			calls.Add(1)
+			n := active.Add(1)
+			defer active.Add(-1)
+			for {
+				m := maxActive.Load()
+				if n <= m || maxActive.CompareAndSwap(m, n) {
+					break
+				}
+			}
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return 0, nil
+		},
+		Debounce:     10 * time.Millisecond,
+		MinInterval:  time.Millisecond,
+		BaselineTick: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { _ = w.Run(ctx) }()
+
+	// The startup push blocks. Baseline ticks and file writes keep firing
+	// while it runs; none of them may start a second push.
+	for i := range 10 {
+		_ = os.WriteFile(cookies, []byte{byte(i)}, 0o600)
+		time.Sleep(30 * time.Millisecond)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("Push calls while the first was in flight = %d, want 1", got)
+	}
+
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := calls.Load(); got < 2 {
+		t.Fatalf("Push calls after release = %d, want a new push once the first finished", got)
+	}
+	if got := maxActive.Load(); got != 1 {
+		t.Errorf("max concurrent Push calls = %d, want 1", got)
+	}
+}

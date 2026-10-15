@@ -136,10 +136,7 @@ func runSink(cmd *cobra.Command, args []string) error {
 
 	// Log live CDP mode at startup (Linux sink's primary injection path).
 	if cfg.LiveCDP.Enabled {
-		endpoint := cfg.LiveCDP.Endpoint
-		if endpoint == "" {
-			endpoint = livecdp.DefaultCDPEndpoint
-		}
+		endpoint := liveCDPEndpointFor(cfg)
 		fmt.Fprintf(os.Stderr, "agentcookie sink: live_cdp enabled; will inject into running Chrome at %s\n", endpoint)
 	}
 	transportSecret, err := resolveTransportSecret(common.ConfigDir, cfg.Peer.Hostname, cfg.Security.SharedSecret)
@@ -167,7 +164,9 @@ func runSink(cmd *cobra.Command, args []string) error {
 	}
 
 	key, seqTracker, stateWriter, sinkState, stateMu := rt.key, rt.seq, rt.writer, rt.st, &rt.mu
-	mux := newSinkMux(cfg, transportSecret, key, seqTracker, stateWriter, sinkState, stateMu)
+	reinject := newLiveCDPReinjector(cfg, stateWriter, sinkState, stateMu)
+	mux := newSinkMux(cfg, transportSecret, key, seqTracker, stateWriter, sinkState, stateMu, reinject)
+	startLiveCDPReinject(cmd.Context(), cfg, reinject)
 
 	srv := httpserver.Configure(&http.Server{Addr: cfg.Listen.Addr, Handler: mux}, httpserver.SinkSync)
 	if sinkDryRun {
@@ -307,6 +306,7 @@ func newSinkMux(
 	stateWriter *state.Writer,
 	sinkState *state.SinkState,
 	stateMu *sync.Mutex,
+	reinject *liveCDPReinjector,
 ) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -323,7 +323,9 @@ func newSinkMux(
 			http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		reinject.beginApply()
 		res := applySealedEnvelope(r.Context(), cfg, transportSecret, key, seqTracker, stateWriter, sinkState, stateMu, sealed)
+		reinject.endApply(res)
 		if res.Status != http.StatusOK {
 			http.Error(w, res.Reply, res.Status)
 			return
@@ -339,6 +341,13 @@ func newSinkMux(
 type envelopeApplyResult struct {
 	Status int
 	Reply  string
+	// liveCDPCookies is the policy-filtered cookie set a successful apply
+	// handed to live CDP, for the /sync re-inject ticker.
+	liveCDPCookies []chrome.Cookie
+	// sourceHostname and sequence identify the accepted envelope, so the
+	// ticker never replaces a newer held set with an older one.
+	sourceHostname string
+	sequence       int64
 }
 
 func applySealedEnvelope(
@@ -462,11 +471,8 @@ func applySealedEnvelope(
 	var liveCDPErr error
 	var liveCDPEndpoint string
 	if cfg.LiveCDP.Enabled && len(cookies) > 0 {
-		liveCDPEndpoint = cfg.LiveCDP.Endpoint
-		if liveCDPEndpoint == "" {
-			liveCDPEndpoint = livecdp.DefaultCDPEndpoint
-		}
-		liveCDPContexts, liveCDPErr = livecdp.AttachAndInject(ctx, liveCDPEndpoint, cookies)
+		liveCDPEndpoint = liveCDPEndpointFor(cfg)
+		liveCDPContexts, liveCDPErr = liveCDPInject(ctx, liveCDPEndpoint, cookies)
 		if liveCDPErr != nil {
 			fmt.Fprintf(os.Stderr, "agentcookie sink: live CDP injection failed (sidecar write succeeded): %v\n", liveCDPErr)
 		} else {
@@ -547,22 +553,7 @@ func applySealedEnvelope(
 	sinkState.TotalDropped += dropped
 	if cfg.LiveCDP.Enabled && len(cookies) > 0 {
 		sinkState.LastWriteMode = writeMode + "+livecdp"
-		if sinkState.LiveCDP == nil {
-			sinkState.LiveCDP = &state.LiveCDPState{
-				Enabled:  true,
-				Endpoint: liveCDPEndpoint,
-			}
-		}
-		sinkState.LiveCDP.LastInjectAt = time.Now().UTC()
-		sinkState.LiveCDP.LastCookies = len(cookies)
-		sinkState.LiveCDP.LastContexts = liveCDPContexts
-		if liveCDPErr != nil {
-			sinkState.LiveCDP.LastError = liveCDPErr.Error()
-			sinkState.LiveCDP.TotalFailures++
-		} else {
-			sinkState.LiveCDP.LastError = ""
-			sinkState.LiveCDP.TotalInjects++
-		}
+		recordLiveCDPInject(sinkState, liveCDPEndpoint, len(cookies), liveCDPContexts, liveCDPErr)
 	}
 	if len(adapterResults) > 0 {
 		sinkState.LastAdapterResults = toStateAdapterResults(adapterResults)
@@ -579,10 +570,7 @@ func applySealedEnvelope(
 	if cfg.LiveCDP.Enabled {
 		endpoint := liveCDPEndpoint
 		if endpoint == "" {
-			endpoint = cfg.LiveCDP.Endpoint
-			if endpoint == "" {
-				endpoint = livecdp.DefaultCDPEndpoint
-			}
+			endpoint = liveCDPEndpointFor(cfg)
 		}
 		if liveCDPErr != nil {
 			okLine += fmt.Sprintf("; live_cdp: FAILED at %s: %v", endpoint, liveCDPErr)
@@ -592,7 +580,34 @@ func applySealedEnvelope(
 			okLine += fmt.Sprintf("; live_cdp: no cookies to inject (endpoint=%s)", endpoint)
 		}
 	}
-	return envelopeApplyResult{Status: http.StatusOK, Reply: okLine}
+	res := envelopeApplyResult{Status: http.StatusOK, Reply: okLine}
+	if cfg.LiveCDP.Enabled {
+		res.liveCDPCookies = cookies
+		res.sourceHostname = envelope.SourceHostname
+		res.sequence = envelope.Sequence
+	}
+	return res
+}
+
+// recordLiveCDPInject records one live CDP inject attempt in sinkState for
+// `agentcookie status`. The caller holds the state mutex.
+func recordLiveCDPInject(sinkState *state.SinkState, endpoint string, cookies, contexts int, err error) {
+	if sinkState.LiveCDP == nil {
+		sinkState.LiveCDP = &state.LiveCDPState{
+			Enabled:  true,
+			Endpoint: endpoint,
+		}
+	}
+	sinkState.LiveCDP.LastInjectAt = time.Now().UTC()
+	sinkState.LiveCDP.LastCookies = cookies
+	sinkState.LiveCDP.LastContexts = contexts
+	if err != nil {
+		sinkState.LiveCDP.LastError = err.Error()
+		sinkState.LiveCDP.TotalFailures++
+	} else {
+		sinkState.LiveCDP.LastError = ""
+		sinkState.LiveCDP.TotalInjects++
+	}
 }
 
 func recordSinkReject(sinkState *state.SinkState, stateWriter *state.Writer, stateMu *sync.Mutex, err error) {

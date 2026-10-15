@@ -207,6 +207,7 @@ func TestLegacySinkMigratedWhenListed(t *testing.T) {
 	}
 	before := len(fx.capture.postedURLs())
 	for range 3 {
+		fx.forgetDeliveries()
 		if _, err := fx.push(); err != nil {
 			t.Fatalf("push: %v", err)
 		}
@@ -321,6 +322,7 @@ func TestPushHeldWhileTeammateStateUnavailable(t *testing.T) {
 			t.Fatalf("list %q: SuppressPush(instinct) = false with the state store unavailable", list)
 		}
 		before := len(fx.capture.postedURLs())
+		fx.forgetDeliveries()
 		_, err := fx.push()
 		activeTeammates = prev
 		if err == nil || !strings.Contains(err.Error(), "teammate state") {

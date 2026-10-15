@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -224,17 +225,7 @@ func runSource(cmd *cobra.Command, args []string) error {
 	}
 
 	if sourceOnce {
-		// --once mode: bound the whole push by SyncClient's timeout
-		// plus a small slack for envelope packing. Pre-v0.12 this was
-		// hardcoded at 60s, which was tight even for v0.10-shape
-		// payloads. The inner HTTP request also bounds itself; this
-		// outer cancel is the belt to the request's suspenders.
-		//
-		// Fan-out POSTs run concurrently, each under its own per-sink
-		// ClientTimeout, so one per-sink timeout plus slack covers every
-		// sink: a dead sink cannot starve the healthy ones.
-		perSink := httpserver.Defaults(httpserver.SyncClient).ClientTimeout
-		ctx, cancel := context.WithTimeout(cmd.Context(), perSink+30*time.Second)
+		ctx, cancel := context.WithTimeout(cmd.Context(), sourcePushBudget())
 		defer cancel()
 		_, err := push(ctx)
 		return err
@@ -269,6 +260,7 @@ func runSource(cmd *cobra.Command, args []string) error {
 		LocalStorageDir: localStorageDir,
 		IndexedDBDir:    sourceBrowser.IndexedDBDir(cfg.Browser.Profile),
 		Push:            push,
+		PushTimeout:     sourcePushBudget(),
 		OnEvent: func(ev watcher.Event) {
 			if sourceVerbose {
 				fmt.Fprintf(os.Stderr, "agentcookie source --watch: %s\n", ev.String())
@@ -302,6 +294,20 @@ func runSource(cmd *cobra.Command, args []string) error {
 	}
 
 	return w.Run(cmd.Context())
+}
+
+// sourcePushBudget bounds one whole source push cycle, in --once and in
+// --watch alike: SyncClient's per-sink timeout plus a small slack for
+// envelope packing. Pre-v0.12 --once was hardcoded at 60s, which was tight
+// even for v0.10-shape payloads. The
+// inner HTTP request also bounds itself; this outer cancel is the belt to the
+// request's suspenders.
+//
+// Fan-out POSTs run concurrently, each under its own per-sink ClientTimeout,
+// so one per-sink timeout plus slack covers every sink: a dead sink cannot
+// starve the healthy ones.
+func sourcePushBudget() time.Duration {
+	return httpserver.Defaults(httpserver.SyncClient).ClientTimeout + 30*time.Second
 }
 
 // newSourceState builds the in-memory SourceState for a source run. Per-sink
@@ -513,6 +519,8 @@ func recordSourcePushResult(
 		switch {
 		case !r.SkippedUntil.IsZero():
 			// Skipped inside its backoff window: no attempt, nothing to record.
+		case r.Unchanged:
+			// Already holds this payload: no attempt, nothing to record.
 		case r.Asleep:
 			ps.Asleep = true
 			ps.LastAsleepAt = now
@@ -564,8 +572,9 @@ func recordSourcePushResult(
 }
 
 // sinkResult is one sink's outcome from a single fan-out push. A sink that
-// was not dialed has Asleep (Tailscale reports its peer offline) or
-// SkippedUntil (inside its backoff window) set and a nil Err.
+// was not dialed has Asleep (Tailscale reports its peer offline),
+// SkippedUntil (inside its backoff window), or Unchanged (it already holds
+// this payload, inside the heartbeat) set and a nil Err.
 type sinkResult struct {
 	Peer         string
 	URL          string
@@ -573,6 +582,9 @@ type sinkResult struct {
 	Err          error
 	Asleep       bool
 	SkippedUntil time.Time
+	Unchanged    bool
+	// DeliveredAt is the last delivery of this payload, for an Unchanged sink.
+	DeliveredAt time.Time
 }
 
 // sinkURLList renders sink URLs for a log line.
@@ -744,6 +756,9 @@ func pushOnce(
 		if os.Getenv("AGENTCOOKIE_SYNC_INDEXEDDB") == "1" {
 			if it, sk, err := chromedirsync.Pack(sourceBrowser.IndexedDBDir(cfg.Browser.Profile), 5*1024*1024); err == nil {
 				idbTarball = it
+				// Pack builds this list from a map; sort it so an unchanged
+				// profile hashes the same every cycle.
+				slices.Sort(sk)
 				idbSkipped = sk
 			} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
 				fmt.Fprintf(os.Stderr, "agentcookie source: indexedDB pack failed (%v); continuing without it\n", err)
@@ -769,13 +784,18 @@ func pushOnce(
 		return nil, dbsc, secrets, fmt.Errorf("marshal envelope: %w", err)
 	}
 	pullPayloadCache.StoreIfCurrent(pullGen, payload)
+	// A hash failure only turns off the unchanged check for this cycle, so
+	// every sink is sent the payload.
+	hash, hashErr := envelopeHash(envelope)
 	// Fan out: read and filtering above happened once; only sealing and
 	// transport repeat per sink. Each sink is sealed with its own key and
 	// POSTed concurrently under its own timeout, so a dead sink cannot hold
 	// up the others. A per-sink failure (missing key, seal error,
 	// URL-resolution, or POST) is isolated to that sink and recorded. A sink
-	// inside its backoff window is skipped without an attempt, and a sink
-	// whose peer Tailscale reports offline is skipped as asleep.
+	// inside its backoff window is skipped without an attempt, a sink that
+	// already received this exact payload less than sinkHeartbeat ago is
+	// skipped as unchanged, and a sink whose peer Tailscale reports offline
+	// is skipped as asleep.
 	//
 	// A legacy push peer migrated to teammate mode is never dialed again (it
 	// pulls instead): it is dropped silently, not recorded as a failure, and
@@ -812,6 +832,11 @@ func pushOnce(
 				continue
 			}
 		}
+		if at, ok := sinkDeliveries.unchanged(sink.Peer, sink.URL, hash, now); hashErr == nil && ok {
+			results[i].Unchanged = true
+			results[i].DeliveredAt = at
+			continue
+		}
 		if tailnetIPOffline(sink.URL) {
 			results[i].Asleep = true
 			continue
@@ -835,9 +860,17 @@ func pushOnce(
 				r.Asleep = true
 			case postErr != nil:
 				r.Err = postErr
+				// A failed request may have partly changed the sink, so an
+				// older acknowledgement no longer proves what it holds.
+				sinkDeliveries.forget(sink.Peer, sink.URL)
 			default:
 				r.Count = len(all)
 				*reply = body
+				// Stamp the delivery when the sink accepted it, so a slow
+				// POST does not bring the next heartbeat forward.
+				if hashErr == nil {
+					sinkDeliveries.record(sink.Peer, sink.URL, hash, sourceNow())
+				}
 			}
 		}(&results[i], &replies[i], sink)
 	}
@@ -852,6 +885,13 @@ func pushOnce(
 		case !r.SkippedUntil.IsZero():
 			rep["backoff_until"] = r.SkippedUntil.UTC().Format(time.RFC3339)
 			humanLines = append(humanLines, fmt.Sprintf("agentcookie source: [%s] skipped: backing off after failures until %s", r.URL, r.SkippedUntil.Format(time.RFC3339)))
+		case r.Unchanged:
+			rep["unchanged"] = true
+			// Every baseline tick of an idle source lands here, so only
+			// --verbose logs it.
+			if verbose {
+				humanLines = append(humanLines, fmt.Sprintf("agentcookie source: [%s] skipped: unchanged since %s, heartbeat due by %s", r.URL, r.DeliveredAt.Format(time.RFC3339), r.DeliveredAt.Add(sinkHeartbeat).Format(time.RFC3339)))
+			}
 		case r.Asleep:
 			rep["asleep"] = true
 			humanLines = append(humanLines, fmt.Sprintf("agentcookie source: [%s] skipped: Tailscale reports the peer offline (asleep)", r.URL))
@@ -868,7 +908,11 @@ func pushOnce(
 
 	result["sinks"] = sinkReports
 	result["posted"] = delivered > 0 && len(aggregateFailedLabels(results)) == 0
-	_ = emit(result, strings.Join(humanLines, "\n")+"\n")
+	human := ""
+	if len(humanLines) > 0 {
+		human = strings.Join(humanLines, "\n") + "\n"
+	}
+	_ = emit(result, human)
 	return results, dbsc, secrets, nil
 }
 

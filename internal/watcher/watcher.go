@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -53,6 +54,11 @@ type Config struct {
 	// Defends against fsnotify event loss on macOS. Defaults to 30s.
 	BaselineTick time.Duration
 
+	// PushTimeout bounds each Push call. Defaults to 60s. `source --watch`
+	// passes the same budget as `source --once` so slow uplinks are not cut
+	// off early.
+	PushTimeout time.Duration
+
 	// LogLabel prefixes the watcher's stderr lines so they name the command
 	// that owns the loop. Defaults to "agentcookie source --watch". The
 	// cmux-sync local loop passes its own label so logs aren't mislabeled.
@@ -89,9 +95,23 @@ func (c Config) baselineTick() time.Duration {
 	return 30 * time.Second
 }
 
+func (c Config) pushTimeout() time.Duration {
+	if c.PushTimeout > 0 {
+		return c.PushTimeout
+	}
+	return 60 * time.Second
+}
+
 // Watcher runs the watch loop. Construct via New, then call Run.
 type Watcher struct {
 	cfg Config
+
+	// inFlight is set while a Push runs. Triggers that arrive meanwhile are
+	// dropped instead of queuing behind it: with a multi-minute PushTimeout
+	// and 30s baseline ticks, queued pushes would otherwise run back to back
+	// on exactly the slow links the longer budget is for. The next trigger
+	// after the push finishes sends the current state.
+	inFlight atomic.Bool
 
 	mu         sync.Mutex
 	lastPush   time.Time
@@ -145,7 +165,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 	}
 
 	// Kick off one push at startup so the sink is current from t=0.
-	go w.runOne(ctx, "startup")
+	w.start(ctx, "startup", false)
 
 	debounceTimer := time.NewTimer(time.Hour)
 	debounceTimer.Stop()
@@ -190,19 +210,13 @@ func (w *Watcher) Run(ctx context.Context) error {
 
 		case <-debounceTimer.C:
 			pendingEvent = false
-			if !w.respectRateCap() {
-				continue
-			}
-			go w.runOne(ctx, "fs-event")
+			w.start(ctx, "fs-event", true)
 
 		case <-baselineTicker.C:
 			if pendingEvent {
 				continue
 			}
-			if !w.respectRateCap() {
-				continue
-			}
-			go w.runOne(ctx, "baseline-tick")
+			w.start(ctx, "baseline-tick", true)
 		}
 	}
 }
@@ -240,8 +254,26 @@ func (w *Watcher) respectRateCap() bool {
 	return true
 }
 
+// start launches runOne in a goroutine unless a push is already in flight
+// or, when rateCap is set, the rate cap has not elapsed. It reports whether
+// a push started.
+func (w *Watcher) start(ctx context.Context, reason string, rateCap bool) bool {
+	if !w.inFlight.CompareAndSwap(false, true) {
+		return false
+	}
+	if rateCap && !w.respectRateCap() {
+		w.inFlight.Store(false)
+		return false
+	}
+	go func() {
+		defer w.inFlight.Store(false)
+		w.runOne(ctx, reason)
+	}()
+	return true
+}
+
 func (w *Watcher) runOne(ctx context.Context, reason string) {
-	pushCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	pushCtx, cancel := context.WithTimeout(ctx, w.cfg.pushTimeout())
 	defer cancel()
 	n, err := w.cfg.Push(pushCtx)
 	w.mu.Lock()

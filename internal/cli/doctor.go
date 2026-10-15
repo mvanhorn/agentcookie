@@ -23,7 +23,6 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/launchd"
-	"github.com/mvanhorn/agentcookie/internal/livecdp"
 	"github.com/mvanhorn/agentcookie/internal/secretsbus"
 	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 	"github.com/mvanhorn/agentcookie/internal/state"
@@ -1450,10 +1449,7 @@ func checkLiveCDPEndpointWith(sinkCfg *config.SinkConfig, probe func(endpoint st
 		}
 	}
 
-	endpoint := sinkCfg.LiveCDP.Endpoint
-	if endpoint == "" {
-		endpoint = livecdp.DefaultCDPEndpoint
-	}
+	endpoint := liveCDPEndpointFor(sinkCfg)
 
 	if err := probe(endpoint); err == nil {
 		return Check{

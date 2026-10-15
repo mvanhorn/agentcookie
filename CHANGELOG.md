@@ -18,6 +18,12 @@
 
 - On Linux, the sink turned live CDP injection on whenever `cdp.enabled` was off, even when `sink.yaml` set `live_cdp: enabled: false`. An explicit `live_cdp.enabled` is now kept as written. Live CDP still defaults to on when the key is absent and `cdp.enabled` is off. `skip_chrome_sqlite` stays forced on for Linux sinks, and the code comment that said YAML could turn it off now says it cannot. Reported by @Dannyxlm in #149.
 
+### Source push cadence on slow links
+
+- `source --watch` now gives each push the same time budget as `source --once` (the sync client's per-sink timeout plus 30 seconds) instead of a fixed 60 seconds, so large payloads on slow uplinks stop timing out. A trigger that arrives while a push is still running is skipped instead of queuing behind it; the next baseline tick sends the current state. `cmux-sync` and `agent-sync` keep the 60 second budget. Reported by @Dannyxlm in #149.
+- `source --watch` no longer re-sends an unchanged payload every 30 seconds. Each sink is sent the payload only when it changed since that sink last accepted it, or as a heartbeat once 10 minutes have passed. A failed push is always retried with the next tick, and a skipped send counts as neither a push nor a failure in `status`. Changes to a cookie's last-access time alone do not count as a change; the heartbeat carries them. `--verbose` logs each skipped send. Reported by @Dannyxlm in #149.
+- A Linux sink with `live_cdp` on now re-injects the cookies from its last `/sync` into the running Chrome every 30 seconds, locally. Browser contexts an agent opened since the last push, and a Chrome that restarted, get cookies within 30 seconds, as they did when the source re-sent every tick. The cookies are held in memory only and pass the sink's current cookie policy on each tick. A failing re-inject is logged once, and again once when it recovers. Pull-mode sinks are unchanged. Reported by @Dannyxlm in #149.
+
 ### Live browser injection keeps your logins
 
 - Chrome holds at most about 3300 cookies and evicts the least recently used past that, counting an injected cookie as used when it is set. A large batch (4868 cookies in the live test) silently evicted the first ~1800 it set, which included GitHub's session, so the agent's real browser stayed logged out while the push reported success. Live CDP injection now pushes only the 3000 most recently used cookies, oldest first, so the ones you use are kept. The sink log says how many were pushed and how many stayed sidecar-only.

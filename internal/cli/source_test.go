@@ -22,6 +22,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
+	"github.com/mvanhorn/agentcookie/internal/cli/httpserver"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"github.com/mvanhorn/agentcookie/internal/secretsbus"
@@ -377,9 +378,13 @@ domains:
   - pattern: "%.blocked.com"
 `)
 
+	now := stubSourceClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
+
 	if _, err := fx.push(); err != nil {
 		t.Fatalf("first push: %v", err)
 	}
+	// Past the heartbeat, so the unchanged payload is POSTed again.
+	*now = now.Add(sinkHeartbeat)
 	if _, err := fx.push(); err != nil {
 		t.Fatalf("second push: %v", err)
 	}
@@ -626,6 +631,11 @@ func newSourcePushFixture(t *testing.T, cookies []chrome.Cookie) *sourcePushFixt
 		return rawURL, nil
 	}))
 
+	// Each test starts with no remembered deliveries.
+	prevDeliveries := sinkDeliveries
+	sinkDeliveries = newSinkDeliveryLog()
+	t.Cleanup(func() { sinkDeliveries = prevDeliveries })
+
 	key := []byte("0123456789abcdef")
 	dbPath := filepath.Join(t.TempDir(), "Cookies")
 	seedSourceCookiesDB(t, dbPath, cookies, key)
@@ -660,6 +670,13 @@ func (f *sourcePushFixture) push() (int, error) {
 	return pushWithFreshBlocklist(context.Background(), f.cfg, f.key, false, false, false, f.srcState, nil)
 }
 
+// forgetDeliveries clears the unchanged-payload log, so the next push POSTs
+// to every eligible sink even if the payload has not changed. For tests
+// that count POSTs across repeated identical pushes for another reason.
+func (f *sourcePushFixture) forgetDeliveries() {
+	sinkDeliveries = newSinkDeliveryLog()
+}
+
 func (f *sourcePushFixture) batchCount() int {
 	return f.capture.batchCount()
 }
@@ -684,6 +701,9 @@ type sourceCapture struct {
 	attempts map[string]int
 	// arrivals records when each URL's most recent POST reached the transport.
 	arrivals map[string]time.Time
+	// onPost, when set, runs as an accepted POST completes, standing in for
+	// a sink that takes a while to reply.
+	onPost func()
 }
 
 func newSourceCapture(t *testing.T, secret string) *sourceCapture {
@@ -732,7 +752,11 @@ func (c *sourceCapture) RoundTrip(req *http.Request) (*http.Response, error) {
 	c.batches = append(c.batches, append([]chrome.Cookie(nil), envelope.Cookies...))
 	c.urls = append(c.urls, req.URL.String())
 	c.envelopes = append(c.envelopes, envelope)
+	onPost := c.onPost
 	c.mu.Unlock()
+	if onPost != nil {
+		onPost()
+	}
 
 	return &http.Response{
 		StatusCode: http.StatusOK,
@@ -1086,7 +1110,10 @@ func TestSourcePushBackoffScheduleCapsAndResetsOnSuccess(t *testing.T) {
 		30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute,
 		8 * time.Minute, 16 * time.Minute, 30 * time.Minute, 30 * time.Minute,
 	}
+	// The payload never changes; forget deliveries so the healthy sink is
+	// POSTed every cycle and only backoff decides who is skipped.
 	for i, delay := range want {
+		fx.forgetDeliveries()
 		if _, err := fx.push(); err == nil {
 			t.Fatalf("failure %d: expected push error", i+1)
 		}
@@ -1103,6 +1130,7 @@ func TestSourcePushBackoffScheduleCapsAndResetsOnSuccess(t *testing.T) {
 		// A push inside the window skips the bad sink but still serves the
 		// healthy one, and is not an error.
 		*now = now.Add(delay - time.Second)
+		fx.forgetDeliveries()
 		if _, err := fx.push(); err != nil {
 			t.Fatalf("failure %d: push inside backoff window should skip, got %v", i+1, err)
 		}
@@ -1128,6 +1156,7 @@ func TestSourcePushBackoffScheduleCapsAndResetsOnSuccess(t *testing.T) {
 		t.Fatalf("success should reset backoff, got %+v", ps)
 	}
 	fx.capture.failURL = urlBad
+	fx.forgetDeliveries()
 	_, _ = fx.push()
 	if got := sinkStateFor(fx.srcState, urlBad).BackoffUntil.Sub(*now); got != want[0] {
 		t.Fatalf("first failure after reset: backoff = %s, want %s", got, want[0])
@@ -1436,6 +1465,306 @@ func TestSourcePushTailnetIPSinkDialsWhenStatusUnavailable(t *testing.T) {
 	}
 	if ps := sinkStateFor(fx.srcState, urlSink); ps == nil || ps.Asleep || ps.TotalPushes != 1 {
 		t.Fatalf("expected a normal push record, got %+v", ps)
+	}
+}
+
+func TestSourcePushBudgetIsSyncClientTimeoutPlusSlack(t *testing.T) {
+	want := httpserver.Defaults(httpserver.SyncClient).ClientTimeout + 30*time.Second
+	if got := sourcePushBudget(); got != want {
+		t.Fatalf("sourcePushBudget() = %s, want %s", got, want)
+	}
+	if got := sourcePushBudget(); got <= 60*time.Second {
+		t.Fatalf("sourcePushBudget() = %s, want more than the watcher's 60s default", got)
+	}
+}
+
+// --- Unchanged-payload dedup with heartbeat (#149) ---
+
+func TestSourcePushSkipsUnchangedPayloadUntilHeartbeat(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "s", Value: "v", Path: "/"},
+	})
+	sinkURL := fx.cfg.Sink.URL
+	now := stubSourceClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
+
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	// Baseline ticks every 30s for 9 minutes with nothing changed.
+	for range 18 {
+		*now = now.Add(30 * time.Second)
+		n, err := fx.push()
+		if err != nil {
+			t.Fatalf("unchanged push: %v", err)
+		}
+		if n != 0 {
+			t.Fatalf("unchanged push reported %d cookies posted, want 0", n)
+		}
+	}
+	if got := fx.capture.attemptsTo(sinkURL); got != 1 {
+		t.Fatalf("POSTs inside the heartbeat window = %d, want 1", got)
+	}
+	ps := sinkStateFor(fx.srcState, sinkURL)
+	if ps == nil || ps.TotalPushes != 1 {
+		t.Fatalf("unchanged skips must not record pushes, got %+v", ps)
+	}
+	if !ps.LastPush.Equal(time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)) {
+		t.Errorf("LastPush = %s, want the first delivery", ps.LastPush)
+	}
+
+	// 10 minutes after the last delivery the heartbeat re-sends it.
+	*now = time.Date(2026, 10, 11, 12, 10, 0, 0, time.UTC)
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("heartbeat push: %v", err)
+	}
+	if got := fx.capture.attemptsTo(sinkURL); got != 2 {
+		t.Fatalf("POSTs after the heartbeat = %d, want 2", got)
+	}
+	if got := sinkStateFor(fx.srcState, sinkURL).TotalPushes; got != 2 {
+		t.Errorf("TotalPushes after heartbeat = %d, want 2", got)
+	}
+}
+
+func TestSourcePushChangedCookiePostsImmediately(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "s", Value: "v1", Path: "/"},
+	})
+	now := stubSourceClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
+
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	seedSourceCookiesDB(t, fx.cfg.Chrome.DBPath, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "s", Value: "v2", Path: "/"},
+	}, fx.key)
+	*now = now.Add(30 * time.Second)
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("second push: %v", err)
+	}
+	if got := fx.batchCount(); got != 2 {
+		t.Fatalf("POSTs = %d, want 2 after a cookie value changed", got)
+	}
+	if got := fx.capture.batchAt(1)[0].Value; got != "v2" {
+		t.Errorf("second POST cookie value = %q, want v2", got)
+	}
+}
+
+func TestSourcePushLastAccessChangeAloneIsUnchanged(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "s", Value: "v", Path: "/", LastAccessUTC: 13370000000000000},
+	})
+	now := stubSourceClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
+
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	seedSourceCookiesDB(t, fx.cfg.Chrome.DBPath, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "s", Value: "v", Path: "/", LastAccessUTC: 13370000060000000},
+	}, fx.key)
+	*now = now.Add(30 * time.Second)
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("second push: %v", err)
+	}
+	if got := fx.batchCount(); got != 1 {
+		t.Fatalf("POSTs = %d, want 1: a last-access bump alone is not a change", got)
+	}
+
+	// The heartbeat still carries the current access time.
+	*now = now.Add(10 * time.Minute)
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("heartbeat push: %v", err)
+	}
+	if got := fx.batchCount(); got != 2 {
+		t.Fatalf("POSTs after heartbeat = %d, want 2", got)
+	}
+	if got := fx.capture.batchAt(1)[0].LastAccessUTC; got != 13370000060000000 {
+		t.Errorf("heartbeat LastAccessUTC = %d, want the updated value", got)
+	}
+}
+
+func TestSourcePushFailedDeliveryIsResent(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "s", Value: "v", Path: "/"},
+	})
+	sinkURL := fx.cfg.Sink.URL
+	now := stubSourceClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
+	fx.capture.failURL = sinkURL
+
+	if _, err := fx.push(); err == nil {
+		t.Fatal("first push should fail")
+	}
+	fx.capture.failURL = ""
+	// Past the 30s backoff window, same payload.
+	*now = now.Add(30 * time.Second)
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("retry push: %v", err)
+	}
+	if got := fx.capture.attemptsTo(sinkURL); got != 2 {
+		t.Fatalf("POST attempts = %d, want 2: a failed POST never counts as delivered", got)
+	}
+	if got := fx.batchCount(); got != 1 {
+		t.Fatalf("delivered batches = %d, want 1", got)
+	}
+}
+
+func TestSourcePushResendsOnlyToFailedSink(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "s", Value: "v", Path: "/"},
+	})
+	urlBad := "http://sink-bad.test/sync"
+	urlGood := "http://sink-good.test/sync"
+	fx.cfg.Sink = config.SinkRef{}
+	fx.cfg.Sinks = []config.SinkTarget{{URL: urlBad}, {URL: urlGood}}
+	fx.capture.failURL = urlBad
+	now := stubSourceClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
+
+	if _, err := fx.push(); err == nil {
+		t.Fatal("first push should report the failed sink")
+	}
+	fx.capture.failURL = ""
+	*now = now.Add(30 * time.Second)
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("second push: %v", err)
+	}
+	if got := fx.capture.attemptsTo(urlBad); got != 2 {
+		t.Errorf("failed sink attempts = %d, want 2 (resent)", got)
+	}
+	if got := fx.capture.attemptsTo(urlGood); got != 1 {
+		t.Errorf("delivered sink attempts = %d, want 1 (unchanged, skipped)", got)
+	}
+}
+
+func TestSourcePushRealPostsCarryIncreasingSequence(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "s", Value: "v0", Path: "/"},
+	})
+	now := stubSourceClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
+
+	// Mix changed payloads, unchanged skips and a heartbeat.
+	steps := []struct {
+		value   string
+		advance time.Duration
+	}{
+		{"v0", 0}, {"v0", 30 * time.Second}, {"v1", 30 * time.Second},
+		{"v1", 30 * time.Second}, {"v1", 10 * time.Minute}, {"v2", 30 * time.Second},
+	}
+	for i, s := range steps {
+		*now = now.Add(s.advance)
+		seedSourceCookiesDB(t, fx.cfg.Chrome.DBPath, []chrome.Cookie{
+			{HostKey: ".example.com", Name: "s", Value: s.value, Path: "/"},
+		}, fx.key)
+		if _, err := fx.push(); err != nil {
+			t.Fatalf("push %d: %v", i, err)
+		}
+	}
+	if got := fx.batchCount(); got != 4 {
+		t.Fatalf("real POSTs = %d, want 4", got)
+	}
+	for i := 1; i < fx.batchCount(); i++ {
+		prev, cur := fx.capture.envelopeAt(i-1).Sequence, fx.capture.envelopeAt(i).Sequence
+		if cur <= prev {
+			t.Fatalf("POST %d Sequence %d not greater than previous %d", i, cur, prev)
+		}
+	}
+}
+
+func TestSourcePushUnchangedSkipLeavesFailureStateAlone(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "s", Value: "v", Path: "/"},
+	})
+	sinkURL := fx.cfg.Sink.URL
+	now := stubSourceClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
+
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	before := *sinkStateFor(fx.srcState, sinkURL)
+	srcBefore := fx.srcState.TotalFailures
+	*now = now.Add(30 * time.Second)
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("unchanged push should not be an error, got %v", err)
+	}
+	after := *sinkStateFor(fx.srcState, sinkURL)
+	if after.TotalFailures != before.TotalFailures || after.ConsecutiveFailures != before.ConsecutiveFailures {
+		t.Errorf("unchanged skip touched failure counts: before %+v after %+v", before, after)
+	}
+	if !after.BackoffUntil.Equal(before.BackoffUntil) {
+		t.Errorf("unchanged skip touched backoff: %s -> %s", before.BackoffUntil, after.BackoffUntil)
+	}
+	if after.TotalPushes != before.TotalPushes || !after.LastPush.Equal(before.LastPush) {
+		t.Errorf("unchanged skip recorded a delivery: before %+v after %+v", before, after)
+	}
+	if fx.srcState.TotalFailures != srcBefore {
+		t.Errorf("source TotalFailures = %d, want %d", fx.srcState.TotalFailures, srcBefore)
+	}
+}
+
+func TestSourcePushFailedPostForgetsEarlierDelivery(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "s", Value: "a", Path: "/"},
+	})
+	sinkURL := fx.cfg.Sink.URL
+	now := stubSourceClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
+
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("push A: %v", err)
+	}
+	// Payload B fails: the sink may have partly applied it.
+	seedSourceCookiesDB(t, fx.cfg.Chrome.DBPath, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "s", Value: "b", Path: "/"},
+	}, fx.key)
+	fx.capture.failURL = sinkURL
+	*now = now.Add(30 * time.Second)
+	if _, err := fx.push(); err == nil {
+		t.Fatal("push B should fail")
+	}
+	fx.capture.failURL = ""
+	// Back to payload A, past the backoff window and inside A's heartbeat.
+	seedSourceCookiesDB(t, fx.cfg.Chrome.DBPath, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "s", Value: "a", Path: "/"},
+	}, fx.key)
+	*now = now.Add(30 * time.Second)
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("push A again: %v", err)
+	}
+	if got := fx.capture.attemptsTo(sinkURL); got != 3 {
+		t.Fatalf("POST attempts = %d, want 3: A must be re-sent after a failed POST", got)
+	}
+	if got := fx.batchCount(); got != 2 {
+		t.Fatalf("delivered batches = %d, want 2", got)
+	}
+}
+
+func TestSourcePushHeartbeatCountsFromPostCompletion(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "s", Value: "v", Path: "/"},
+	})
+	sinkURL := fx.cfg.Sink.URL
+	start := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	now := stubSourceClock(t, start)
+
+	// The first POST takes 2 minutes to complete.
+	fx.capture.onPost = func() { *now = now.Add(2 * time.Minute) }
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	fx.capture.onPost = nil
+
+	// 10 minutes after the push started, but only 8 after the sink accepted.
+	*now = start.Add(sinkHeartbeat)
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("second push: %v", err)
+	}
+	if got := fx.capture.attemptsTo(sinkURL); got != 1 {
+		t.Fatalf("POSTs = %d, want 1: heartbeat is due 10 minutes after the POST completed", got)
+	}
+
+	*now = start.Add(2*time.Minute + sinkHeartbeat)
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("heartbeat push: %v", err)
+	}
+	if got := fx.capture.attemptsTo(sinkURL); got != 2 {
+		t.Fatalf("POSTs after heartbeat = %d, want 2", got)
 	}
 }
 
