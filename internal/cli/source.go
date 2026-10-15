@@ -326,6 +326,10 @@ func newSourceState(statePath string, sinks []config.SinkTarget) *state.SourceSt
 	if prev == nil {
 		return st
 	}
+	// Carry the last real push's secrets summary, so a cycle that does not
+	// replace it (a dry run, a failed read) cannot reset what doctor reports.
+	st.LastSecretsSkipped = prev.LastSecretsSkipped
+	st.LastSecretsCLIs = prev.LastSecretsCLIs
 	for _, rec := range prev.Sinks {
 		if sinkConfigured(sinks, rec) {
 			st.Sinks = append(st.Sinks, rec)

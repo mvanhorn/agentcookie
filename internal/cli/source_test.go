@@ -1324,6 +1324,31 @@ func TestNewSourceStateLoadsOldFileWithoutBackoffFields(t *testing.T) {
 	}
 }
 
+// A new process (a separate `source --once --dry-run`, say) must start from
+// the saved secrets summary, so a dry run cannot erase what doctor reports.
+func TestNewSourceStateKeepsSecretsSummaryThroughDryRun(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "session", Value: "value", Path: "/"},
+	})
+	withSourceSkipSecrets(t, false)
+	t.Setenv(envSkipSecrets, "")
+	stubSecretsPayload(t, &secretsbus.Payload{})
+	statePath := filepath.Join(t.TempDir(), "source-state.json")
+	writeCLIFile(t, statePath, `{"role":"source","last_secrets_skipped":true,"last_secrets_clis":3}`)
+
+	st := newSourceState(statePath, fx.cfg.ResolvedSinks())
+	if _, err := pushWithFreshBlocklist(context.Background(), fx.cfg, fx.key, true, false, false, st, state.NewWriter(statePath)); err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	saved, err := state.LoadSource(statePath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !saved.LastSecretsSkipped || saved.LastSecretsCLIs != 3 {
+		t.Fatalf("dry run in a new process erased the secrets summary: skipped=%v clis=%d, want skipped=true clis=3", saved.LastSecretsSkipped, saved.LastSecretsCLIs)
+	}
+}
+
 func TestNewSourceStateDropsRemovedSinks(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "source-state.json")
 	writeCLIFile(t, statePath, `{"role":"source","sinks":[
