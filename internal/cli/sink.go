@@ -470,10 +470,7 @@ func applySealedEnvelope(
 	var liveCDPErr error
 	var liveCDPEndpoint string
 	if cfg.LiveCDP.Enabled && len(cookies) > 0 {
-		liveCDPEndpoint = cfg.LiveCDP.Endpoint
-		if liveCDPEndpoint == "" {
-			liveCDPEndpoint = livecdp.DefaultCDPEndpoint
-		}
+		liveCDPEndpoint = liveCDPEndpointFor(cfg)
 		liveCDPContexts, liveCDPErr = liveCDPInject(ctx, liveCDPEndpoint, cookies)
 		if liveCDPErr != nil {
 			fmt.Fprintf(os.Stderr, "agentcookie sink: live CDP injection failed (sidecar write succeeded): %v\n", liveCDPErr)
@@ -1025,11 +1022,11 @@ var liveCDPInject = livecdp.AttachAndInject
 
 // liveCDPReinjectInterval is how often a live CDP sink re-injects the
 // cookies from its last /sync. It matches the source's baseline tick, which
-// used to re-push every 30s and so re-injected as a side effect.
+// re-pushed every 30s and so re-injected as a side effect.
 const liveCDPReinjectInterval = 30 * time.Second
 
 // liveCDPReinjector re-injects the cookies from the last successful /sync
-// into the running Chrome on a timer (KTD10). The source now skips a sink
+// into the running Chrome on a timer. The source skips a sink
 // that already holds the current payload and re-sends only every 10
 // minutes, so without this a browser context an agent opened since the last
 // /sync, or a Chrome that restarted, would stay logged out until then. The
@@ -1085,7 +1082,7 @@ func (r *liveCDPReinjector) tick(ctx context.Context) bool {
 	// browser contexts until the source's next heartbeat.
 	bl, err := loadFreshBlocklist()
 	if err != nil {
-		r.report(0, 0, fmt.Errorf("load cookie policy: %w", err))
+		r.reportFailure(fmt.Errorf("load cookie policy: %w", err))
 		return false
 	}
 	cookies, _ = protocol.NewBlocklistMatcherForSink(bl).Filter(cookies)
@@ -1095,26 +1092,37 @@ func (r *liveCDPReinjector) tick(ctx context.Context) bool {
 	// Bound each attempt so a hung CDP call cannot stop the ticker for good.
 	injectCtx, cancel := context.WithTimeout(ctx, liveCDPReinjectInterval)
 	defer cancel()
-	contexts, err := liveCDPInject(injectCtx, r.endpoint(), cookies)
-	r.report(len(cookies), contexts, err)
+	contexts, err := liveCDPInject(injectCtx, liveCDPEndpointFor(r.cfg), cookies)
+	if err != nil {
+		r.reportFailure(err)
+	} else {
+		r.reportRecovery(len(cookies), contexts)
+	}
 	return true
 }
 
-// report logs a re-inject outcome only when it differs from the last one.
-func (r *liveCDPReinjector) report(cookies, contexts int, err error) {
-	switch {
-	case err != nil && !r.failing:
-		r.failing = true
-		fmt.Fprintf(r.log, "agentcookie sink: live CDP re-inject failed at %s: %v (retrying every %s; logged again on recovery)\n", r.endpoint(), err, liveCDPReinjectInterval)
-	case err == nil && r.failing:
-		r.failing = false
-		fmt.Fprintf(r.log, "agentcookie sink: live CDP re-inject recovered: %d cookies into %d context(s) at %s\n", cookies, contexts, r.endpoint())
+// reportFailure logs a failed re-inject once, until a recovery.
+func (r *liveCDPReinjector) reportFailure(err error) {
+	if r.failing {
+		return
 	}
+	r.failing = true
+	fmt.Fprintf(r.log, "agentcookie sink: live CDP re-inject failed at %s: %v (retrying every %s; logged again on recovery)\n", liveCDPEndpointFor(r.cfg), err, liveCDPReinjectInterval)
 }
 
-func (r *liveCDPReinjector) endpoint() string {
-	if r.cfg.LiveCDP.Endpoint != "" {
-		return r.cfg.LiveCDP.Endpoint
+// reportRecovery logs the first successful re-inject after a failure.
+func (r *liveCDPReinjector) reportRecovery(cookies, contexts int) {
+	if !r.failing {
+		return
+	}
+	r.failing = false
+	fmt.Fprintf(r.log, "agentcookie sink: live CDP re-inject recovered: %d cookies into %d context(s) at %s\n", cookies, contexts, liveCDPEndpointFor(r.cfg))
+}
+
+// liveCDPEndpointFor is the sink's live CDP endpoint, or the default.
+func liveCDPEndpointFor(cfg *config.SinkConfig) string {
+	if cfg.LiveCDP.Endpoint != "" {
+		return cfg.LiveCDP.Endpoint
 	}
 	return livecdp.DefaultCDPEndpoint
 }

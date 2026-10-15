@@ -101,7 +101,7 @@ const (
 // sinkHeartbeat is how long an unchanged payload goes without being re-sent
 // to a sink that already received it. doctor only warns after 24h without a
 // push, so 10 minutes keeps status fresh while an idle source stops sending
-// the same envelope every 30s (#149).
+// the same envelope every 30s.
 const sinkHeartbeat = 10 * time.Minute
 
 // sinkDelivery is the last payload a sink accepted: the envelope hash (see
@@ -387,7 +387,7 @@ func runSource(cmd *cobra.Command, args []string) error {
 // sourcePushBudget bounds one whole source push cycle, in --once and in
 // --watch alike: SyncClient's per-sink timeout plus a small slack for
 // envelope packing. Pre-v0.12 --once was hardcoded at 60s, which was tight
-// even for v0.10-shape payloads, and --watch kept that 60s until #149. The
+// even for v0.10-shape payloads. The
 // inner HTTP request also bounds itself; this outer cancel is the belt to the
 // request's suspenders.
 //
