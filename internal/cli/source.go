@@ -770,10 +770,9 @@ func pushOnce(
 		return nil, dbsc, fmt.Errorf("marshal envelope: %w", err)
 	}
 	pullPayloadCache.StoreIfCurrent(pullGen, payload)
-	hash, err := envelopeHash(envelope)
-	if err != nil {
-		return nil, dbsc, fmt.Errorf("hash envelope: %w", err)
-	}
+	// A hash failure only turns off the unchanged check for this cycle, so
+	// every sink is sent the payload.
+	hash, hashErr := envelopeHash(envelope)
 	// Fan out: read and filtering above happened once; only sealing and
 	// transport repeat per sink. Each sink is sealed with its own key and
 	// POSTed concurrently under its own timeout, so a dead sink cannot hold
@@ -819,7 +818,7 @@ func pushOnce(
 				continue
 			}
 		}
-		if at, ok := sinkDeliveries.unchanged(sink.Peer, sink.URL, hash, now); ok {
+		if at, ok := sinkDeliveries.unchanged(sink.Peer, sink.URL, hash, now); hashErr == nil && ok {
 			results[i].Unchanged = true
 			results[i].DeliveredAt = at
 			continue
@@ -855,7 +854,9 @@ func pushOnce(
 				*reply = body
 				// Stamp the delivery when the sink accepted it, so a slow
 				// POST does not bring the next heartbeat forward.
-				sinkDeliveries.record(sink.Peer, sink.URL, hash, sourceNow())
+				if hashErr == nil {
+					sinkDeliveries.record(sink.Peer, sink.URL, hash, sourceNow())
+				}
 			}
 		}(&results[i], &replies[i], sink)
 	}
