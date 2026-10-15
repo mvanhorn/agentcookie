@@ -186,7 +186,8 @@ var (
 // and prints one stderr warning per distinct value.
 func skipSecrets() bool {
 	v := os.Getenv(envSkipSecrets)
-	if v != "" && v != "0" && v != "1" {
+	envOn := v != "" && v != "0"
+	if envOn && v != "1" {
 		skipSecretsWarnMu.Lock()
 		if skipSecretsWarnedFor != v {
 			skipSecretsWarnedFor = v
@@ -194,15 +195,7 @@ func skipSecrets() bool {
 		}
 		skipSecretsWarnMu.Unlock()
 	}
-	return sourceSkipSecrets || (v != "" && v != "0")
-}
-
-// resetSkipSecretsWarning forgets the last warned value so the next unusual
-// value warns again.
-func resetSkipSecretsWarning() {
-	skipSecretsWarnMu.Lock()
-	skipSecretsWarnedFor = ""
-	skipSecretsWarnMu.Unlock()
+	return sourceSkipSecrets || envOn
 }
 
 // secretsSummary is what one push did with the secrets bus, recorded in

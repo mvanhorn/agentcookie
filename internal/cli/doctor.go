@@ -1080,7 +1080,7 @@ func checkSecretsBusFrom(st *state.SourceState) Check {
 	case st == nil:
 		c.Detail = "no source push recorded yet"
 	case st.LastSecretsSkipped:
-		c.Detail = "skipped by --skip-secrets"
+		c.Detail = "skipped (--skip-secrets or AGENTCOOKIE_SKIP_SECRETS)"
 	default:
 		c.Detail = fmt.Sprintf("shipping %d cli(s)", st.LastSecretsCLIs)
 	}

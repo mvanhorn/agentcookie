@@ -10,7 +10,7 @@
 ### Source: `--skip-secrets` runs a cookie-only source
 
 - New `agentcookie source --skip-secrets` (or `AGENTCOOKIE_SKIP_SECRETS`, for a LaunchAgent) stops the source from reading the secrets bus at all: no manifests, per-CLI secrets or carried files, in `--once` and `--watch`. Pushes to sinks and the `GET /pull` envelope for teammates carry no secrets, and `--watch` no longer watches the secrets and discovery paths. The env var fails closed: any value other than empty or `0` turns it on, and a value other than `1` also prints a warning naming it. With `--skip-local-storage`, this gives a cookie-only source.
-- `agentcookie doctor` adds a Secrets push line: "skipped by --skip-secrets" or "shipping N cli(s)" for the last push. It is informational and never warns.
+- `agentcookie doctor` adds a Secrets push line: "skipped (--skip-secrets or AGENTCOOKIE_SKIP_SECRETS)" or "shipping N cli(s)" for the last push. It is informational and never warns.
 - The switch stops future sends only. Secrets already delivered stay on sinks and teammates until removed there.
 - Requested by @jnyross in #151.
 

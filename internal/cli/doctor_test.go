@@ -410,7 +410,7 @@ func TestCheckSecretsBus(t *testing.T) {
 		if c.Severity != SeverityOK {
 			t.Fatalf("got %q (%q)", c.Severity, c.Detail)
 		}
-		if c.Detail != "skipped by --skip-secrets" {
+		if c.Detail != "skipped (--skip-secrets or AGENTCOOKIE_SKIP_SECRETS)" {
 			t.Fatalf("detail = %q", c.Detail)
 		}
 	})

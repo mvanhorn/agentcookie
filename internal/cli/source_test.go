@@ -1364,3 +1364,11 @@ func TestSourcePushTailnetIPSinkDialsWhenStatusUnavailable(t *testing.T) {
 		t.Fatalf("expected a normal push record, got %+v", ps)
 	}
 }
+
+// resetSkipSecretsWarning forgets the last warned value so the next unusual
+// value warns again.
+func resetSkipSecretsWarning() {
+	skipSecretsWarnMu.Lock()
+	skipSecretsWarnedFor = ""
+	skipSecretsWarnMu.Unlock()
+}
