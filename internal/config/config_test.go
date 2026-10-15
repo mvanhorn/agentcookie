@@ -1064,3 +1064,82 @@ peer:
 		t.Fatalf("expected cadence error, got %v", err)
 	}
 }
+
+// TestApplyLinuxSinkDefaultsLiveCDP covers issue #149: a Linux sink must
+// honor an explicit live_cdp.enabled: false. LoadSink only applies the
+// Linux defaults when IsLinux(), so this drives the probe and the
+// defaults function directly to run on any CI OS.
+func TestApplyLinuxSinkDefaultsLiveCDP(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{
+			name: "explicit false stays false",
+			yaml: "live_cdp:\n  enabled: false\n",
+			want: false,
+		},
+		{
+			name: "absent key with cdp off defaults to true",
+			yaml: "listen:\n  addr: 100.80.229.80:9999\n",
+			want: true,
+		},
+		{
+			name: "explicit true stays true",
+			yaml: "live_cdp:\n  enabled: true\n",
+			want: true,
+		},
+		{
+			name: "cdp enabled with no live_cdp key leaves live cdp off",
+			yaml: "cdp:\n  enabled: true\n",
+			want: false,
+		},
+		{
+			name: "live_cdp block with only endpoint counts as absent",
+			yaml: "live_cdp:\n  endpoint: http://127.0.0.1:9333\n",
+			want: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg SinkConfig
+			if err := decodeYAMLStrict("sink.yaml", []byte(tc.yaml), &cfg); err != nil {
+				t.Fatalf("decodeYAMLStrict: %v", err)
+			}
+			explicit, err := probeLiveCDPEnabled([]byte(tc.yaml))
+			if err != nil {
+				t.Fatalf("probeLiveCDPEnabled: %v", err)
+			}
+			applyLinuxSinkDefaults(&cfg, explicit)
+			if cfg.LiveCDP.Enabled != tc.want {
+				t.Errorf("LiveCDP.Enabled: got %v, want %v", cfg.LiveCDP.Enabled, tc.want)
+			}
+			if !cfg.SkipChromeSQLite {
+				t.Errorf("SkipChromeSQLite: got false, want true on Linux")
+			}
+		})
+	}
+}
+
+// TestLoadSinkUnknownKeyStillStrict guards that the live_cdp probe does
+// not loosen sink.yaml validation: an unknown key still fails to load.
+func TestLoadSinkUnknownKeyStillStrict(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "sink.yaml", `
+listen:
+  addr: 100.80.229.80:9999
+live_cdp:
+  enabled: false
+  enabeld: true
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+	_, err := LoadSink(dir)
+	if err == nil {
+		t.Fatal("expected error for unknown key, got nil")
+	}
+	if !strings.Contains(err.Error(), "decode") || !strings.Contains(err.Error(), "enabeld") {
+		t.Errorf("error should be a strict decode failure naming the key, got %v", err)
+	}
+}
