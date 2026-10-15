@@ -421,7 +421,7 @@ func pushWithFreshBlocklist(
 		// Fail closed at the sync boundary: do not keep serving a previously
 		// filtered envelope from GET /pull after policy cannot be loaded.
 		pullPayloadCache.ClearIfCurrent(pullGen)
-		recordSourcePushResult(srcState, stateWriter, nil, dbsc, secretsSummary{skipped: skipSecrets()}, err)
+		recordSourcePushResult(srcState, stateWriter, nil, dbsc, secretsSummary{}, err)
 		return 0, err
 	}
 	results, dbsc, secrets, err := pushOnce(ctx, cfg, blocklist, key, dryRun, verbose, skipDBSC, pullGen, srcState)
@@ -547,9 +547,10 @@ func recordSourcePushResult(
 	srcState.LastDBSCWarned = dbsc.warned
 	srcState.LastDBSCSkipped = dbsc.skipped
 	srcState.LastDBSCSample = dbsc.sample
-	// A dry run (nil results, no error) sent nothing, so it keeps the last
-	// real push's secrets summary for doctor.
-	if err != nil || results != nil {
+	// Only a cycle that published an envelope replaces the secrets summary.
+	// A dry run (nil results) or a cycle that failed before publishing keeps
+	// the last real push's summary for doctor.
+	if err == nil && results != nil {
 		srcState.LastSecretsSkipped = secrets.skipped
 		srcState.LastSecretsCLIs = secrets.clis
 	}

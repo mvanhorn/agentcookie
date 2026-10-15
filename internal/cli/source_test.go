@@ -267,6 +267,35 @@ func TestSourcePushDryRunKeepsSecretsSummary(t *testing.T) {
 	}
 }
 
+// A cycle that fails before publishing an envelope must keep the secrets
+// summary from the last push that did, so doctor does not report zero.
+func TestSourcePushFailedCycleKeepsSecretsSummary(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "session", Value: "value", Path: "/"},
+	})
+	withSourceSkipSecrets(t, false)
+	t.Setenv(envSkipSecrets, "")
+	stubSecretsPayload(t, &secretsbus.Payload{CLIs: map[string]map[string]string{"demo-cli": {"DEMO_TOKEN": "t0k"}}})
+
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	if fx.srcState.LastSecretsCLIs != 1 {
+		t.Fatalf("LastSecretsCLIs after a shipping push = %d, want 1", fx.srcState.LastSecretsCLIs)
+	}
+	writeCLIFile(t, filepath.Join(fx.configDir, "blocklist.yaml"), `
+version: 1
+domains: []
+unexpected: true
+`)
+	if _, err := fx.push(); err == nil {
+		t.Fatal("malformed blocklist should fail closed")
+	}
+	if fx.srcState.LastSecretsSkipped || fx.srcState.LastSecretsCLIs != 1 {
+		t.Fatalf("failed cycle replaced the secrets summary: skipped=%v clis=%d, want skipped=false clis=1", fx.srcState.LastSecretsSkipped, fx.srcState.LastSecretsCLIs)
+	}
+}
+
 func TestSourcePushMalformedBlocklistSkipsPushAndRecordsFailure(t *testing.T) {
 	fx := newSourcePushFixture(t, []chrome.Cookie{
 		{HostKey: ".blocked.com", Name: "blocked", Value: "b", Path: "/"},
