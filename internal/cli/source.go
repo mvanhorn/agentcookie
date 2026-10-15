@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -95,6 +97,87 @@ const (
 	sinkBackoffBase = 30 * time.Second
 	sinkBackoffMax  = 30 * time.Minute
 )
+
+// sinkHeartbeat is how long an unchanged payload goes without being re-sent
+// to a sink that already received it. doctor only warns after 24h without a
+// push, so 10 minutes keeps status fresh while an idle source stops sending
+// the same envelope every 30s (#149).
+const sinkHeartbeat = 10 * time.Minute
+
+// sinkDelivery is the last payload a sink accepted: the envelope hash (see
+// envelopeHash) and when it was sent.
+type sinkDelivery struct {
+	hash [sha256.Size]byte
+	at   time.Time
+}
+
+// sinkDeliveryLog remembers, per sink (peer + URL), the last successful
+// delivery of this process. It lives in memory only: a restarted source
+// sends everything once, which is what --once and a fresh daemon want.
+type sinkDeliveryLog struct {
+	mu sync.Mutex
+	m  map[string]sinkDelivery
+}
+
+func newSinkDeliveryLog() *sinkDeliveryLog {
+	return &sinkDeliveryLog{m: map[string]sinkDelivery{}}
+}
+
+// sinkDeliveries is the source process's delivery log. Tests replace it so
+// one test's deliveries do not suppress another's.
+var sinkDeliveries = newSinkDeliveryLog()
+
+func sinkDeliveryKey(peer, rawURL string) string {
+	return peer + "\x00" + rawURL
+}
+
+// unchanged reports whether the sink already received hash less than
+// sinkHeartbeat before now, and if so when.
+func (l *sinkDeliveryLog) unchanged(peer, rawURL string, hash [sha256.Size]byte, now time.Time) (time.Time, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	d, ok := l.m[sinkDeliveryKey(peer, rawURL)]
+	if !ok || d.hash != hash || now.Sub(d.at) >= sinkHeartbeat {
+		return time.Time{}, false
+	}
+	return d.at, true
+}
+
+// record notes a successful delivery. Only a sink that accepted the POST is
+// recorded, so a failed push is always re-sent.
+func (l *sinkDeliveryLog) record(peer, rawURL string, hash [sha256.Size]byte, now time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.m[sinkDeliveryKey(peer, rawURL)] = sinkDelivery{hash: hash, at: now}
+}
+
+// envelopeHash identifies an envelope's content for the unchanged check.
+// Sequence is zeroed: every real POST needs a fresh one for the sink's
+// replay tracker, so it must not make identical content look new.
+//
+// Cookie LastAccessUTC is zeroed too, in the hash only (the sent payload
+// keeps it). Chrome bumps last_access_utc whenever a request sends a cookie,
+// throttled to once a minute per cookie (CookieMonster's 60s access-update
+// threshold), and its SQLite store commits pending writes every 30s. With
+// any tab open, some access time changes between most 30s baseline ticks,
+// which would defeat the check. The sink only uses access times to order
+// live CDP injection, and the heartbeat carries fresh ones every 10 minutes.
+func envelopeHash(env protocol.SyncEnvelope) ([sha256.Size]byte, error) {
+	env.Sequence = 0
+	cookies := make([]chrome.Cookie, len(env.Cookies))
+	for i, c := range env.Cookies {
+		c.LastAccessUTC = 0
+		cookies[i] = c
+	}
+	env.Cookies = cookies
+	h := sha256.New()
+	if err := json.NewEncoder(h).Encode(env); err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	var sum [sha256.Size]byte
+	copy(sum[:], h.Sum(nil))
+	return sum, nil
+}
 
 // errSinkAsleep marks a sink whose Tailscale peer is offline. The source
 // skips it without dialing and records it as asleep, not as a failure.
@@ -220,17 +303,7 @@ func runSource(cmd *cobra.Command, args []string) error {
 	}
 
 	if sourceOnce {
-		// --once mode: bound the whole push by SyncClient's timeout
-		// plus a small slack for envelope packing. Pre-v0.12 this was
-		// hardcoded at 60s, which was tight even for v0.10-shape
-		// payloads. The inner HTTP request also bounds itself; this
-		// outer cancel is the belt to the request's suspenders.
-		//
-		// Fan-out POSTs run concurrently, each under its own per-sink
-		// ClientTimeout, so one per-sink timeout plus slack covers every
-		// sink: a dead sink cannot starve the healthy ones.
-		perSink := httpserver.Defaults(httpserver.SyncClient).ClientTimeout
-		ctx, cancel := context.WithTimeout(cmd.Context(), perSink+30*time.Second)
+		ctx, cancel := context.WithTimeout(cmd.Context(), sourcePushBudget())
 		defer cancel()
 		_, err := push(ctx)
 		return err
@@ -257,6 +330,7 @@ func runSource(cmd *cobra.Command, args []string) error {
 		LocalStorageDir: sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile),
 		IndexedDBDir:    sourceBrowser.IndexedDBDir(cfg.Browser.Profile),
 		Push:            push,
+		PushTimeout:     sourcePushBudget(),
 		OnEvent: func(ev watcher.Event) {
 			if sourceVerbose {
 				fmt.Fprintf(os.Stderr, "agentcookie source --watch: %s\n", ev.String())
@@ -308,6 +382,20 @@ func runSource(cmd *cobra.Command, args []string) error {
 	}()
 
 	return w.Run(cmd.Context())
+}
+
+// sourcePushBudget bounds one whole source push cycle, in --once and in
+// --watch alike: SyncClient's per-sink timeout plus a small slack for
+// envelope packing. Pre-v0.12 --once was hardcoded at 60s, which was tight
+// even for v0.10-shape payloads, and --watch kept that 60s until #149. The
+// inner HTTP request also bounds itself; this outer cancel is the belt to the
+// request's suspenders.
+//
+// Fan-out POSTs run concurrently, each under its own per-sink ClientTimeout,
+// so one per-sink timeout plus slack covers every sink: a dead sink cannot
+// starve the healthy ones.
+func sourcePushBudget() time.Duration {
+	return httpserver.Defaults(httpserver.SyncClient).ClientTimeout + 30*time.Second
 }
 
 // newSourceState builds the in-memory SourceState for a source run. Per-sink
@@ -514,6 +602,8 @@ func recordSourcePushResult(
 		switch {
 		case !r.SkippedUntil.IsZero():
 			// Skipped inside its backoff window: no attempt, nothing to record.
+		case r.Unchanged:
+			// Already holds this payload: no attempt, nothing to record.
 		case r.Asleep:
 			ps.Asleep = true
 			ps.LastAsleepAt = now
@@ -558,8 +648,9 @@ func recordSourcePushResult(
 }
 
 // sinkResult is one sink's outcome from a single fan-out push. A sink that
-// was not dialed has Asleep (Tailscale reports its peer offline) or
-// SkippedUntil (inside its backoff window) set and a nil Err.
+// was not dialed has Asleep (Tailscale reports its peer offline),
+// SkippedUntil (inside its backoff window), or Unchanged (it already holds
+// this payload, inside the heartbeat) set and a nil Err.
 type sinkResult struct {
 	Peer         string
 	URL          string
@@ -567,6 +658,9 @@ type sinkResult struct {
 	Err          error
 	Asleep       bool
 	SkippedUntil time.Time
+	Unchanged    bool
+	// DeliveredAt is the last delivery of this payload, for an Unchanged sink.
+	DeliveredAt time.Time
 }
 
 // sinkURLList renders sink URLs for a log line.
@@ -730,6 +824,9 @@ func pushOnce(
 		if os.Getenv("AGENTCOOKIE_SYNC_INDEXEDDB") == "1" {
 			if it, sk, err := chromedirsync.Pack(sourceBrowser.IndexedDBDir(cfg.Browser.Profile), 5*1024*1024); err == nil {
 				idbTarball = it
+				// Pack builds this list from a map; sort it so an unchanged
+				// profile hashes the same every cycle.
+				slices.Sort(sk)
 				idbSkipped = sk
 			} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
 				fmt.Fprintf(os.Stderr, "agentcookie source: indexedDB pack failed (%v); continuing without it\n", err)
@@ -755,13 +852,19 @@ func pushOnce(
 		return nil, dbsc, fmt.Errorf("marshal envelope: %w", err)
 	}
 	pullPayloadCache.StoreIfCurrent(pullGen, payload)
+	hash, err := envelopeHash(envelope)
+	if err != nil {
+		return nil, dbsc, fmt.Errorf("hash envelope: %w", err)
+	}
 	// Fan out: read and filtering above happened once; only sealing and
 	// transport repeat per sink. Each sink is sealed with its own key and
 	// POSTed concurrently under its own timeout, so a dead sink cannot hold
 	// up the others. A per-sink failure (missing key, seal error,
 	// URL-resolution, or POST) is isolated to that sink and recorded. A sink
-	// inside its backoff window is skipped without an attempt, and a sink
-	// whose peer Tailscale reports offline is skipped as asleep.
+	// inside its backoff window is skipped without an attempt, a sink that
+	// already received this exact payload less than sinkHeartbeat ago is
+	// skipped as unchanged, and a sink whose peer Tailscale reports offline
+	// is skipped as asleep.
 	//
 	// A legacy push peer migrated to teammate mode is never dialed again (it
 	// pulls instead): it is dropped silently, not recorded as a failure, and
@@ -797,6 +900,11 @@ func pushOnce(
 				results[i].SkippedUntil = until
 				continue
 			}
+		}
+		if at, ok := sinkDeliveries.unchanged(sink.Peer, sink.URL, hash, now); ok {
+			results[i].Unchanged = true
+			results[i].DeliveredAt = at
+			continue
 		}
 		if tailnetIPOffline(sink.URL) {
 			results[i].Asleep = true
@@ -838,6 +946,13 @@ func pushOnce(
 		case !r.SkippedUntil.IsZero():
 			rep["backoff_until"] = r.SkippedUntil.UTC().Format(time.RFC3339)
 			humanLines = append(humanLines, fmt.Sprintf("agentcookie source: [%s] skipped: backing off after failures until %s", r.URL, r.SkippedUntil.Format(time.RFC3339)))
+		case r.Unchanged:
+			rep["unchanged"] = true
+			// Every baseline tick of an idle source lands here, so only
+			// --verbose logs it.
+			if verbose {
+				humanLines = append(humanLines, fmt.Sprintf("agentcookie source: [%s] skipped: unchanged since %s, heartbeat due by %s", r.URL, r.DeliveredAt.Format(time.RFC3339), r.DeliveredAt.Add(sinkHeartbeat).Format(time.RFC3339)))
+			}
 		case r.Asleep:
 			rep["asleep"] = true
 			humanLines = append(humanLines, fmt.Sprintf("agentcookie source: [%s] skipped: Tailscale reports the peer offline (asleep)", r.URL))
@@ -846,6 +961,7 @@ func pushOnce(
 			humanLines = append(humanLines, fmt.Sprintf("agentcookie source: [%s] push failed: %v", r.URL, r.Err))
 		default:
 			delivered++
+			sinkDeliveries.record(r.Peer, r.URL, hash, now)
 			rep["posted"] = true
 			humanLines = append(humanLines, fmt.Sprintf("agentcookie source: [%s] posted %d cookies, sink replied: %s%s", r.URL, r.Count, replies[i], dbscNote(dbsc)))
 		}
@@ -854,7 +970,11 @@ func pushOnce(
 
 	result["sinks"] = sinkReports
 	result["posted"] = delivered > 0 && len(aggregateFailedLabels(results)) == 0
-	_ = emit(result, strings.Join(humanLines, "\n")+"\n")
+	human := ""
+	if len(humanLines) > 0 {
+		human = strings.Join(humanLines, "\n") + "\n"
+	}
+	_ = emit(result, human)
 	return results, dbsc, nil
 }
 

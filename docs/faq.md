@@ -32,6 +32,8 @@ domains: []
 
 The 1.0 release does NOT change this default in code. A later release may flip the default, which would be a breaking change.
 
+How often does the source send? `source --watch` checks every 30 seconds and on every cookie change, but it sends to a sink only when the payload changed since that sink last accepted it, or 10 minutes have passed. A sink whose last push failed gets the next one regardless. Run with `--verbose` to see the skipped sends.
+
 ## Will syncing cookies log me out of sites on the source machine?
 
 No. The source reads cookies with `immutable=1` (Chrome's recommended read-only flag), and `agentcookie source` never writes to the source's Cookies SQLite. The only writes happen on the sink.
