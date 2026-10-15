@@ -45,9 +45,12 @@ type liveCDPReinjector struct {
 	mu       sync.Mutex
 	cookies  []chrome.Cookie
 	applying int
-	// heldSource and heldSeq identify the envelope cookies came from.
+	// heldSource and heldSeq identify the envelope cookies came from. held
+	// is set once any apply was kept, including one with no cookies, so an
+	// older apply cannot replace a newer empty set.
 	heldSource string
 	heldSeq    int64
+	held       bool
 
 	// injectMu covers a tick's snapshot and inject, so a /sync that starts
 	// mid-tick waits for it and its newer cookies are injected last.
@@ -84,12 +87,13 @@ func (r *liveCDPReinjector) endApply(res envelopeApplyResult) {
 	if res.Status != http.StatusOK || !r.cfg.LiveCDP.Enabled {
 		return
 	}
-	if r.cookies != nil && res.sourceHostname == r.heldSource && res.sequence < r.heldSeq {
+	if r.held && res.sourceHostname == r.heldSource && res.sequence < r.heldSeq {
 		return
 	}
 	r.cookies = res.liveCDPCookies
 	r.heldSource = res.sourceHostname
 	r.heldSeq = res.sequence
+	r.held = true
 }
 
 // tick re-injects the held cookies once. It reports whether it called the

@@ -1385,6 +1385,26 @@ func TestLiveCDPReinjectKeepsNewerSetWhenOlderApplyFinishesLast(t *testing.T) {
 	}
 }
 
+// A newer /sync whose cookie set is empty must also win over an older apply
+// that finishes after it.
+func TestLiveCDPReinjectKeepsNewerEmptySetWhenOlderApplyFinishesLast(t *testing.T) {
+	fx, rec, _ := newLiveCDPSinkFixture(t)
+	fx.reinject.beginApply()
+	fx.reinject.beginApply()
+	resA := fx.applySealed(fx.sealedEnvelope(t, 1, []chrome.Cookie{{HostKey: ".example.com", Name: "s", Value: "A", Path: "/"}}))
+	resB := fx.applySealed(fx.sealedEnvelope(t, 2, nil))
+	if resA.Status != http.StatusOK || resB.Status != http.StatusOK {
+		t.Fatalf("apply status A=%d B=%d, want 200", resA.Status, resB.Status)
+	}
+	before := rec.callCount()
+	fx.reinject.endApply(resB)
+	fx.reinject.endApply(resA)
+
+	if fx.reinject.tick(context.Background()) {
+		t.Fatalf("tick re-injected the older A set over the newer empty set (%d calls)", rec.callCount()-before)
+	}
+}
+
 func TestLiveCDPReinjectTickFailureRecordedInState(t *testing.T) {
 	fx, rec, _ := newLiveCDPSinkFixture(t)
 	if resp := fx.postSync(1, []chrome.Cookie{{HostKey: ".example.com", Name: "s", Value: "v", Path: "/"}}); resp.Code != http.StatusOK {
