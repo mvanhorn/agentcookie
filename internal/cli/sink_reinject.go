@@ -13,6 +13,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/livecdp"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
+	"github.com/mvanhorn/agentcookie/internal/state"
 )
 
 // liveCDPInject injects cookies into the running Chrome at a CDP endpoint.
@@ -35,9 +36,18 @@ type liveCDPReinjector struct {
 	cfg *config.SinkConfig
 	log io.Writer
 
+	// stateWriter, sinkState, and stateMu are the /sync path's status
+	// state, so each tick's outcome reaches `agentcookie status`.
+	stateWriter *state.Writer
+	sinkState   *state.SinkState
+	stateMu     *sync.Mutex
+
 	mu       sync.Mutex
 	cookies  []chrome.Cookie
 	applying int
+	// heldSource and heldSeq identify the envelope cookies came from.
+	heldSource string
+	heldSeq    int64
 
 	// injectMu covers a tick's snapshot and inject, so a /sync that starts
 	// mid-tick waits for it and its newer cookies are injected last.
@@ -49,8 +59,8 @@ type liveCDPReinjector struct {
 	failing bool
 }
 
-func newLiveCDPReinjector(cfg *config.SinkConfig) *liveCDPReinjector {
-	return &liveCDPReinjector{cfg: cfg, log: os.Stderr}
+func newLiveCDPReinjector(cfg *config.SinkConfig, stateWriter *state.Writer, sinkState *state.SinkState, stateMu *sync.Mutex) *liveCDPReinjector {
+	return &liveCDPReinjector{cfg: cfg, log: os.Stderr, stateWriter: stateWriter, sinkState: sinkState, stateMu: stateMu}
 }
 
 // beginApply marks a /sync apply in progress; ticks skip until endApply.
@@ -64,14 +74,22 @@ func (r *liveCDPReinjector) beginApply() {
 }
 
 // endApply ends a /sync apply and, when it succeeded with live CDP on,
-// holds its cookie set for the next ticks.
+// holds its cookie set for the next ticks. Concurrent applies can finish
+// out of order, so an older envelope from the held source never replaces
+// a newer one; a different source replaces it (last writer wins).
 func (r *liveCDPReinjector) endApply(res envelopeApplyResult) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.applying--
-	if res.Status == http.StatusOK && r.cfg.LiveCDP.Enabled {
-		r.cookies = res.liveCDPCookies
+	if res.Status != http.StatusOK || !r.cfg.LiveCDP.Enabled {
+		return
 	}
+	if r.cookies != nil && res.sourceHostname == r.heldSource && res.sequence < r.heldSeq {
+		return
+	}
+	r.cookies = res.liveCDPCookies
+	r.heldSource = res.sourceHostname
+	r.heldSeq = res.sequence
 }
 
 // tick re-injects the held cookies once. It reports whether it called the
@@ -101,12 +119,27 @@ func (r *liveCDPReinjector) tick(ctx context.Context) bool {
 	injectCtx, cancel := context.WithTimeout(ctx, liveCDPReinjectInterval)
 	defer cancel()
 	contexts, err := liveCDPInject(injectCtx, liveCDPEndpointFor(r.cfg), cookies)
+	r.recordState(len(cookies), contexts, err)
 	if err != nil {
 		r.reportFailure(err)
 	} else {
 		r.reportRecovery(len(cookies), contexts)
 	}
 	return true
+}
+
+// recordState records a re-inject attempt's outcome in the sink status
+// state, as the /sync path does.
+func (r *liveCDPReinjector) recordState(cookies, contexts int, err error) {
+	if r.sinkState == nil {
+		return
+	}
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
+	recordLiveCDPInject(r.sinkState, liveCDPEndpointFor(r.cfg), cookies, contexts, err)
+	if r.stateWriter != nil {
+		_ = r.stateWriter.Save(r.sinkState)
+	}
 }
 
 // reportFailure logs a failed re-inject once, until a recovery.

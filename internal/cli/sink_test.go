@@ -507,7 +507,7 @@ func newSinkHandlerFixture(t *testing.T, dryRun bool) *sinkHandlerFixture {
 	stateWriter := state.NewWriter(filepath.Join(t.TempDir(), "sink-state.json"))
 	var stateMu sync.Mutex
 	key := []byte("0123456789abcdef")
-	reinject := newLiveCDPReinjector(cfg)
+	reinject := newLiveCDPReinjector(cfg, stateWriter, sinkState, &stateMu)
 	mux := newSinkMux(cfg, secret, key, seqTracker, stateWriter, sinkState, &stateMu, reinject)
 
 	return &sinkHandlerFixture{
@@ -1342,5 +1342,100 @@ func TestLiveCDPReinjectNotStartedInDryRun(t *testing.T) {
 	sinkDryRun = false
 	if !startLiveCDPReinject(ctx, fx.cfg, fx.reinject) {
 		t.Fatal("re-inject ticker not started with live_cdp on and --dry-run off")
+	}
+}
+
+// sealedEnvelope seals one envelope from the fixture's test source.
+func (f *sinkHandlerFixture) sealedEnvelope(t *testing.T, seq int64, cookies []chrome.Cookie) []byte {
+	t.Helper()
+	payload, err := json.Marshal(protocol.SyncEnvelope{
+		ProtocolVersion: protocol.Version,
+		SourceHostname:  "source-test",
+		Sequence:        seq,
+		Cookies:         cookies,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := transport.SealWithSecret(payload, f.secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sealed
+}
+
+func TestLiveCDPReinjectKeepsNewerSetWhenOlderApplyFinishesLast(t *testing.T) {
+	fx, rec, _ := newLiveCDPSinkFixture(t)
+	// A is accepted before B, but B's request finishes first.
+	fx.reinject.beginApply()
+	fx.reinject.beginApply()
+	resA := fx.applySealed(fx.sealedEnvelope(t, 1, []chrome.Cookie{{HostKey: ".example.com", Name: "s", Value: "A", Path: "/"}}))
+	resB := fx.applySealed(fx.sealedEnvelope(t, 2, []chrome.Cookie{{HostKey: ".example.com", Name: "s", Value: "B", Path: "/"}}))
+	if resA.Status != http.StatusOK || resB.Status != http.StatusOK {
+		t.Fatalf("apply status A=%d B=%d, want 200", resA.Status, resB.Status)
+	}
+	fx.reinject.endApply(resB)
+	fx.reinject.endApply(resA)
+
+	if !fx.reinject.tick(context.Background()) {
+		t.Fatal("tick should re-inject")
+	}
+	if got := rec.callAt(rec.callCount() - 1)[0].Value; got != "B" {
+		t.Fatalf("tick re-injected %q, want the newer B set", got)
+	}
+}
+
+func TestLiveCDPReinjectTickFailureRecordedInState(t *testing.T) {
+	fx, rec, _ := newLiveCDPSinkFixture(t)
+	if resp := fx.postSync(1, []chrome.Cookie{{HostKey: ".example.com", Name: "s", Value: "v", Path: "/"}}); resp.Code != http.StatusOK {
+		t.Fatalf("/sync status = %d", resp.Code)
+	}
+	rec.setErr(errors.New("cdp endpoint gone"))
+	if !fx.reinject.tick(context.Background()) {
+		t.Fatal("tick should attempt a re-inject")
+	}
+	fx.stateMu.Lock()
+	defer fx.stateMu.Unlock()
+	cdp := fx.sinkState.LiveCDP
+	if cdp == nil || !strings.Contains(cdp.LastError, "cdp endpoint gone") {
+		t.Fatalf("LiveCDP state after failing tick = %+v, want LastError set", cdp)
+	}
+	if cdp.TotalFailures != 1 {
+		t.Fatalf("TotalFailures = %d, want 1", cdp.TotalFailures)
+	}
+}
+
+func TestLiveCDPReinjectTickSuccessClearsStateError(t *testing.T) {
+	fx, rec, _ := newLiveCDPSinkFixture(t)
+	rec.setErr(errors.New("cdp endpoint gone"))
+	if resp := fx.postSync(1, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "s", Value: "v", Path: "/"},
+		{HostKey: ".example.com", Name: "t", Value: "v", Path: "/"},
+	}); resp.Code != http.StatusOK {
+		t.Fatalf("/sync status = %d", resp.Code)
+	}
+	fx.stateMu.Lock()
+	before := *fx.sinkState.LiveCDP
+	fx.stateMu.Unlock()
+	if before.LastError == "" {
+		t.Fatal("failed /sync inject should set LastError")
+	}
+
+	rec.setErr(nil)
+	time.Sleep(time.Millisecond)
+	if !fx.reinject.tick(context.Background()) {
+		t.Fatal("tick should re-inject")
+	}
+	fx.stateMu.Lock()
+	defer fx.stateMu.Unlock()
+	cdp := fx.sinkState.LiveCDP
+	if cdp.LastError != "" {
+		t.Fatalf("LastError after succeeding tick = %q, want cleared", cdp.LastError)
+	}
+	if !cdp.LastInjectAt.After(before.LastInjectAt) {
+		t.Fatalf("LastInjectAt = %v, want after %v", cdp.LastInjectAt, before.LastInjectAt)
+	}
+	if cdp.LastCookies != 2 || cdp.LastContexts != 1 || cdp.TotalInjects != before.TotalInjects+1 {
+		t.Fatalf("counts after tick = %+v, want 2 cookies, 1 context, one more inject", cdp)
 	}
 }
