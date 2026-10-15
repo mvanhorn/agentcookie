@@ -14,6 +14,10 @@
 - The switch stops future sends only. Secrets already delivered stay on sinks and teammates until removed there.
 - Requested by @jnyross in #151.
 
+### Linux sinks honor `live_cdp.enabled: false`
+
+- On Linux, the sink turned live CDP injection on whenever `cdp.enabled` was off, even when `sink.yaml` set `live_cdp: enabled: false`. An explicit `live_cdp.enabled` is now kept as written. Live CDP still defaults to on when the key is absent and `cdp.enabled` is off. `skip_chrome_sqlite` stays forced on for Linux sinks, and the code comment that said YAML could turn it off now says it cannot. Reported by @Dannyxlm in #149.
+
 ### Live browser injection keeps your logins
 
 - Chrome holds at most about 3300 cookies and evicts the least recently used past that, counting an injected cookie as used when it is set. A large batch (4868 cookies in the live test) silently evicted the first ~1800 it set, which included GitHub's session, so the agent's real browser stayed logged out while the push reported success. Live CDP injection now pushes only the 3000 most recently used cookies, oldest first, so the ones you use are kept. The sink log says how many were pushed and how many stayed sidecar-only.
