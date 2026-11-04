@@ -31,7 +31,7 @@ func TestStartPassesExitCodeAndArgs(t *testing.T) {
 func TestStartForwardsSIGTERM(t *testing.T) {
 	ready := filepath.Join(t.TempDir(), "ready")
 	go func() {
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			if _, err := os.Stat(ready); err == nil {
 				break
 			}
