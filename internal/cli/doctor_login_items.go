@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"html"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/mvanhorn/agentcookie/internal/launchd"
@@ -64,8 +63,7 @@ func checkLoginItems(e loginItemsEnv) Check {
 	const name = "Login Items"
 	app := macapp.Path(e.home)
 	appErr := e.validateApp(app)
-	_, markerErr := os.Lstat(launchd.RevertMarker(e.home))
-	reverted := markerErr == nil
+	reverted := launchd.Reverted(e.home)
 
 	var ok, notes, warns []string
 	remedy := ""
@@ -78,7 +76,7 @@ func checkLoginItems(e loginItemsEnv) Check {
 	seen := 0
 	for _, role := range managedRoles {
 		label := launchd.Spec{Role: role}.Label()
-		data, err := os.ReadFile(filepath.Join(e.home, "Library", "LaunchAgents", label+".plist"))
+		data, err := os.ReadFile(launchd.Spec{Role: role}.PathIn(e.home))
 		if err != nil {
 			continue
 		}

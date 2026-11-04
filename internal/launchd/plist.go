@@ -84,7 +84,12 @@ func (s Spec) Path() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, "Library", "LaunchAgents", s.Label()+".plist"), nil
+	return s.PathIn(home), nil
+}
+
+// PathIn returns the plist's path under home's ~/Library/LaunchAgents/.
+func (s Spec) PathIn(home string) string {
+	return filepath.Join(home, "Library", "LaunchAgents", s.Label()+".plist")
 }
 
 // Install writes the plist to disk and bootstraps it via launchctl. Idempotent:
@@ -156,10 +161,8 @@ type plistData struct {
 	StandardError string
 }
 
-// BundleID is the app the launcher lives in.
 func (plistData) BundleID() string { return macapp.BundleID }
 
-// xmlEscape escapes text for a plist <string>. Paths can hold & or <.
 var xmlEscape = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace
 
 var plistTmpl = template.Must(template.New("plist").Funcs(template.FuncMap{"x": xmlEscape}).Parse(`<?xml version="1.0" encoding="UTF-8"?>

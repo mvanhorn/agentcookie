@@ -33,8 +33,6 @@ import (
 	"unsafe"
 )
 
-// forwarded are the signals passed on to agentcookie. launchd stops a job
-// with SIGTERM to its program, which is the launcher.
 var forwarded = []os.Signal{syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGUSR1, syscall.SIGUSR2}
 
 // start spawns path as a child that disclaims responsibility, forwards
@@ -80,7 +78,6 @@ func start(path string, argv, env []string) (int, error) {
 	}
 }
 
-// cStrings returns a NULL-terminated C string array.
 func cStrings(ss []string) []*C.char {
 	out := make([]*C.char, len(ss)+1)
 	for i, s := range ss {
@@ -96,7 +93,3 @@ func freeCStrings(cs []*C.char) {
 		}
 	}
 }
-
-// syscallKillSelf sends this process SIGTERM, as launchd does on bootout.
-// Used by tests.
-func syscallKillSelf() error { return syscall.Kill(os.Getpid(), syscall.SIGTERM) }

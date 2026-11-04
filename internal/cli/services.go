@@ -156,7 +156,7 @@ func (r *serviceRefresher) run() error {
 	var failed []string
 	for _, role := range managedRoles {
 		label := launchd.Spec{Role: role}.Label()
-		path := filepath.Join(r.home, "Library", "LaunchAgents", label+".plist")
+		path := launchd.Spec{Role: role}.PathIn(r.home)
 		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -225,13 +225,12 @@ func (r *serviceRefresher) refreshOne(path, label string, role launchd.Role) (st
 			return "unchanged", nil
 		case role == launchd.RoleSink:
 			return "unchanged (the sink runs agentcookie directly)", nil
-		case r.reverted():
+		case launchd.Reverted(r.home):
 			return "unchanged (reverted; `agentcookie services refresh --wrap` wraps it)", nil
 		}
 		return "unchanged (" + r.bareReason(target) + ")", nil
 	}
 	if cur == "" && want == "" {
-		// Only a stray bundle ID to drop; still worth a rewrite.
 		status = "unchanged program; removed a stale AssociatedBundleIdentifiers entry"
 	}
 	orig, err := os.ReadFile(path)
@@ -242,11 +241,6 @@ func (r *serviceRefresher) refreshOne(path, label string, role launchd.Role) (st
 		return "", fmt.Errorf("update failed: %w", err)
 	}
 	return r.apply(path, label, fi.Mode().Perm(), orig, status)
-}
-
-func (r *serviceRefresher) reverted() bool {
-	_, err := os.Lstat(launchd.RevertMarker(r.home))
-	return err == nil
 }
 
 // bareReason says why a non-sink job was left running agentcookie directly.
@@ -267,7 +261,7 @@ func (r *serviceRefresher) apply(path, label string, mode os.FileMode, orig []by
 		return status + "; takes effect at next restart (refresh is running under this job)", nil
 	}
 	if err := r.restart(label, path); err != nil {
-		werr := writeFileReplacing(path, orig, mode)
+		werr := writeFileAtomic(path, orig, mode)
 		var berr error
 		if werr == nil && !r.ops.Loaded(label) {
 			berr = r.ops.Bootstrap(path)
@@ -382,16 +376,6 @@ func (o realServiceOps) Bootstrap(path string) error {
 		return fmt.Errorf("launchctl bootstrap: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
-}
-
-// writeFileReplacing writes data to path through a temp file and rename.
-func writeFileReplacing(path string, data []byte, mode os.FileMode) error {
-	tmp, err := stageTemp(path, data, mode)
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp)
-	return os.Rename(tmp, path)
 }
 
 // stageTemp writes data with mode to a new temp file next to path. The

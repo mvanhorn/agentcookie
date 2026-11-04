@@ -17,6 +17,12 @@ func RevertMarker(home string) string {
 	return filepath.Join(home, ".agentcookie", RevertMarkerName)
 }
 
+// Reverted reports whether home's revert marker exists.
+func Reverted(home string) bool {
+	_, err := os.Lstat(RevertMarker(home))
+	return err == nil
+}
+
 // Wrapping configures LauncherFor. Zero values mean the running system.
 type Wrapping struct {
 	Home string
@@ -45,7 +51,7 @@ func LauncherFor(w Wrapping, role Role, target string) string {
 		}
 		w.Home = h
 	}
-	if _, err := os.Lstat(RevertMarker(w.Home)); err == nil {
+	if Reverted(w.Home) {
 		return ""
 	}
 	if w.Wrapper == nil {

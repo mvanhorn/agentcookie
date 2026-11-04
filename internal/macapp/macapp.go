@@ -61,9 +61,6 @@ const (
 // running on macOS, or it is a build without the embedded app.
 var ErrUnavailable = errors.New("this build does not include agentcookie.app")
 
-// Embedded reports whether this build carries the app.
-func Embedded() bool { return len(embeddedZip) > 0 }
-
 // Path is the installed app's location for home.
 func Path(home string) string { return filepath.Join(home, "Applications", AppName) }
 
@@ -181,12 +178,16 @@ func Wrapper(o Options, target string) string {
 	if err != nil || o.GOOS != "darwin" {
 		return ""
 	}
-	_ = Ensure(o)
 	app := Path(o.Home)
+	// A nil Ensure has already validated the installed or new app.
+	ensureErr := Ensure(o)
 	if _, err := os.Stat(Launcher(o.Home)); err != nil {
 		return ""
 	}
-	if o.Validate(app) != nil || o.Verify(target) != nil {
+	if ensureErr != nil && o.Validate(app) != nil {
+		return ""
+	}
+	if o.Verify(target) != nil {
 		return ""
 	}
 	return Launcher(o.Home)

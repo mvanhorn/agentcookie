@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/mvanhorn/agentcookie/internal/launchd"
 	"github.com/mvanhorn/agentcookie/internal/macapp"
@@ -38,8 +37,7 @@ func removeAppIfUnused() {
 // home's ~/Library/LaunchAgents.
 func appInUse(home string) bool {
 	for _, r := range managedRoles {
-		p := filepath.Join(home, "Library", "LaunchAgents", launchd.Spec{Role: r}.Label()+".plist")
-		if _, err := os.Lstat(p); err == nil {
+		if _, err := os.Lstat(launchd.Spec{Role: r}.PathIn(home)); err == nil {
 			return true
 		}
 	}

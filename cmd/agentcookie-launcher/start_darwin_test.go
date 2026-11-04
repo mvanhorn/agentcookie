@@ -5,9 +5,13 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
+
+// syscallKillSelf sends the test process SIGTERM, as launchd does on bootout.
+func syscallKillSelf() error { return syscall.Kill(os.Getpid(), syscall.SIGTERM) }
 
 func TestStartPassesExitCodeAndArgs(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "args")

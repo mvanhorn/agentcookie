@@ -46,7 +46,7 @@ func (f *fakeServiceOps) EditPlist(path string, orig []byte, mode os.FileMode, a
 		m["AssociatedBundleIdentifiers"] = ids
 	}
 	b, _ := json.Marshal(m)
-	return writeFileReplacing(path, b, mode)
+	return writeFileAtomic(path, b, mode)
 }
 
 func (f *fakeServiceOps) Loaded(label string) bool { return f.loaded[label] }

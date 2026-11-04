@@ -58,8 +58,6 @@ func TestLauncherWithNoArgumentsDoesNothing(t *testing.T) {
 	}
 }
 
-// Refusals exit 0 so launchd's KeepAlive (relaunch on non-zero exit) leaves
-// the job stopped instead of restarting it every few seconds.
 func TestLauncherRefusesBadTargetsWithoutCrashLooping(t *testing.T) {
 	dir := t.TempDir()
 	plain := filepath.Join(dir, "plain")

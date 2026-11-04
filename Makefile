@@ -109,9 +109,6 @@ check-macapp-zip:
 	  exit 1; \
 	fi
 
-# mac-app - build agentcookie.app around cmd/agentcookie-launcher, sign it
-# with the Developer ID identity, notarize and staple it, and zip it to
-# $(MACAPP_ZIP) for MACAPP=1 builds to embed.
 mac-app:
 	@set -euo pipefail; \
 	if [[ -z "$(MACAPP_REVISION)" ]]; then echo "make mac-app: cannot read AppRevision from internal/macapp/macapp.go" >&2; exit 1; fi; \
@@ -201,8 +198,6 @@ build-universal: check-macapp-zip
 install: check-macapp-zip
 	go install $(GOTAGS) -ldflags "$(LDFLAGS)" $(PKG)
 	scripts/sign.sh "$(GOBIN)/agentcookie"
-	@# Point existing LaunchAgents at agentcookie.app (or back to the bare
-	@# binary) for this build; see `agentcookie services refresh --help`.
 	"$(GOBIN)/agentcookie" services refresh || echo "make install: services refresh failed; run it by hand" >&2
 
 sign:
