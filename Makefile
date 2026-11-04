@@ -196,10 +196,15 @@ build-universal: check-macapp-zip
 
 # Install to $(GOBIN)/agentcookie and sign in place so steady-state
 # `make install` produces a signed binary with the same designated
-# requirement as the local build.
+# requirement as the local build, then refresh the LaunchAgents so they
+# start through agentcookie.app when this build qualifies. MACAPP=1 (after
+# `make mac-app`) embeds the app; without it, a valid installed app is reused.
 install: check-macapp-zip
 	go install $(GOTAGS) -ldflags "$(LDFLAGS)" $(PKG)
 	scripts/sign.sh "$(GOBIN)/agentcookie"
+	@# Point existing LaunchAgents at agentcookie.app (or back to the bare
+	@# binary) for this build; see `agentcookie services refresh --help`.
+	"$(GOBIN)/agentcookie" services refresh || echo "make install: services refresh failed; run it by hand" >&2
 
 sign:
 	@if [[ ! -f $(BINARY) ]]; then \

@@ -370,6 +370,27 @@ YAML
 assert_eq "$(role_peer_hostnames "$cfg/multi.yaml" | tr '\n' ' ')" "mac-mini studio " "peer hostnames from a multi-sink source.yaml"
 assert_eq "$(role_peer_hostnames "$cfg/missing.yaml")" "" "missing config has no peer"
 
+launcher_path="/Users/x/Applications/agentcookie.app/Contents/MacOS/agentcookie-launcher"
+cat > "$cfg/bare.plist" <<'PLIST'
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/x/bin/agentcookie</string>
+    <string>source</string>
+  </array>
+PLIST
+cat > "$cfg/wrapped.plist" <<PLIST
+  <key>ProgramArguments</key>
+  <array>
+    <string>$launcher_path</string>
+    <string>/Users/x/bin/agentcookie</string>
+    <string>source</string>
+  </array>
+PLIST
+assert_eq "$(plist_program_path "$cfg/bare.plist")" "/Users/x/bin/agentcookie" "plist_program_path on a bare plist"
+assert_eq "$(plist_program_path "$cfg/wrapped.plist")" "/Users/x/bin/agentcookie" "plist_program_path skips the agentcookie.app launcher"
+assert_eq "$(loaded_program "$(printf '\tprogram = /Users/x/bin/agentcookie\n\targuments = {\n\t\t/Users/x/bin/agentcookie\n\t\tsource\n\t}\n')")" "/Users/x/bin/agentcookie" "loaded_program for a bare job"
+assert_eq "$(loaded_program "$(printf '\tprogram = %s\n\targuments = {\n\t\t%s\n\t\t/Users/x/bin/agentcookie\n\t\tsource\n\t}\n' "$launcher_path" "$launcher_path")")" "/Users/x/bin/agentcookie" "loaded_program skips the launcher"
+
 # --- installer re-run flow ---
 # Each scenario runs the real script end to end against a stub tarball,
 # a scratch HOME and bin dir, and stub tailscale, codesign, xattr,
@@ -387,6 +408,11 @@ case "$1" in
     [[ "${STUB_LC_LOADED:-1}" == "1" ]] || exit 113
     printf '%s = {\n\tstate = %s\n' "$2" "${STUB_LC_STATE:-running}"
     [[ -z "${STUB_LC_PROGRAM:-}" ]] || printf '\tprogram = %s\n' "$STUB_LC_PROGRAM"
+    if [[ -n "${STUB_LC_ARGS:-}" ]]; then
+      printf '\targuments = {\n'
+      for a in $STUB_LC_ARGS; do printf '\t\t%s\n' "$a"; done
+      printf '\t}\n'
+    fi
     printf '}\n'
     ;;
   kickstart) exit "${STUB_LC_KICK_EXIT:-0}" ;;
@@ -399,6 +425,8 @@ case "$1 ${2:-}" in
   "doctor ")
     echo "stub doctor output"
     exit "${STUB_DOCTOR_EXIT:-0}" ;;
+  "services refresh")
+    exit "${STUB_REFRESH_EXIT:-0}" ;;
   "wizard install")
     for a in "$@"; do
       if [[ "$a" == "--extra-binary" ]]; then
@@ -427,8 +455,12 @@ new_box() {
   done
 }
 
+# write_plist ROLE PROGRAM [LAUNCHER] : with LAUNCHER, the plist starts
+# PROGRAM through agentcookie.app the way internal/launchd writes it.
 write_plist() {
-  local r="$1" program="$2"
+  local r="$1" program="$2" launcher="${3:-}" first=""
+  [[ -z "$launcher" ]] || first="    <string>$launcher</string>
+"
   cat > "$box/home/Library/LaunchAgents/dev.agentcookie.$r.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
@@ -438,7 +470,7 @@ write_plist() {
 
   <key>ProgramArguments</key>
   <array>
-    <string>$program</string>
+${first}    <string>$program</string>
     <string>$r</string>
   </array>
 </dict>
@@ -518,6 +550,43 @@ if called "launchctl kickstart"; then fail "loaded job mismatch: must not kickst
 new_box loadedmatch source
 STUB_LC_PROGRAM="$box/bin/agentcookie" run_installer --as source
 expect_healthy "loaded job runs the target" source
+
+# The installer refreshes the LaunchAgents before doctor, so doctor reports
+# the Login Items state after the refresh.
+new_box refreshorder source
+run_installer --as source
+expect_healthy "refresh order" source
+if ! awk '/^agentcookie services refresh/ {r=1} /^agentcookie doctor/ {exit !r} END {exit !r}' "$box/calls.log"; then
+  fail "refresh order: services refresh must run before doctor"
+  cat "$box/calls.log" >&2
+fi
+
+# A plist and loaded job that start the target through agentcookie.app
+# are healthy.
+new_box wrapped source
+app_launcher="$box/home/Applications/agentcookie.app/Contents/MacOS/agentcookie-launcher"
+write_plist source "$box/bin/agentcookie" "$app_launcher"
+STUB_LC_PROGRAM="$app_launcher" STUB_LC_ARGS="$app_launcher $box/bin/agentcookie source" run_installer --as source
+expect_healthy "wrapped plist" source
+
+# A wrapped plist for another binary is still a mismatch.
+new_box wrappedother source
+write_plist source "/somewhere/else/agentcookie" "$box/home/Applications/agentcookie.app/Contents/MacOS/agentcookie-launcher"
+run_installer --as source --peer peerhost
+expect_wizard "wrapped plist path mismatch"
+if called "launchctl kickstart"; then fail "wrapped plist path mismatch: must not kickstart"; fi
+
+# A wrapped loaded job for another binary is a mismatch too.
+new_box wrappedstale source
+app_launcher="$box/home/Applications/agentcookie.app/Contents/MacOS/agentcookie-launcher"
+STUB_LC_PROGRAM="$app_launcher" STUB_LC_ARGS="$app_launcher /old/agentcookie source" run_installer --as source --peer peerhost
+expect_wizard "wrapped loaded job runs another binary"
+
+# A failed refresh is reported but does not send a healthy box to the wizard.
+new_box refreshfail source
+STUB_REFRESH_EXIT=1 run_installer --as source
+expect_healthy "refresh fails" source
+if ! said "services refresh reported a problem"; then fail "refresh fails: problem not reported"; fi
 
 # kickstart fails.
 new_box kickfail source
