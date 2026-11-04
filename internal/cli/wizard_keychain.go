@@ -16,6 +16,7 @@ import (
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
+	"github.com/mvanhorn/agentcookie/internal/launchd"
 )
 
 var (
@@ -276,6 +277,9 @@ func runOuterWizard(cmd *cobra.Command) error {
 	exe, _ = filepath.Abs(exe)
 
 	argv := []string{exe, "wizard", "set-keychain-access", "--inner-runner"}
+	if l := launcherFor(launchd.RoleSource, exe); l != "" {
+		argv = append([]string{l}, argv...)
+	}
 	for _, b := range setKeychainExtraBinary {
 		argv = append(argv, "--extra-binary", b)
 	}

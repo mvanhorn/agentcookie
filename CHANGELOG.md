@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### macOS: Login Items shows "agentcookie" instead of the signer's name
+
+- macOS listed the source and cmux-sync LaunchAgents in System Settings > General > Login Items, and in its background-activity notice, under the signing certificate's personal name with a generic icon. A release build now installs a small signed, notarized app at `~/Applications/agentcookie.app` and starts those jobs through its launcher, so they show as "agentcookie" with its icon. The launcher runs only a release-signed agentcookie, and it starts agentcookie as a child that keeps its own Chrome folder and Keychain access.
+- Existing Macs: re-run the installer, or run `agentcookie services refresh` once. New `agentcookie services refresh` edits the existing plists in place, keeps every other key, and restarts the jobs. `--revert` runs them directly again and keeps it that way until `--wrap`.
+- The sink keeps running agentcookie directly, so its Chrome Automation grant stays agentcookie's own. It still shows the signer's name.
+- `agentcookie doctor` adds a Login Items line. It warns, never fails, so an installer re-run never asks a sink to pair again.
+- Don't delete `~/Applications/agentcookie.app` while jobs start through it. `agentcookie wizard uninstall` and `cmux-sync disable` remove it with the last job.
+- macOS may keep the old name until it re-registers the jobs, at the latest after the next login.
+
 ### Source: `--skip-local-storage` stops shipping Local Storage (#150, by @Dannyxlm; reported in #149)
 
 - Every push packs the source profile's Local Storage leveldb into the envelope, base64-encoded, and the watcher pushes as often as every 30 seconds. On one Mac the directory was 64 MB, so each push was about 90 MB and the laptop uploaded about 150 GB in 16.5 hours to a Linux sink that never applies Local Storage. On slower uplinks the push also overran the watcher's 60-second budget (`context deadline exceeded`), so cookies stopped syncing too.

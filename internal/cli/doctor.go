@@ -23,6 +23,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/launchd"
+	"github.com/mvanhorn/agentcookie/internal/macapp"
 	"github.com/mvanhorn/agentcookie/internal/secretsbus"
 	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 	"github.com/mvanhorn/agentcookie/internal/state"
@@ -90,6 +91,10 @@ type doctorDeps struct {
 	// tests don't open a real browser surface; nil falls back to the live
 	// checkCmuxSessionHealth.
 	CmuxSessionHealth func(config.CmuxRef) Check
+
+	// LoginItems reports whether the LaunchAgents show as "agentcookie" in
+	// macOS Login Items. nil skips the check (tests, Linux).
+	LoginItems func() Check
 }
 
 var doctorCmd = &cobra.Command{
@@ -137,6 +142,15 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		},
 		SourceAdapterPassword: chrome.SafeStoragePasswordFor,
 		SourceAdapterDecrypt:  sourceAdapterDecryptSmoke,
+	}
+	if !config.IsLinux() {
+		deps.LoginItems = func() Check {
+			return checkLoginItems(loginItemsEnv{
+				home:         home,
+				validateApp:  macapp.Validate,
+				verifyTarget: macapp.VerifyTarget,
+			})
+		}
 	}
 
 	report := buildReport(deps)
@@ -348,6 +362,13 @@ func buildReport(d doctorDeps) DoctorReport {
 	// while the user runs doctor from ~/go/bin/agentcookie, causing confusion.
 	checks = append(checks, checkDaemonBinaryPath(srcCfg, sinkCfg))
 
+	// 13b. Login Items. Whether the LaunchAgents show as "agentcookie" in
+	// System Settings, and whether a wrapped job can still start. WARN at
+	// worst: the installer treats a FAIL as "run the wizard".
+	if d.LoginItems != nil {
+		checks = append(checks, d.LoginItems())
+	}
+
 	// 14. Cookie delivery (v0.13 universal cookie delivery) -- sink role
 	// only. Tells the operator whether ANY unmodified cookie CLI works on
 	// this box (universal) vs only agentcookie-aware tools (degraded).
@@ -536,7 +557,9 @@ func checkDaemonBinaryPath(srcCfg *config.SourceConfig, sinkCfg *config.SinkConf
 }
 
 // extractLaunchAgentBinaryPath reads the plist file for the given spec and
-// extracts the first element of ProgramArguments (the binary path).
+// returns the agentcookie binary it runs: the first element of
+// ProgramArguments, or the second when the first is the agentcookie.app
+// launcher.
 func extractLaunchAgentBinaryPath(spec launchd.Spec) string {
 	plistPath, err := spec.Path()
 	if err != nil {
@@ -546,18 +569,8 @@ func extractLaunchAgentBinaryPath(spec launchd.Spec) string {
 	if err != nil {
 		return ""
 	}
-	// Simple extraction: find the first <string> after ProgramArguments.
-	// This is a pragmatic approach that avoids importing plist libraries.
-	_, afterKey, found := strings.Cut(string(data), "<key>ProgramArguments</key>")
-	if !found {
-		return ""
-	}
-	_, afterOpen, found := strings.Cut(afterKey, "<string>")
-	if !found {
-		return ""
-	}
-	binPath, _, found := strings.Cut(afterOpen, "</string>")
-	if !found {
+	_, binPath := plistProgram(data)
+	if binPath == "" {
 		return ""
 	}
 	// Resolve symlinks for comparison.

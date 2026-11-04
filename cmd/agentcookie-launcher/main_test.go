@@ -1,0 +1,136 @@
+package main
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// fakeExec records the start the launcher asked for instead of running the
+// test process.
+type fakeExec struct {
+	path string
+	argv []string
+	code int
+	err  error
+}
+
+func (f *fakeExec) exec(path string, argv []string, _ []string) (int, error) {
+	f.path, f.argv = path, argv
+	return f.code, f.err
+}
+
+func executable(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "agentcookie")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func accept(string) error { return nil }
+
+func TestLauncherExecsTargetWithItsArgs(t *testing.T) {
+	target := executable(t)
+	var fx fakeExec
+	var stderr strings.Builder
+	code := run([]string{"/app/agentcookie-launcher", target, "source", "--watch"}, accept, fx.exec, &stderr)
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("run = %d, stderr %q", code, stderr.String())
+	}
+	want, _ := filepath.EvalSymlinks(target)
+	if fx.path != want || strings.Join(fx.argv, "|") != want+"|source|--watch" {
+		t.Fatalf("exec(%q, %q), want the target with argv[1:]", fx.path, fx.argv)
+	}
+}
+
+func TestLauncherWithNoArgumentsDoesNothing(t *testing.T) {
+	var fx fakeExec
+	var stderr strings.Builder
+	if code := run([]string{"/app/agentcookie-launcher"}, accept, fx.exec, &stderr); code != 0 {
+		t.Fatalf("run = %d, want 0 when opened without arguments", code)
+	}
+	if fx.path != "" {
+		t.Fatalf("exec ran %q with no target", fx.path)
+	}
+}
+
+func TestLauncherRefusesBadTargetsWithoutCrashLooping(t *testing.T) {
+	dir := t.TempDir()
+	plain := filepath.Join(dir, "plain")
+	if err := os.WriteFile(plain, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{
+		"relative":       "agentcookie",
+		"missing":        filepath.Join(dir, "nope"),
+		"not executable": plain,
+		"directory":      dir,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var fx fakeExec
+			var stderr strings.Builder
+			if code := run([]string{"/app/agentcookie-launcher", target, "source"}, accept, fx.exec, &stderr); code != 0 {
+				t.Fatalf("run = %d, want 0", code)
+			}
+			if fx.path != "" || !strings.Contains(stderr.String(), "agentcookie-launcher:") {
+				t.Fatalf("exec %q, stderr %q", fx.path, stderr.String())
+			}
+		})
+	}
+}
+
+func TestLauncherRefusesUnsignedTarget(t *testing.T) {
+	target := executable(t)
+	var fx fakeExec
+	var stderr strings.Builder
+	reject := func(string) error { return errors.New("not a release-signed agentcookie") }
+	if code := run([]string{"/app/agentcookie-launcher", target, "source"}, reject, fx.exec, &stderr); code != 0 {
+		t.Fatalf("run = %d, want 0", code)
+	}
+	if fx.path != "" {
+		t.Fatalf("exec ran %q after the signature check failed", fx.path)
+	}
+	if !strings.Contains(stderr.String(), "release-signed") || !strings.Contains(stderr.String(), "services refresh") {
+		t.Fatalf("stderr %q should name the signature problem and the fix", stderr.String())
+	}
+}
+
+func TestLauncherVerifiesResolvedSymlink(t *testing.T) {
+	target := executable(t)
+	link := filepath.Join(t.TempDir(), "agentcookie")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	resolved, _ := filepath.EvalSymlinks(target)
+	var checked string
+	var fx fakeExec
+	verify := func(p string) error { checked = p; return nil }
+	if code := run([]string{"/app/agentcookie-launcher", link, "cmux-sync"}, verify, fx.exec, &strings.Builder{}); code != 0 {
+		t.Fatalf("run = %d", code)
+	}
+	if checked != resolved || fx.path != resolved {
+		t.Fatalf("verified %q and exec'd %q, want both %q", checked, fx.path, resolved)
+	}
+}
+
+func TestLauncherReturnsTargetExitCode(t *testing.T) {
+	fx := fakeExec{code: 3}
+	if code := run([]string{"/app/agentcookie-launcher", executable(t), "source"}, accept, fx.exec, &strings.Builder{}); code != 3 {
+		t.Fatalf("run = %d, want the target's exit code 3 so KeepAlive relaunches it", code)
+	}
+}
+
+func TestLauncherStartFailureDoesNotCrashLoop(t *testing.T) {
+	fx := fakeExec{err: errors.New("spawn failed")}
+	var stderr strings.Builder
+	if code := run([]string{"/app/agentcookie-launcher", executable(t), "source"}, accept, fx.exec, &stderr); code != 0 {
+		t.Fatalf("run = %d, want 0 when the target cannot start", code)
+	}
+	if !strings.Contains(stderr.String(), "spawn failed") {
+		t.Errorf("stderr %q does not name the failure", stderr.String())
+	}
+}

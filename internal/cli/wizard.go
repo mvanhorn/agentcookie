@@ -505,6 +505,7 @@ func runWizardUninstall(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("uninstall LaunchAgent: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "agentcookie wizard: %s LaunchAgent removed\n", role)
+	removeAppIfUnused()
 
 	if wizardForce {
 		// Purge configs.
@@ -1119,7 +1120,18 @@ domains:
 `
 }
 
+// launcherFor picks the agentcookie.app launcher a job starts through, or ""
+// for a bare job. A package var so tests can stub out codesign and the app
+// install.
+var launcherFor = func(role launchd.Role, target string) string {
+	return launchd.LauncherFor(launchd.Wrapping{}, role, target)
+}
+
+// installLaunchAgent is the one path that writes a new agentcookie
+// LaunchAgent. It applies the wrap decision, so source and cmux-sync jobs
+// show in Login Items as "agentcookie" when agentcookie.app is usable.
 func installLaunchAgent(spec launchd.Spec) error {
+	spec.Launcher = launcherFor(spec.Role, spec.BinaryPath)
 	_, err := launchd.Install(spec)
 	if err != nil {
 		// Fall back to a kickstart in case bootstrap raced something.
@@ -1129,6 +1141,7 @@ func installLaunchAgent(spec launchd.Spec) error {
 		}
 		return err
 	}
+	refreshServices()
 	return nil
 }
 

@@ -123,6 +123,8 @@ agentcookie source --watch
 
 This is the long-running mode: fsnotify watches Chrome's Cookies SQLite file for write events, debounces 500ms, and pushes to the sink. The first change pushes right away; after that, pushes are rate-capped at one every 30 seconds even under continuous Chrome activity. Keep it running the same way you kept the sink running in Step 4 (a LaunchAgent plist, or interactively while testing).
 
+When the wizard installs the LaunchAgent, a release build starts it through `~/Applications/agentcookie.app`, so System Settings > General > Login Items lists it as "agentcookie" rather than under the signing certificate's name. See "macOS Login Items" in the [README](../README.md#macos-login-items) for `agentcookie services refresh` and `--revert`.
+
 `agentcookie source --once` is still there as a one-shot alternative: a single read+push cycle, useful for cron, CI, or a manual sync check.
 
 ## Step 7: Device-bound sessions (DBSC)

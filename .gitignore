@@ -38,3 +38,6 @@ hack/
 .claude/
 
 .claude/worktrees/
+
+# agentcookie.app zip written by `make mac-app`
+/internal/macapp/embedded/

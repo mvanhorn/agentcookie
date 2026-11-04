@@ -327,8 +327,17 @@ role_peer_hostnames() {
 launchagent_label() { printf 'dev.agentcookie.%s\n' "$1"; }
 launchagent_plist() { printf '%s/Library/LaunchAgents/%s.plist\n' "$HOME" "$(launchagent_label "$1")"; }
 
+# is_app_launcher PATH
+# True when PATH is the launcher inside agentcookie.app (internal/macapp),
+# which LaunchAgents start through so Login Items shows "agentcookie". The
+# launcher execs the agentcookie binary that follows it in the arguments.
+is_app_launcher() {
+  [[ "$1" == */agentcookie.app/Contents/MacOS/agentcookie-launcher ]]
+}
+
 # plist_program_path PLIST
-# Print ProgramArguments[0] from a plist written by internal/launchd.
+# Print the agentcookie binary a plist written by internal/launchd runs:
+# ProgramArguments[0], or [1] when [0] is the agentcookie.app launcher.
 # A text scan rather than plutil, so the same code runs on Linux CI.
 plist_program_path() {
   local plist="$1"
@@ -338,20 +347,43 @@ plist_program_path() {
     inargs && /<string>/ {
       sub(/.*<string>/, "")
       sub(/<\/string>.*/, "")
+      # Undo the &, <, > escaping internal/launchd applies (&amp; last).
+      gsub(/&lt;/, "<"); gsub(/&gt;/, ">"); gsub(/&amp;/, "\\&")
+      if (n++ == 0 && $0 ~ /\/agentcookie\.app\/Contents\/MacOS\/agentcookie-launcher$/) next
       print
       exit
     }
   ' "$plist"
 }
 
+# loaded_program SERVICE_PRINT
+# Print the binary a loaded job runs, from `launchctl print` output: its
+# program, or the argument after it when the program is the launcher.
+loaded_program() {
+  printf '%s\n' "$1" | awk '
+    /^[[:space:]]*program = / { sub(/^[[:space:]]*program = /, ""); prog = $0; next }
+    /^[[:space:]]*arguments = \{/ { inargs = 1; next }
+    inargs && /^[[:space:]]*\}/ { inargs = 0; next }
+    inargs { sub(/^[[:space:]]+/, ""); args[++n] = $0 }
+    END {
+      if (prog ~ /\/agentcookie\.app\/Contents\/MacOS\/agentcookie-launcher$/ && n >= 2) print args[2]
+      else print prog
+    }
+  '
+}
+
 # restart_healthy_install ROLE TARGET
 # The healthy re-run path. Returns 0 only when every step holds:
-#   1. `TARGET doctor` exits 0 (no FAIL; WARN is informational).
-#   2. dev.agentcookie.ROLE is loaded in gui/<uid>.
-#   3. Its plist's ProgramArguments[0] is TARGET, the path just written.
-#      A --bin-dir change shows up here as a mismatch.
-#   4. `launchctl kickstart -k` restarts it on the new binary.
-#   5. It is still running a moment later.
+#   1. dev.agentcookie.ROLE is loaded in gui/<uid>.
+#   2. Its plist runs TARGET, the path just written, directly or through
+#      the agentcookie.app launcher. A --bin-dir change shows up here as a
+#      mismatch.
+#   3. `TARGET services refresh` moves the jobs onto (or off) the
+#      launcher, so Login Items shows "agentcookie". A refresh problem is
+#      reported, never a reason to run the wizard.
+#   4. `TARGET doctor` exits 0 (no FAIL; WARN is informational).
+#   5. `launchctl kickstart -k` restarts it on the new binary.
+#   6. It is still running a moment later.
 # Prints the doctor output (and the failed step on failure). Any
 # non-zero return means the caller runs the wizard instead.
 restart_healthy_install() {
@@ -361,12 +393,7 @@ restart_healthy_install() {
   service="gui/$(id -u)/$label"
   plist="$(launchagent_plist "$role")"
 
-  if ! doctor_out="$("$target" doctor 2>&1)"; then
-    printf '%s\n' "$doctor_out"
-    warn "existing $role config is present but doctor reports a FAIL"
-    return 1
-  fi
-  local loaded loaded_program
+  local loaded loaded_prog
   if ! loaded="$(launchctl print "$service" 2>/dev/null)"; then
     warn "LaunchAgent $service is not loaded"
     return 1
@@ -378,9 +405,18 @@ restart_healthy_install() {
   fi
   # launchd may still hold an older job definition than the plist on disk;
   # kickstart restarts what is loaded, so check that too.
-  loaded_program="$(printf '%s\n' "$loaded" | awk '/^[[:space:]]*program = / { sub(/^[[:space:]]*program = /, ""); print; exit }')"
-  if [[ -n "$loaded_program" && "$loaded_program" != "$target" ]]; then
-    warn "loaded job $service runs $loaded_program, not $target"
+  loaded_prog="$(loaded_program "$loaded")"
+  if [[ -n "$loaded_prog" && "$loaded_prog" != "$target" ]]; then
+    warn "loaded job $service runs $loaded_prog, not $target"
+    return 1
+  fi
+  step "refreshing LaunchAgents so Login Items shows agentcookie"
+  if ! "$target" services refresh; then
+    warn "agentcookie services refresh reported a problem; the daemon keeps its current LaunchAgent"
+  fi
+  if ! doctor_out="$("$target" doctor 2>&1)"; then
+    printf '%s\n' "$doctor_out"
+    warn "existing $role config is present but doctor reports a FAIL"
     return 1
   fi
   step "restarting $label on the new binary"

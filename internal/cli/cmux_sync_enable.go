@@ -63,6 +63,7 @@ var cmuxSyncDisableCmd = &cobra.Command{
 			return fmt.Errorf("remove cmux-sync agent: %w", err)
 		}
 		fmt.Fprintln(os.Stderr, "agentcookie cmux-sync: removed launch agent dev.agentcookie.cmux-sync")
+		removeAppIfUnused()
 		fmt.Fprintln(os.Stderr, "agentcookie cmux-sync: to revert cmux's socket, set automation.socketControlMode back to \"cmuxOnly\" in ~/.config/cmux/cmux.json and restart cmux")
 		return nil
 	},
