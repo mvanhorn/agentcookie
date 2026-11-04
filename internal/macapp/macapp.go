@@ -84,6 +84,9 @@ type Options struct {
 	Validate func(app string) error
 	Verify   func(target string) error
 	Register func(app string) error
+	// Swap exchanges two paths in one step. It defaults to RENAME_SWAP,
+	// which only macOS has; tests on other systems supply their own.
+	Swap func(a, b string) error
 }
 
 func (o Options) withDefaults() (Options, error) {
@@ -108,6 +111,9 @@ func (o Options) withDefaults() (Options, error) {
 	}
 	if o.Register == nil {
 		o.Register = register
+	}
+	if o.Swap == nil {
+		o.Swap = swap
 	}
 	return o, nil
 }
@@ -154,7 +160,7 @@ func Ensure(o Options) error {
 	if _, err := os.Lstat(dst); err == nil {
 		// Swap in one step so the launcher path never goes missing while
 		// launchd may be starting a service. The old copy lands in tmp.
-		if err := swap(staged, dst); err != nil {
+		if err := o.Swap(staged, dst); err != nil {
 			return fmt.Errorf("replace %s: %w", dst, err)
 		}
 	} else if err := os.Rename(staged, dst); err != nil {
@@ -207,7 +213,7 @@ var bundleVersionRE = regexp.MustCompile(`<key>CFBundleVersion</key>\s*<string>\
 func plistRevision(b []byte) (int, error) {
 	m := bundleVersionRE.FindSubmatch(b)
 	if m == nil {
-		return 0, errors.New("Info.plist has no integer CFBundleVersion")
+		return 0, errors.New("no integer CFBundleVersion in Info.plist")
 	}
 	return strconv.Atoi(string(m[1]))
 }

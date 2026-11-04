@@ -70,7 +70,24 @@ func (r *recorder) opts(home string, z []byte) Options {
 			r.registered = append(r.registered, app)
 			return nil
 		},
+		Swap: testSwap,
 	}
+}
+
+// testSwap is the real RENAME_SWAP on macOS and three renames elsewhere, so
+// the replace branches of Ensure run on the Linux CI lane too.
+func testSwap(a, b string) error {
+	if runtime.GOOS == "darwin" {
+		return swap(a, b)
+	}
+	tmp := a + ".swap"
+	if err := os.Rename(a, tmp); err != nil {
+		return err
+	}
+	if err := os.Rename(b, a); err != nil {
+		return err
+	}
+	return os.Rename(tmp, b)
 }
 
 func launcherBody(t *testing.T, home string) string {
