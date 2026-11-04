@@ -16,6 +16,7 @@ import (
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
+	"github.com/mvanhorn/agentcookie/internal/launchd"
 )
 
 var (
@@ -276,6 +277,13 @@ func runOuterWizard(cmd *cobra.Command) error {
 	exe, _ = filepath.Abs(exe)
 
 	argv := []string{exe, "wizard", "set-keychain-access", "--inner-runner"}
+	// The one-shot shows in macOS's background-item notice too, so start it
+	// through agentcookie.app under the same rule as the services. It does
+	// Keychain work only, never the sink's Chrome quit, so it uses the
+	// source's rule. The launcher execs exe, so Keychain sees agentcookie.
+	if l := launcherFor(launchd.RoleSource, exe); l != "" {
+		argv = append([]string{l}, argv...)
+	}
 	for _, b := range setKeychainExtraBinary {
 		argv = append(argv, "--extra-binary", b)
 	}

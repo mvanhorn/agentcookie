@@ -11,7 +11,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"text/template"
+
+	"github.com/mvanhorn/agentcookie/internal/macapp"
 )
 
 // Role identifies which side the plist drives.
@@ -29,6 +32,11 @@ type Spec struct {
 	BinaryPath string
 	LogDir     string
 	ExtraArgs  []string
+	// Launcher, when set, is the agentcookie.app launcher the job starts
+	// through: it goes first in ProgramArguments, ahead of BinaryPath, and
+	// the plist names the app in AssociatedBundleIdentifiers so macOS
+	// lists the job as "agentcookie". Choose it with LauncherFor.
+	Launcher string
 }
 
 // Label returns the launchd Label corresponding to the spec's role. Labels
@@ -55,6 +63,7 @@ func (s Spec) Render() ([]byte, error) {
 
 	data := plistData{
 		Label:         s.Label(),
+		Launcher:      s.Launcher,
 		BinaryPath:    s.BinaryPath,
 		Args:          args,
 		StandardOut:   filepath.Join(s.LogDir, string(s.Role)+".out.log"),
@@ -140,25 +149,38 @@ func IsInstalled(s Spec) bool {
 
 type plistData struct {
 	Label         string
+	Launcher      string
 	BinaryPath    string
 	Args          []string
 	StandardOut   string
 	StandardError string
 }
 
-var plistTmpl = template.Must(template.New("plist").Parse(`<?xml version="1.0" encoding="UTF-8"?>
+// BundleID is the app the launcher lives in.
+func (plistData) BundleID() string { return macapp.BundleID }
+
+// xmlEscape escapes text for a plist <string>. Paths can hold & or <.
+var xmlEscape = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace
+
+var plistTmpl = template.Must(template.New("plist").Funcs(template.FuncMap{"x": xmlEscape}).Parse(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>{{.Label}}</string>
+  <string>{{x .Label}}</string>
 
   <key>ProgramArguments</key>
   <array>
-    <string>{{.BinaryPath}}</string>
-{{range .Args}}    <string>{{.}}</string>
+{{if .Launcher}}    <string>{{x .Launcher}}</string>
+{{end}}    <string>{{x .BinaryPath}}</string>
+{{range .Args}}    <string>{{x .}}</string>
 {{end}}  </array>
-
+{{if .Launcher}}
+  <key>AssociatedBundleIdentifiers</key>
+  <array>
+    <string>{{x .BundleID}}</string>
+  </array>
+{{end}}
   <key>RunAtLoad</key>
   <true/>
 
@@ -177,10 +199,10 @@ var plistTmpl = template.Must(template.New("plist").Parse(`<?xml version="1.0" e
   <string>Background</string>
 
   <key>StandardOutPath</key>
-  <string>{{.StandardOut}}</string>
+  <string>{{x .StandardOut}}</string>
 
   <key>StandardErrorPath</key>
-  <string>{{.StandardError}}</string>
+  <string>{{x .StandardError}}</string>
 </dict>
 </plist>
 `))
