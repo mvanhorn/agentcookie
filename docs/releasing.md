@@ -68,6 +68,16 @@ Run on the Mac that holds the Developer ID cert and the
    tarball it pins amd64 only and warns; arm64 teammates are then refused
    by `teammate-install.sh`.
 
+   `make release` first runs `make mac-app`, which builds the
+   agentcookie.app launcher (see `internal/macapp`), signs it with the
+   same Developer ID identity, notarizes and staples it with the same
+   `agentcookie-notary` profile, and zips it to
+   `internal/macapp/embedded/agentcookie.zip`. The darwin binary is then
+   built with `-tags macapp` and embeds that zip, so a release installs the
+   app that makes its LaunchAgents show as "agentcookie" in Login Items.
+   Bump `AppRevision` in `internal/macapp/macapp.go` whenever the launcher,
+   `Info.plist` or icon changes, so installed copies get replaced.
+
    The equivalent by hand:
 
    ```

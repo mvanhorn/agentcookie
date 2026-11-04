@@ -52,7 +52,18 @@ Every subsequent rebuild matches the same ACL entry without a prompt.
   are built first so their SHA256s can be embedded in the darwin build
   (see docs/releasing.md).
 
-Every path goes through `scripts/sign.sh`, which signs with Hardened
+- `make release` first runs `make mac-app`, which signs the small
+  `agentcookie.app` launcher bundle (`cmd/agentcookie-launcher`) with
+  the same identity, inline rather than through `scripts/sign.sh`: the
+  launcher needs no entitlements, and sign.sh's apple-events check would
+  reject it. It notarizes the app with the same `agentcookie-notary`
+  profile and staples it, since a bundle, unlike the bare binary, can be
+  stapled. The launcher only runs a binary whose signature satisfies
+  Apple's Developer ID chain, Team ID NM8VT393AR and the identifier
+  `agentcookie`, which `scripts/sign.sh` gets from the file name. Do not
+  pass `--identifier` to sign.sh.
+
+Every path except the app bundle goes through `scripts/sign.sh`, which signs with Hardened
 Runtime, a secure timestamp, and `scripts/agentcookie.entitlements`.
 That file grants `com.apple.security.automation.apple-events`. Hardened
 Runtime blocks Apple Events without it, so chromectl's
