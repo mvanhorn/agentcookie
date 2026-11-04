@@ -1141,6 +1141,9 @@ func installLaunchAgent(spec launchd.Spec) error {
 		}
 		return err
 	}
+	// Bring the other agentcookie jobs in line too, so re-running the
+	// wizard or cmux-sync enable fixes jobs it did not rewrite.
+	refreshServices()
 	return nil
 }
 
