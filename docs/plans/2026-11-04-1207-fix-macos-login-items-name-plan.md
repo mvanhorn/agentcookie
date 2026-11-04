@@ -79,10 +79,11 @@ Trust
 
 ### Key Technical Decisions
 
-- KTD1. Services launch through a launcher inside the app. `ProgramArguments` becomes `[<app>/Contents/MacOS/agentcookie-launcher, <agentcookie binary>, <role>, <args...>]`, and the plist carries `AssociatedBundleIdentifiers` = `dev.agentcookie.app`. The launcher resolves symlinks, verifies the target, then replaces itself with the target through `syscall.Exec`, so the running process is the same signed agentcookie as today.
+- KTD1. Services launch through a launcher inside the app. `ProgramArguments` becomes `[<app>/Contents/MacOS/agentcookie-launcher, <agentcookie binary>, <role>, <args...>]`, and the plist carries `AssociatedBundleIdentifiers` = `dev.agentcookie.app`. The launcher resolves symlinks, verifies the target, then spawns the target as a child with `responsibility_spawnattrs_setdisclaim`, forwards launchd's signals and exits with the child's status. (Amended 2026-11-04 after U8: the first version exec'd the target, and the live check showed macOS then held agentcookie.app responsible for privacy checks, so both jobs lost access to Chrome's profile folder and stopped. A probe with a disclaiming launcher kept the access.)
   - (session-settled: user-approved — chosen over a new agentcookie-specific mechanism: port the launcher-app design Agent Tincan already verified on real Macs)
   - Why: Agent Tincan's research found the bundle-ID key alone has a mixed record. Jobs whose first program argument is inside an `.app` get the app's name. Tincan confirmed this by hand on two Macs.
-  - Keychain: securityd identifies the caller by the running image's signature, and exec replaces the image, so the partition list (`teamid:NM8VT393AR`) and the legacy `-T` ACLs match as before. The launcher must exec, never spawn a child.
+  - Keychain: securityd identifies the caller by the running image's signature, and the child is the same signed agentcookie, so the partition list (`teamid:NM8VT393AR`) and the legacy `-T` ACLs match as before. U8 confirmed decryption still works through the disclaiming launcher.
+  - Privacy (TCC): the child must disclaim responsibility. Without it, the app is the responsible code and agentcookie's own grants (Chrome profile folder) no longer apply.
   - Launcher requirement: `anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "NM8VT393AR" and identifier "agentcookie"`. Matching the team ID alone isn't enough, since a self-signed certificate can set the same OU. `scripts/sign.sh` passes no `--identifier`, so codesign derives `agentcookie` from the file name, as `~/bin/agentcookie` and `~/go/bin/agentcookie` show today.
   - The launcher executable is named `agentcookie-launcher`, so `ps` and doctor's binary search never confuse it with agentcookie.
   - Rejected: `BundleProgram` and SMAppService. Both need the plist shipped inside the app bundle, which forces the binary into the bundle.
@@ -120,7 +121,7 @@ sequenceDiagram
   L->>A: start dev.agentcookie.source (ProgramArguments[0] inside the app)
   Note over L,A: BTM attributes the job to the app, name and icon
   A->>A: resolve symlinks, check Developer ID + identifier "agentcookie"
-  A->>T: exec(argv[1], argv[1:]) same pid, image replaced
+  A->>T: posix_spawn(argv[1], argv[1:]) with responsibility disclaimed; wait, forward signals
   T-->>L: runs as today, same args, logs, Keychain identity
 ```
 
@@ -144,7 +145,7 @@ flowchart TB
 
 ### Assumptions
 
-- Login Items attribution comes from the plist's first program argument and the bundle-ID key, not from the running process, so exec doesn't undo R1. Tincan observed this, and U8 confirms it here.
+- Login Items attribution comes from the plist's first program argument and the bundle-ID key, not from the running process, so running the binary as a child doesn't undo R1. Tincan observed this, and U8 confirms it here.
 - `/usr/bin/plutil`, `lsregister`, `sips`, `iconutil`, `ditto` and `codesign` exist on every supported macOS.
 
 ---
@@ -359,7 +360,13 @@ flowchart TB
 
 ### From 2026-11-04 review
 
-- Proposed fix, not applied (raised only by the cross-model reviewer): a first install has no existing app to swap with, so KTD3 should use a plain atomic rename when the destination is absent and `RENAME_SWAP` only when replacing one, as Agent Tincan's `internal/macapp` does.
+- Applied during work: a first install uses a plain rename; `RENAME_SWAP` is used only when replacing an installed app, as Agent Tincan's `internal/macapp` does.
+
+### From 2026-11-04 live check (U8)
+
+- The exec launcher broke both jobs on this Mac: `watch .../Chrome/Default: operation not permitted`, exit 1. Probe jobs running `agentcookie doctor` showed launcher plus bundle-ID key and launcher alone both lost Chrome profile access, while the bundle-ID key alone and the bare job kept it. A probe through a launcher that spawns with `responsibility_spawnattrs_setdisclaim` kept Chrome and Keychain access. KTD1 now uses that.
+- Login Items did not re-read the edited plists live: `sfltool dumpbtm` kept the old executable path after the refresh, and probe jobs bootstrapped from a terminal were never registered. The "agentcookie" name is confirmed only after macOS re-registers the jobs, at the latest after the next login.
+- `make install` cannot overwrite a universal release binary (`go install` refuses a file that "is not an object file"). Pre-existing; U8 used `make build MACAPP=1`, `scripts/sign.sh` and a copy instead.
 
 ---
 

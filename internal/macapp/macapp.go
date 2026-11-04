@@ -10,8 +10,7 @@
 // lower AppRevision than the embedded one, so two release binaries on one Mac
 // never swap the app back and forth. Other builds embed nothing.
 //
-// This package must stay a leaf with no cgo: the launcher imports it and is
-// built with CGO_ENABLED=0.
+// This package must stay a small leaf: the launcher imports it.
 package macapp
 
 import (

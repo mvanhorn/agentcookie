@@ -8,16 +8,18 @@ import (
 	"testing"
 )
 
-// fakeExec records the exec the launcher asked for instead of replacing the
+// fakeExec records the start the launcher asked for instead of running the
 // test process.
 type fakeExec struct {
 	path string
 	argv []string
+	code int
+	err  error
 }
 
-func (f *fakeExec) exec(path string, argv []string, _ []string) error {
+func (f *fakeExec) exec(path string, argv []string, _ []string) (int, error) {
 	f.path, f.argv = path, argv
-	return nil
+	return f.code, f.err
 }
 
 func executable(t *testing.T) string {
@@ -114,5 +116,23 @@ func TestLauncherVerifiesResolvedSymlink(t *testing.T) {
 	}
 	if checked != resolved || fx.path != resolved {
 		t.Fatalf("verified %q and exec'd %q, want both %q", checked, fx.path, resolved)
+	}
+}
+
+func TestLauncherReturnsTargetExitCode(t *testing.T) {
+	fx := fakeExec{code: 3}
+	if code := run([]string{"/app/agentcookie-launcher", executable(t), "source"}, accept, fx.exec, &strings.Builder{}); code != 3 {
+		t.Fatalf("run = %d, want the target's exit code 3 so KeepAlive relaunches it", code)
+	}
+}
+
+func TestLauncherStartFailureDoesNotCrashLoop(t *testing.T) {
+	fx := fakeExec{err: errors.New("spawn failed")}
+	var stderr strings.Builder
+	if code := run([]string{"/app/agentcookie-launcher", executable(t), "source"}, accept, fx.exec, &stderr); code != 0 {
+		t.Fatalf("run = %d, want 0 when the target cannot start", code)
+	}
+	if !strings.Contains(stderr.String(), "spawn failed") {
+		t.Errorf("stderr %q does not name the failure", stderr.String())
 	}
 }

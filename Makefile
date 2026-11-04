@@ -117,9 +117,8 @@ mac-app:
 	if [[ -z "$(MACAPP_REVISION)" ]]; then echo "make mac-app: cannot read AppRevision from internal/macapp/macapp.go" >&2; exit 1; fi; \
 	app="$(MACAPP_DIR)/agentcookie.app"; \
 	rm -rf "$(MACAPP_DIR)"; mkdir -p "$$app/Contents/MacOS" "$$app/Contents/Resources"; \
-	for a in arm64 amd64; do \
-	  CGO_ENABLED=0 GOOS=darwin GOARCH=$$a go build -trimpath -ldflags "-s -w" -o "$(MACAPP_DIR)/agentcookie-launcher_$$a" ./cmd/agentcookie-launcher; \
-	done; \
+	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 CC="clang -arch arm64" go build -trimpath -ldflags "-s -w" -o "$(MACAPP_DIR)/agentcookie-launcher_arm64" ./cmd/agentcookie-launcher; \
+	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 CC="clang -arch x86_64" go build -trimpath -ldflags "-s -w" -o "$(MACAPP_DIR)/agentcookie-launcher_amd64" ./cmd/agentcookie-launcher; \
 	lipo -create -output "$$app/Contents/MacOS/agentcookie-launcher" "$(MACAPP_DIR)/agentcookie-launcher_arm64" "$(MACAPP_DIR)/agentcookie-launcher_amd64"; \
 	sed -e 's/__VERSION__/$(or $(VERSION),0.0.1-dev)/' -e 's/__REVISION__/$(MACAPP_REVISION)/' internal/macapp/Info.plist.tmpl > "$$app/Contents/Info.plist"; \
 	plutil -lint "$$app/Contents/Info.plist" >/dev/null; \
