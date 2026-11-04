@@ -21,6 +21,12 @@
 #                     `make release` with those digests embedded, and check
 #                     the binary carries them. Build the Linux tarballs
 #                     first; see docs/releasing.md.
+#   make mac-app    - build, sign, notarize and staple agentcookie.app (the
+#                     launcher the LaunchAgents start through, so macOS
+#                     Login Items shows "agentcookie") and zip it into
+#                     internal/macapp/embedded/agentcookie.zip, which
+#                     MACAPP=1 builds embed. MACAPP_NOTARIZE=0 skips
+#                     notarization for local testing.
 #   make verify     - print the designated requirement of bin/agentcookie
 #   make test       - go test -race ./... and scripts/release_asset_test.sh
 #   make vet        - go vet ./...
@@ -65,16 +71,80 @@ ifneq ($(LINUX_SHA256_ARM64),)
 LDFLAGS += -X github.com/mvanhorn/agentcookie/internal/cli.releaseLinuxARM64SHA256=$(LINUX_SHA256_ARM64)
 endif
 
+# agentcookie.app, embedded by MACAPP=1 builds (build tag macapp). See
+# internal/macapp and `make mac-app`. AppRevision in internal/macapp is the
+# bundle's CFBundleVersion.
+SIGN_IDENTITY := $(or $(AGENTCOOKIE_SIGN_IDENTITY),Developer ID Application: Matthew Charles Van Horn (NM8VT393AR))
+NOTARY_PROFILE := $(or $(AGENTCOOKIE_NOTARY_PROFILE),agentcookie-notary)
+MACAPP ?= 0
+MACAPP_DIR := dist/macapp
+MACAPP_ICON ?= assets/macapp/icon-1024.png
+MACAPP_NOTARIZE ?= 1
+MACAPP_ZIP := internal/macapp/embedded/agentcookie.zip
+MACAPP_REVISION := $(shell sed -n 's/^[[:space:]]*AppRevision = \([0-9][0-9]*\).*/\1/p' internal/macapp/macapp.go)
+GOTAGS :=
+ifeq ($(MACAPP),1)
+GOTAGS := -tags macapp
+endif
+
 GOBIN := $(shell go env GOBIN)
 ifeq ($(GOBIN),)
 GOBIN := $(shell go env GOPATH)/bin
 endif
 
-.PHONY: all build build-universal install sign notarize release release-pinned verify test vet clean
+.PHONY: all build build-universal install sign notarize release release-pinned mac-app check-macapp-zip verify test vet clean
 
 all: build sign
 
-release: build-universal sign notarize
+release:
+	$(MAKE) mac-app
+	$(MAKE) build-universal MACAPP=1
+	$(MAKE) sign notarize
+
+# check-macapp-zip - a MACAPP=1 build without the zip would fail to compile
+# with a less helpful error, so say what to run.
+check-macapp-zip:
+	@if [[ "$(MACAPP)" == 1 && ! -s $(MACAPP_ZIP) ]]; then \
+	  echo "MACAPP=1: $(MACAPP_ZIP) is missing; run \`make mac-app\` first" >&2; \
+	  exit 1; \
+	fi
+
+# mac-app - build agentcookie.app around cmd/agentcookie-launcher, sign it
+# with the Developer ID identity, notarize and staple it, and zip it to
+# $(MACAPP_ZIP) for MACAPP=1 builds to embed.
+mac-app:
+	@set -euo pipefail; \
+	if [[ -z "$(MACAPP_REVISION)" ]]; then echo "make mac-app: cannot read AppRevision from internal/macapp/macapp.go" >&2; exit 1; fi; \
+	app="$(MACAPP_DIR)/agentcookie.app"; \
+	rm -rf "$(MACAPP_DIR)"; mkdir -p "$$app/Contents/MacOS" "$$app/Contents/Resources"; \
+	for a in arm64 amd64; do \
+	  CGO_ENABLED=0 GOOS=darwin GOARCH=$$a go build -trimpath -ldflags "-s -w" -o "$(MACAPP_DIR)/agentcookie-launcher_$$a" ./cmd/agentcookie-launcher; \
+	done; \
+	lipo -create -output "$$app/Contents/MacOS/agentcookie-launcher" "$(MACAPP_DIR)/agentcookie-launcher_arm64" "$(MACAPP_DIR)/agentcookie-launcher_amd64"; \
+	sed -e 's/__VERSION__/$(or $(VERSION),0.0.1-dev)/' -e 's/__REVISION__/$(MACAPP_REVISION)/' internal/macapp/Info.plist.tmpl > "$$app/Contents/Info.plist"; \
+	plutil -lint "$$app/Contents/Info.plist" >/dev/null; \
+	iconset="$(MACAPP_DIR)/AppIcon.iconset"; mkdir -p "$$iconset"; \
+	for s in 16 32 128 256 512; do \
+	  sips -z $$s $$s "$(MACAPP_ICON)" --out "$$iconset/icon_$${s}x$${s}.png" >/dev/null; \
+	  d=$$((s * 2)); sips -z $$d $$d "$(MACAPP_ICON)" --out "$$iconset/icon_$${s}x$${s}@2x.png" >/dev/null; \
+	done; \
+	iconutil -c icns -o "$$app/Contents/Resources/AppIcon.icns" "$$iconset"; \
+	security find-identity -v -p codesigning | grep -qF "$(SIGN_IDENTITY)" || { echo "make mac-app: codesign identity not found: $(SIGN_IDENTITY) (set AGENTCOOKIE_SIGN_IDENTITY)" >&2; exit 1; }; \
+	codesign --force --options runtime --timestamp --sign "$(SIGN_IDENTITY)" "$$app/Contents/MacOS/agentcookie-launcher"; \
+	codesign --force --options runtime --timestamp --sign "$(SIGN_IDENTITY)" "$$app"; \
+	codesign --verify --strict --deep --verbose=2 "$$app"; \
+	if [[ "$(MACAPP_NOTARIZE)" != 0 ]]; then \
+	  zip="$(MACAPP_DIR)/notarize.zip"; ditto -c -k --keepParent "$$app" "$$zip"; \
+	  echo "make mac-app: notarizing $$app (waiting for Apple)"; \
+	  xcrun notarytool submit "$$zip" --keychain-profile "$(NOTARY_PROFILE)" --wait --output-format json > "$(MACAPP_DIR)/result.json" || { cat "$(MACAPP_DIR)/result.json" >&2; exit 1; }; \
+	  grep -q '"status": *"Accepted"' "$(MACAPP_DIR)/result.json" || { cat "$(MACAPP_DIR)/result.json" >&2; echo "make mac-app: the app was not accepted" >&2; exit 1; }; \
+	  xcrun stapler staple "$$app"; \
+	  xcrun stapler validate "$$app"; \
+	fi; \
+	mkdir -p "$$(dirname $(MACAPP_ZIP))"; rm -f "$(MACAPP_ZIP)"; \
+	ditto -c -k --norsrc --noextattr --keepParent "$$app" "$(MACAPP_ZIP)"; \
+	if unzip -Z1 "$(MACAPP_ZIP)" | grep -qE '(^|/)(\._|__MACOSX)'; then echo "make mac-app: $(MACAPP_ZIP) holds AppleDouble entries, which would break the app's seal when unpacked" >&2; exit 1; fi; \
+	echo "make mac-app: wrote $(MACAPP_ZIP) (AppRevision $(MACAPP_REVISION))"
 
 # release-pinned - the tagged release build (docs/releasing.md). Needs the
 # Linux tarballs for TAG in dist/ already: their digests are computed here,
@@ -95,9 +165,9 @@ release-pinned:
 	$(MAKE) release $$pins; \
 	scripts/linux-release-pins.sh --check-binary $(BINARY) "$(TAG)"
 
-build:
+build: check-macapp-zip
 	@mkdir -p $(BIN_DIR)
-	go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(PKG)
+	go build $(GOTAGS) -ldflags "$(LDFLAGS)" -o $(BINARY) $(PKG)
 
 # build-universal - Produce a Universal 2 (arm64 + x86_64) binary at
 # bin/agentcookie via lipo so a single signed + notarized release runs
@@ -107,13 +177,13 @@ build:
 # (CC="clang -arch ..."). Pinning CC per slice makes the build host
 # irrelevant: it works whether run on an arm64 or an x86_64 Mac.
 # Plain `make build` stays native for local development.
-build-universal:
+build-universal: check-macapp-zip
 	@mkdir -p $(BIN_DIR)
 	set -euo pipefail; \
 	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 CC="clang -arch arm64" \
-	  go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/agentcookie-arm64 $(PKG); \
+	  go build $(GOTAGS) -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/agentcookie-arm64 $(PKG); \
 	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 CC="clang -arch x86_64" \
-	  go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/agentcookie-amd64 $(PKG); \
+	  go build $(GOTAGS) -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/agentcookie-amd64 $(PKG); \
 	lipo -create \
 	  $(BIN_DIR)/agentcookie-arm64 \
 	  $(BIN_DIR)/agentcookie-amd64 \
@@ -127,8 +197,8 @@ build-universal:
 # Install to $(GOBIN)/agentcookie and sign in place so steady-state
 # `make install` produces a signed binary with the same designated
 # requirement as the local build.
-install:
-	go install -ldflags "$(LDFLAGS)" $(PKG)
+install: check-macapp-zip
+	go install $(GOTAGS) -ldflags "$(LDFLAGS)" $(PKG)
 	scripts/sign.sh "$(GOBIN)/agentcookie"
 
 sign:
