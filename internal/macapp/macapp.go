@@ -139,6 +139,11 @@ func Ensure(o Options) error {
 	}
 	dst := Path(o.Home)
 	if installed, err := installedRevision(dst); err == nil && installed >= embedded && o.Validate(dst) == nil {
+		// Register again: lsregister is idempotent, and this retries a
+		// registration that failed after an earlier install.
+		if err := o.Register(dst); err != nil {
+			return fmt.Errorf("register %s: %w", dst, err)
+		}
 		return nil
 	}
 	dir := filepath.Dir(dst)

@@ -41,9 +41,10 @@ func testZip(t *testing.T, launcher string, revision int) []byte {
 }
 
 type recorder struct {
-	registered []string
-	rejectApp  func(path string) bool
-	rejectExe  bool
+	registered   []string
+	failRegister bool
+	rejectApp    func(path string) bool
+	rejectExe    bool
 }
 
 func (r *recorder) opts(home string, z []byte) Options {
@@ -68,6 +69,9 @@ func (r *recorder) opts(home string, z []byte) Options {
 		},
 		Register: func(app string) error {
 			r.registered = append(r.registered, app)
+			if r.failRegister {
+				return errors.New("lsregister failed")
+			}
 			return nil
 		},
 		Swap: testSwap,
@@ -151,6 +155,21 @@ func TestEnsureLeavesSameRevisionAlone(t *testing.T) {
 	}
 	if !fi.ModTime().Equal(old) || launcherBody(t, home) != "v1" {
 		t.Fatal("same-revision app was rewritten")
+	}
+}
+
+func TestEnsureRetriesFailedRegistration(t *testing.T) {
+	home := t.TempDir()
+	r := recorder{failRegister: true}
+	if err := Ensure(r.opts(home, testZip(t, "v1", 1))); err == nil {
+		t.Fatal("Ensure hid a failed registration")
+	}
+	r.failRegister = false
+	if err := Ensure(r.opts(home, testZip(t, "v1", 1))); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.registered) != 2 || launcherBody(t, home) != "v1" {
+		t.Fatalf("registered %v, want a retry of the same app without replacing it", r.registered)
 	}
 }
 
