@@ -388,6 +388,15 @@ cat > "$cfg/wrapped.plist" <<PLIST
 PLIST
 assert_eq "$(plist_program_path "$cfg/bare.plist")" "/Users/x/bin/agentcookie" "plist_program_path on a bare plist"
 assert_eq "$(plist_program_path "$cfg/wrapped.plist")" "/Users/x/bin/agentcookie" "plist_program_path skips the agentcookie.app launcher"
+cat > "$cfg/escaped.plist" <<PLIST
+  <key>ProgramArguments</key>
+  <array>
+    <string>$launcher_path</string>
+    <string>/Users/x/R&amp;D &lt;tools&gt;/agentcookie</string>
+    <string>source</string>
+  </array>
+PLIST
+assert_eq "$(plist_program_path "$cfg/escaped.plist")" "/Users/x/R&D <tools>/agentcookie" "plist_program_path decodes XML-escaped paths"
 assert_eq "$(loaded_program "$(printf '\tprogram = /Users/x/bin/agentcookie\n\targuments = {\n\t\t/Users/x/bin/agentcookie\n\t\tsource\n\t}\n')")" "/Users/x/bin/agentcookie" "loaded_program for a bare job"
 assert_eq "$(loaded_program "$(printf '\tprogram = %s\n\targuments = {\n\t\t%s\n\t\t/Users/x/bin/agentcookie\n\t\tsource\n\t}\n' "$launcher_path" "$launcher_path")")" "/Users/x/bin/agentcookie" "loaded_program skips the launcher"
 

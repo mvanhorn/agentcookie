@@ -347,6 +347,8 @@ plist_program_path() {
     inargs && /<string>/ {
       sub(/.*<string>/, "")
       sub(/<\/string>.*/, "")
+      # Undo the &, <, > escaping internal/launchd applies (&amp; last).
+      gsub(/&lt;/, "<"); gsub(/&gt;/, ">"); gsub(/&amp;/, "\\&")
       if (n++ == 0 && $0 ~ /\/agentcookie\.app\/Contents\/MacOS\/agentcookie-launcher$/) next
       print
       exit

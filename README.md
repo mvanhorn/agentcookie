@@ -336,6 +336,7 @@ agentcookie services refresh
 - `agentcookie services refresh --revert` runs every job directly again, without the app, and keeps it that way. `--wrap` undoes that.
 - The sink always runs agentcookie directly, because it quits Chrome through an Automation grant that must stay agentcookie's own, so it still shows the signer's name.
 - Don't delete `~/Applications/agentcookie.app` while jobs start through it. Run `services refresh --revert` first, or uninstall with `agentcookie wizard uninstall`, which removes the app with the last job.
+- Going back to a release older than this one? Run `agentcookie services refresh --revert` with the current binary first. Older installers do not know the launcher and would treat a wrapped job as broken and rerun the wizard.
 - `agentcookie doctor` has a Login Items line that says which jobs show as agentcookie and what to run if one doesn't.
 - macOS may keep showing the old name until it re-registers the jobs, at the latest after your next login. If it still shows the old name after that, the last resort is `sfltool resetbtm` and a restart. That resets the Login Items approvals of every app, not just agentcookie.
 
