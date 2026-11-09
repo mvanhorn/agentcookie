@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -141,4 +142,47 @@ func TestRunSinkStartsLiveCDPSweep(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("runSink never started the live CDP stale-tab sweep")
 	}
+}
+
+// TestTeammatePullLoopStartsLiveCDPSweep: `sink --pull-loop` returns from
+// runSink before the sink's own startup sweep, so the loop starts one.
+//
+// Guard-revert: remove startLiveCDPSweep from runTeammatePullLoop and this
+// goes red.
+func TestTeammatePullLoopStartsLiveCDPSweep(t *testing.T) {
+	ts := newTeammateSink(t, "turn+timer", "")
+	path := filepath.Join(ts.dir, "sink.yaml")
+	yml, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFile(t, path, strings.Replace(string(yml), "live_cdp:\n", "live_cdp:\n  enabled: true\n", 1))
+
+	swept := make(chan string, 1)
+	prev := liveCDPSweep
+	liveCDPSweep = func(_ context.Context, endpoint string, _ time.Duration) (int, error) {
+		select {
+		case swept <- endpoint:
+		default:
+		}
+		return 0, nil
+	}
+	t.Cleanup(func() { liveCDPSweep = prev })
+	prevInterval := teammatePullInterval
+	teammatePullInterval = func() time.Duration { return time.Hour }
+	t.Cleanup(func() { teammatePullInterval = prevInterval })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runTeammatePullLoop(ctx) }()
+	select {
+	case got := <-swept:
+		if got != "http://127.0.0.1:1" {
+			t.Errorf("swept %q, want the configured live_cdp endpoint", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("the pull loop never started the live CDP stale-tab sweep")
+	}
+	cancel()
+	<-done
 }

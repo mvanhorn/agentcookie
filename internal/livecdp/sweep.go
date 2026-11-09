@@ -70,8 +70,9 @@ func SweepStaleBlankTabs(ctx context.Context, endpoint string, minAge time.Durat
 	}
 
 	list := func() ([]*target.Info, error) { return chromedp.Targets(browserCtx) }
+	info := func(id target.ID) (*target.Info, error) { return target.GetTargetInfo().WithTargetID(id).Do(bctx) }
 	closeTarget := func(id target.ID) error { return target.CloseTarget(id).Do(bctx) }
-	return closeStaleBlanks(ctx, staleBlankTargets(first, second, defaultID), list, closeTarget, defaultID)
+	return closeStaleBlanks(ctx, staleBlankTargets(first, second, defaultID), list, info, closeTarget, defaultID)
 }
 
 // staleBlankTargets picks the sweep candidates from two listings taken at
@@ -106,12 +107,15 @@ var sweepClosePause = 10 * time.Millisecond
 // closeStaleBlanks closes the candidates one at a time. It lists the targets
 // again before the first close and after every sweepRelistEvery closes, and
 // checks each candidate against the latest listing: one that is gone or is
-// no longer a sweepable blank tab is skipped. Tabs it closed since that
-// listing are counted out of the page total, and it stops once only one
-// page would remain. Because a listing can be up to sweepRelistEvery closes
-// old, another client may have closed the real pages since; the last
-// candidate is therefore never closed, so a page always survives the pass.
-func closeStaleBlanks(ctx context.Context, candidates []*target.Info, list func() ([]*target.Info, error), closeTarget func(target.ID) error, defaultID cdp.BrowserContextID) (int, error) {
+// no longer a sweepable blank tab is skipped. That listing can be up to
+// sweepRelistEvery closes old, so immediately before each close it also
+// re-reads the candidate itself (info, one Target.getTargetInfo) and skips
+// it if another client has since navigated, attached to, or closed it.
+// Tabs it closed since the listing are counted out of the page total, and
+// it stops once only one page would remain. Another client may have closed
+// the real pages since that listing; the last candidate is therefore never
+// closed, so a page always survives the pass.
+func closeStaleBlanks(ctx context.Context, candidates []*target.Info, list func() ([]*target.Info, error), info func(target.ID) (*target.Info, error), closeTarget func(target.ID) error, defaultID cdp.BrowserContextID) (int, error) {
 	closed := 0
 	var firstErr error
 	var latest map[target.ID]*target.Info
@@ -146,6 +150,10 @@ func closeStaleBlanks(ctx context.Context, candidates []*target.Info, list func(
 				return closed, ctx.Err()
 			case <-time.After(sweepClosePause):
 			}
+		}
+		// Last look, after the pause: a tab that errors here is gone.
+		if fresh, err := info(cur.TargetID); err != nil || !isSweepableBlank(fresh, defaultID) {
+			continue
 		}
 		if err := closeTarget(cur.TargetID); err != nil {
 			if firstErr == nil {

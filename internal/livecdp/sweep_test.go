@@ -64,6 +64,7 @@ type fakeBrowser struct {
 	targets []*target.Info
 	closed  []target.ID
 	lists   int
+	infos   int
 	onClose func(fb *fakeBrowser)
 }
 
@@ -75,6 +76,15 @@ func (fb *fakeBrowser) list() ([]*target.Info, error) {
 		out = append(out, &c)
 	}
 	return out, nil
+}
+
+func (fb *fakeBrowser) info(id target.ID) (*target.Info, error) {
+	fb.infos++
+	if info := fb.find(id); info != nil {
+		c := *info
+		return &c, nil
+	}
+	return nil, fmt.Errorf("no target with given id found")
 }
 
 func (fb *fakeBrowser) close(id target.ID) error {
@@ -108,7 +118,7 @@ func (fb *fakeBrowser) candidates() []*target.Info {
 
 func (fb *fakeBrowser) sweep(t *testing.T, candidates []*target.Info) []target.ID {
 	t.Helper()
-	if _, err := closeStaleBlanks(context.Background(), candidates, fb.list, fb.close, testDefaultCtx); err != nil {
+	if _, err := closeStaleBlanks(context.Background(), candidates, fb.list, fb.info, fb.close, testDefaultCtx); err != nil {
 		t.Fatal(err)
 	}
 	return fb.closed
@@ -131,6 +141,32 @@ func TestCloseStaleBlanks_RevalidatesCandidates(t *testing.T) {
 	fb.remove("d")
 	if got := fb.sweep(t, candidates); !slices.Equal(got, []target.ID{"a"}) {
 		t.Fatalf("closed %v, want only [a]: b, c, d changed after sampling and e is the spared last candidate", got)
+	}
+}
+
+// TestCloseStaleBlanks_SparesTabChangedMidBatch: the listing a close is
+// checked against can be up to sweepRelistEvery closes old. A tab another
+// client navigates or attaches to after that listing must still be spared.
+//
+// Guard-revert: drop the per-close info check and this goes red.
+func TestCloseStaleBlanks_SparesTabChangedMidBatch(t *testing.T) {
+	noClosePause(t)
+	fb := &fakeBrowser{targets: []*target.Info{blankTab("a"), blankTab("b"), blankTab("c"), blankTab("d"), realTab("real")}}
+	// Right after a closes, inside the same batch: b is navigated, c is
+	// attached. No relist happens before their turn.
+	fb.onClose = func(fb *fakeBrowser) {
+		if b := fb.find("b"); b != nil {
+			b.URL = "https://example.com/"
+		}
+		if c := fb.find("c"); c != nil {
+			c.Attached = true
+		}
+	}
+	if got := fb.sweep(t, fb.candidates()); !slices.Equal(got, []target.ID{"a"}) {
+		t.Fatalf("closed %v, want only [a]: b and c changed mid-batch and d is the spared last candidate", got)
+	}
+	if fb.lists != 1 {
+		t.Fatalf("%d listings, want 1: the mid-batch change must be caught without a relist", fb.lists)
 	}
 }
 
