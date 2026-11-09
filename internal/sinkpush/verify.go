@@ -203,8 +203,11 @@ func (a *CmuxAdapter) verifyOne(s VerifySpec) VerifyResult {
 
 // openProbeSurface creates a dedicated hidden about:blank browser surface and
 // returns its surface:N ref. The caller navigates it separately (see verifyOne
-// on why navigate-at-create races cookie propagation). Distinct from the cached
-// injection surface so the probe can be closed without disturbing injection.
+// on why navigate-at-create races cookie propagation). Deliberately NOT a
+// reused tab, unlike the injection surface (ensureSurfaceLocked): the probe
+// navigates and then closes its surface, and an already-open browser tab may
+// be a live user or agent page. Because it closes what it opens, the probe
+// leaves no tab behind.
 func (a *CmuxAdapter) openProbeSurface() (string, error) {
 	out, err := a.run(context.Background(), "new-surface", "--type", "browser", "--url", "about:blank", "--focus", "false")
 	if err != nil {

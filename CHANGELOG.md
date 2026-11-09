@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### cmux delivery reuses an open browser tab instead of adding one
+
+- The cmux adapter cached its injection tab only in memory, so every sink restart (and every time the user closed that tab) added another unfocused `about:blank` browser tab to the first workspace, and stray "New tab" browsers piled up. It now reads `cmux tree --all --json` and reuses a browser surface that is already open in any workspace, preferring an `about:blank` tab over a live page. It adds a tab only when no browser surface is open, or when `tree` is unavailable on an older cmux. WebKit cookies are profile-wide, so any browser surface works.
+- A reused tab may be a live page, so the adapter only ever calls `browser.cookies.set` on it (after a read-only `browser.url.get` liveness check), never navigate, reload, focus or close. cmux session-restore can resurrect browser tabs as shells that fail every `browser.*` call; the check skips those. The auth probe in `verify.go` still opens and closes its own tab because it navigates.
+- When a cached tab has gone away, the retry reuses another open tab and never picks the one that just failed.
+
 ### macOS: Login Items shows "agentcookie" instead of the signer's name
 
 - macOS listed the source and cmux-sync LaunchAgents in System Settings > General > Login Items, and in its background-activity notice, under the signing certificate's personal name with a generic icon. A release build now installs a small signed, notarized app at `~/Applications/agentcookie.app` and starts those jobs through its launcher, so they show as "agentcookie" with its icon. The launcher runs only a release-signed agentcookie, and it starts agentcookie as a child that keeps its own Chrome folder and Keychain access.
