@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
@@ -46,8 +45,16 @@ func TestCmuxLiveInjection(t *testing.T) {
 	}
 
 	// Push may REUSE an already-open browser tab (possibly a live page), so
-	// remember what was open before and only close a surface Push added.
-	preTree, _ := a.run(context.Background(), "tree", "--all", "--json")
+	// record the surface Push itself creates, if any, and close only that.
+	var added string
+	run := a.run
+	a.run = func(ctx context.Context, args ...string) (string, error) {
+		out, err := run(ctx, args...)
+		if err == nil && len(args) > 0 && args[0] == "new-surface" {
+			added = surfaceRefRE.FindString(out)
+		}
+		return out, err
+	}
 	if err := a.Push(cookies); err != nil {
 		t.Fatalf("Push to live cmux failed: %v", err)
 	}
@@ -55,9 +62,9 @@ func TestCmuxLiveInjection(t *testing.T) {
 		if a.surfaceID == "" {
 			return
 		}
-		_, _ = a.run(context.Background(), "browser", "--surface", a.surfaceID, "cookies", "clear", "--url", url)
-		if !strings.Contains(preTree, `"`+a.surfaceID+`"`) {
-			_, _ = a.run(context.Background(), "rpc", "surface.close", `{"surface_id":"`+a.surfaceID+`"}`)
+		_, _ = run(context.Background(), "browser", "--surface", a.surfaceID, "cookies", "clear", "--url", url)
+		if added != "" && added == a.surfaceID {
+			_, _ = run(context.Background(), "rpc", "surface.close", `{"surface_id":"`+added+`"}`)
 		}
 	})
 
