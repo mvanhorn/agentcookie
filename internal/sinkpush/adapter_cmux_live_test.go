@@ -44,6 +44,17 @@ func TestCmuxLiveInjection(t *testing.T) {
 		{HostKey: host, Name: "ac_live_temp", Value: "sessioncookie", Path: "/"}, // no expiry -> session
 	}
 
+	// Push may REUSE an already-open browser tab (possibly a live page), so
+	// record the surface Push itself creates, if any, and close only that.
+	var added string
+	run := a.run
+	a.run = func(ctx context.Context, args ...string) (string, error) {
+		out, err := run(ctx, args...)
+		if err == nil && len(args) > 0 && args[0] == "new-surface" {
+			added = surfaceRefRE.FindString(out)
+		}
+		return out, err
+	}
 	if err := a.Push(cookies); err != nil {
 		t.Fatalf("Push to live cmux failed: %v", err)
 	}
@@ -51,8 +62,10 @@ func TestCmuxLiveInjection(t *testing.T) {
 		if a.surfaceID == "" {
 			return
 		}
-		_, _ = a.run(context.Background(), "browser", "--surface", a.surfaceID, "cookies", "clear", "--url", url)
-		_, _ = a.run(context.Background(), "rpc", "surface.close", `{"surface_id":"`+a.surfaceID+`"}`)
+		_, _ = run(context.Background(), "browser", "--surface", a.surfaceID, "cookies", "clear", "--url", url)
+		if added != "" && added == a.surfaceID {
+			_, _ = run(context.Background(), "rpc", "surface.close", `{"surface_id":"`+added+`"}`)
+		}
 	})
 
 	if a.surfaceID == "" {
