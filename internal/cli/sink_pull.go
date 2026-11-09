@@ -469,6 +469,11 @@ func runTeammatePullLoop(ctx context.Context) error {
 	_ = f.Truncate(0)
 	_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
 	fmt.Fprintf(os.Stderr, "agentcookie sink --pull-loop: started (pid %d)\n", os.Getpid())
+	// The loop applies through the same live CDP path as a sink, so it
+	// gets the same one-time stale-tab sweep, bounded by its own lifetime.
+	if cfg, err := config.LoadSink(common.ConfigDir); err == nil {
+		startLiveCDPSweep(ctx, cfg)
+	}
 
 	return pullLoop(ctx, false, teammatePullInterval, func(ctx context.Context) error {
 		cfg, err := config.LoadSink(common.ConfigDir)
