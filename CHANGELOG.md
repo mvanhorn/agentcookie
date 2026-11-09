@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Live CDP sinks stop leaving a blank tab per inject
+
+- Each live CDP inject opened an `about:blank` tab in the attached Chrome and relied on chromedp closing it when the connection was cancelled, with a one-second budget. A loaded browser missed that budget, so a sink injecting on every sync left a tab behind nearly every time: one Mac sink's shared Chrome built up thousands of blank tabs and about 2.6 GB of memory in 2.3 days. Injection now talks only to the browser session (`Target.getTargets`, `Target.getBrowserContexts`, `Storage.setCookies`) and creates no tab at all.
+- On start, a sink with `live_cdp` on sweeps the tabs earlier versions left. It lists the browser's targets, waits 60 seconds, lists again, and closes page tabs that were `about:blank` both times, checking each one again against a recent listing before closing it. It runs passes until one closes nothing, so a pile of thousands clears on one start, and it spaces its closes so the sink's own injects are not crowded out. It never closes a page with a real URL, a tab another client opened in the last 60 seconds or is attached to (while a Puppeteer or Playwright client is connected, that covers every tab, so the sweep waits for a later start), a popup a page opened, a tab outside Chrome's default browser context (an agent's own context or incognito), a service worker, extension, or browser UI target, or the last open page; it always leaves one stale blank tab. If Chrome does not report its default context, the sweep closes nothing. It is skipped with `--dry-run` and logs a line only when it closed something or a pass failed.
+
 ### macOS: Login Items shows "agentcookie" instead of the signer's name
 
 - macOS listed the source and cmux-sync LaunchAgents in System Settings > General > Login Items, and in its background-activity notice, under the signing certificate's personal name with a generic icon. A release build now installs a small signed, notarized app at `~/Applications/agentcookie.app` and starts those jobs through its launcher, so they show as "agentcookie" with its icon. The launcher runs only a release-signed agentcookie, and it starts agentcookie as a child that keeps its own Chrome folder and Keychain access.

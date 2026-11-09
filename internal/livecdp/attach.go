@@ -187,13 +187,11 @@ func injectableContexts(browserCtx context.Context) ([]cdp.BrowserContextID, map
 // explicitContextSet returns the browser contexts created via
 // Target.createBrowserContext (the default context is not included).
 func explicitContextSet(browserCtx context.Context) (map[cdp.BrowserContextID]bool, error) {
-	var ids []cdp.BrowserContextID
-	err := chromedp.Run(browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		bctx := cdp.WithExecutor(ctx, chromedp.FromContext(ctx).Browser)
-		got, _, e := target.GetBrowserContexts().Do(bctx)
-		ids = got
-		return e
-	}))
+	bctx, err := browserExecutor(browserCtx)
+	if err != nil {
+		return nil, err
+	}
+	ids, _, err := target.GetBrowserContexts().Do(bctx)
 	if err != nil {
 		return nil, err
 	}
@@ -208,24 +206,42 @@ func explicitContextSet(browserCtx context.Context) (map[cdp.BrowserContextID]bo
 // via Storage.setCookies on the browser session. useID controls whether the
 // browserContextId param is sent: true for an explicit (createBrowserContext)
 // context, false for the default context (which Chrome rejects when addressed
-// by id). This never attaches to a page target, so it cannot close or disturb
-// a tab the agent is driving.
+// by id). This never attaches to or creates a page target, so it cannot
+// close, disturb, or leave behind a tab.
 func injectIntoContext(browserCtx context.Context, ctxID cdp.BrowserContextID, useID bool, cookies []chrome.Cookie) error {
 	params := BuildCookieParams(cookies)
 	if len(params) == 0 {
 		return nil
 	}
-	return chromedp.Run(browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		bctx := cdp.WithExecutor(ctx, chromedp.FromContext(ctx).Browser)
-		sc := storage.SetCookies(params)
-		if useID {
-			sc = sc.WithBrowserContextID(ctxID)
+	bctx, err := browserExecutor(browserCtx)
+	if err != nil {
+		return err
+	}
+	sc := storage.SetCookies(params)
+	if useID {
+		sc = sc.WithBrowserContextID(ctxID)
+	}
+	if err := sc.Do(bctx); err != nil {
+		return fmt.Errorf("Storage.setCookies (%d cookies, ctx=%q useID=%v): %w", len(params), ctxID, useID, err)
+	}
+	return nil
+}
+
+// browserExecutor returns ctx bound to the browser session of the chromedp
+// context, connecting first if needed. It deliberately avoids chromedp.Run:
+// on a remote allocator, Run's first call creates an about:blank tab, and
+// cancelling the context drops the websocket before that tab is closed, so
+// every attach-and-inject left one tab behind in the shared Chrome.
+// chromedp.Targets connects without creating a target.
+func browserExecutor(browserCtx context.Context) (context.Context, error) {
+	c := chromedp.FromContext(browserCtx)
+	if c == nil || c.Browser == nil {
+		if _, err := chromedp.Targets(browserCtx); err != nil {
+			return nil, err
 		}
-		if err := sc.Do(bctx); err != nil {
-			return fmt.Errorf("Storage.setCookies (%d cookies, ctx=%q useID=%v): %w", len(params), ctxID, useID, err)
-		}
-		return nil
-	}))
+		c = chromedp.FromContext(browserCtx)
+	}
+	return cdp.WithExecutor(browserCtx, c.Browser), nil
 }
 
 // shouldInjectTarget reports whether a target should receive cookies: real
