@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### New `agentcookie profile-sync`: copy logins into a second local Chrome profile
+
+- Copies cookies one-way from one Chrome profile on this Mac (default `Default`) into another, for example `--to "Profile 1"`. Useful when a second profile runs Claude in Chrome on a second Claude account and should be logged into the same sites.
+- Never clobbers the target's own logins: a cookie the target set or changed itself is kept. Only cookies profile-sync copied earlier, and the target left alone, are updated. Ownership is tracked by value hash (never values) in `~/.agentcookie/profile-sync/`.
+- claude.ai, claude.com and anthropic.com are never copied, so each profile keeps its own Claude account. Device-bound Google cookies are skipped. `--exclude` adds more domains, and `--dry-run` shows the plan.
+- Chrome only reads cookies when a profile loads and keeps no SQLite lock, so profile-sync refuses while any process holds the target's cookie store open. Close the target profile's windows first.
+- Writes keep the target's `meta.version` and add the App-Bound prefix Chrome 127+ expects (new `chrome.WriteCookiesChromeNative`). The sink's `WriteCookies` path is unchanged.
+
 ### macOS: Login Items shows "agentcookie" instead of the signer's name
 
 - macOS listed the source and cmux-sync LaunchAgents in System Settings > General > Login Items, and in its background-activity notice, under the signing certificate's personal name with a generic icon. A release build now installs a small signed, notarized app at `~/Applications/agentcookie.app` and starts those jobs through its launcher, so they show as "agentcookie" with its icon. The launcher runs only a release-signed agentcookie, and it starts agentcookie as a child that keeps its own Chrome folder and Keychain access.

@@ -198,3 +198,47 @@ func TestWriteCookies_MetaVersionIdempotent(t *testing.T) {
 		t.Errorf("idempotency: version=%q (want 18) rowCount=%d (want 1)", version, rowCount)
 	}
 }
+
+func TestWriteCookiesChromeNative_AppBoundAndKeepsVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Cookies")
+	seedEmptyCookiesDB(t, path)
+	db, err := sql.Open("sqlite3", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS meta (key LONGVARCHAR NOT NULL UNIQUE PRIMARY KEY, value LONGVARCHAR); INSERT OR REPLACE INTO meta(key,value) VALUES('version','24')`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	in := []Cookie{{HostKey: ".github.com", Name: "user_session", Value: "tok", Path: "/", IsSecure: 1}}
+	if _, err := WriteCookiesChromeNative(path, in, testKey); err != nil {
+		t.Fatalf("WriteCookiesChromeNative: %v", err)
+	}
+
+	db, err = sql.Open("sqlite3", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var v string
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key='version'`).Scan(&v); err != nil || v != "24" {
+		t.Fatalf("meta.version = %q (%v), want 24 untouched", v, err)
+	}
+	var enc []byte
+	if err := db.QueryRow(`SELECT encrypted_value FROM cookies WHERE name='user_session'`).Scan(&enc); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := decryptValue(enc, testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := sha256.Sum256([]byte(".github.com"))
+	if !bytes.HasPrefix([]byte(plain), prefix[:]) || plain[sha256.Size:] != "tok" {
+		t.Fatalf("plaintext lacks App-Bound prefix: %q", plain)
+	}
+	got, err := ReadCookiesForHost(path, "%github.com", testKey)
+	if err != nil || len(got) != 1 || got[0].Value != "tok" {
+		t.Fatalf("read back: %#v %v", got, err)
+	}
+}
