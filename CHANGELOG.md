@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Release CI notarizes with an App Store Connect API key
+
+- The release workflow now notarizes with an App Store Connect API key (`AC_API_KEY_P8`, `AC_API_KEY_ID`, `AC_API_ISSUER_ID`) when those secrets are set, and falls back to the Apple ID + app-specific password only when they are not. No Apple Account password or 2FA is involved.
+- New `scripts/setup-release-secrets.sh <AuthKey_XXXX.p8> <issuer-id>` exports only the Developer ID identity as a .p12, checks the API key with Apple, and sets all release secrets without printing them. The v1.4.0 to v1.6.0 Mac builds failed in CI because these secrets were missing.
+
 ### New `agentcookie profile-sync`: copy logins into a second local Chrome profile
 
 - Copies cookies one-way from one Chrome profile on this Mac (default `Default`) into another, for example `--to "Profile 1"`. Useful when a second profile runs Claude in Chrome on a second Claude account and should be logged into the same sites.

@@ -58,6 +58,7 @@ jobs:
     env:
       HAS_SIGNING_CERT: ${{ secrets.CERTIFICATE_OSX_APPLICATION != '' }}
       HAS_NOTARY_PASSWORD: ${{ secrets.AC_NOTARY_PASSWORD != '' }}
+      HAS_NOTARY_API_KEY: ${{ secrets.AC_API_KEY_P8 != '' && secrets.AC_API_KEY_ID != '' && secrets.AC_API_ISSUER_ID != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,8 +79,29 @@ jobs:
       - name: list codesigning identities
         run: security find-identity -v -p codesigning
 
-      - name: setup notarytool credentials
-        if: ${{ env.HAS_NOTARY_PASSWORD == 'true' }}
+      # Preferred: an App Store Connect API key (no Apple Account password,
+      # no 2FA, no app-specific password to rotate). Same profile name, so
+      # scripts/notarize.sh is unchanged.
+      - name: setup notarytool credentials (App Store Connect API key)
+        if: ${{ env.HAS_NOTARY_API_KEY == 'true' }}
+        env:
+          AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/AuthKey_${AC_API_KEY_ID}.p8"
+          printf '%s' "$AC_API_KEY_P8" | base64 --decode > "$key"
+          chmod 600 "$key"
+          xcrun notarytool store-credentials agentcookie-notary \
+            --key "$key" \
+            --key-id "$AC_API_KEY_ID" \
+            --issuer "$AC_API_ISSUER_ID"
+          rm -f "$key"
+
+      # Fallback: Apple ID + app-specific password, only when no API key is set.
+      - name: setup notarytool credentials (Apple ID)
+        if: ${{ env.HAS_NOTARY_API_KEY != 'true' && env.HAS_NOTARY_PASSWORD == 'true' }}
         env:
           AC_NOTARY_PASSWORD: ${{ secrets.AC_NOTARY_PASSWORD }}
         run: |
