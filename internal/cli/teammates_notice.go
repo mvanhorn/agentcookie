@@ -120,7 +120,7 @@ var errNoReleasePin = errors.New("this agentcookie build has no release pin; ins
 // releaseTagRE is a published release tag: vX.Y.Z with an optional
 // alpha, beta or rc suffix. It rejects `git describe` output between tags
 // (-N-g<hash>), -dirty, goreleaser snapshots and the in-source dev default.
-var releaseTagRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)(\.?[0-9]+)?)?$`)
+var releaseTagRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc|ci)(\.?[0-9]+)?)?$`)
 
 var sha256HexRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 

@@ -164,7 +164,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     needs: [build-linux, build-darwin]
-    if: ${{ vars.RELEASE_CI_ENABLED == 'true' && !contains(github.ref_name, '-ci') }}
+    if: ${{ vars.RELEASE_CI_ENABLED == 'true' && !contains(github.ref, '-ci') }}
     steps:
       - uses: actions/checkout@v4
         with:
