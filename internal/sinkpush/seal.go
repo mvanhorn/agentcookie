@@ -7,6 +7,12 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 )
 
+// These seams let unit tests avoid the native credential provider.
+var (
+	masterKeyExists = keystore.MasterKeyExists
+	readMasterKey   = keystore.ReadMasterKey
+)
+
 // SealedPrefix mirrors pkg/sidecar.SealedPrefix. Sinkpush adapter
 // writers use the same on-disk envelope shape as the cookie sidecar:
 // "agc1:" + base64(seal(masterKey, plaintext)). PP CLIs that consume
@@ -24,10 +30,10 @@ const SealedPrefix = "agc1:"
 // Errors only when the master key item exists but cannot be read or
 // the seal step itself fails. Returns plain + nil otherwise.
 func maybeSeal(plain string) (string, error) {
-	if !keystore.MasterKeyExists() {
+	if !masterKeyExists() {
 		return plain, nil
 	}
-	mk, err := keystore.ReadMasterKey()
+	mk, err := readMasterKey()
 	if err != nil {
 		return "", fmt.Errorf("read master key: %w", err)
 	}

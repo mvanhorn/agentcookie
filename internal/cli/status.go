@@ -171,6 +171,10 @@ var statusCmd = &cobra.Command{
 			if !st.SourceState.LastPush.IsZero() {
 				ago = time.Since(st.SourceState.LastPush).Round(time.Second).String() + " ago"
 			}
+			if reader := st.SourceState.Reader; reader != nil {
+				fmt.Printf("  source reader: %s (%s)\n", reader.Mode, reader.Reason)
+			}
+
 			fmt.Printf("  source daemon: %d pushes, %d failures, last push %s\n",
 				st.SourceState.TotalPushes, st.SourceState.TotalFailures, ago)
 			// Per-sink breakdown (multi-sink fan-out). Absent for a

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
+	"github.com/mvanhorn/agentcookie/internal/source"
 	"github.com/mvanhorn/agentcookie/pkg/sidecar"
 )
 
@@ -81,6 +84,58 @@ func collectDomainCookiesUnion(sidecarPath, domain string, matcher *protocol.Blo
 	for _, c := range sidecarCookies {
 		key := c.HostKey + "\x00" + c.Name
 		seen[key] = true
+	}
+
+	// A configured source is a first-class consumer, including CDP. A bad
+	// source config fails closed instead of silently reading a different browser.
+	sourcePath := filepath.Join(common.ConfigDir, "source.yaml")
+	if _, statErr := os.Stat(sourcePath); statErr == nil {
+		cfg, err := config.LoadSourceLocal(common.ConfigDir)
+		if err != nil {
+			return nil, err
+		}
+		if !cfg.CDPSource.Enabled {
+			if runtime.GOOS != "darwin" {
+				return sidecarCookies, nil
+			}
+			sinkCfg, loadErr := config.LoadSink(common.ConfigDir)
+			_, sinkStatErr := os.Stat(filepath.Join(common.ConfigDir, "sink.yaml"))
+			if (loadErr != nil && !os.IsNotExist(sinkStatErr)) || !safeStorageReadAllowed(sinkCfg) {
+				return sidecarCookies, nil
+			}
+		}
+		var key []byte
+		if !cfg.CDPSource.Enabled {
+			key, err = getChromeDecryptKey(cfg.Browser.Name)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "agentcookie cookies: configured source unavailable (%v); returning sidecar cookies only\n", err)
+				return sidecarCookies, nil
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		all, _, err := readConfiguredCookies(ctx, cfg, nil, key, false, time.Now())
+		cancel()
+		if err != nil {
+			if cfg.CDPSource.Enabled {
+				return nil, err
+			}
+			fmt.Fprintf(os.Stderr, "agentcookie cookies: configured source unavailable (%v); returning sidecar cookies only\n", err)
+			return sidecarCookies, nil
+		}
+		for _, c := range all {
+			id := c.HostKey + "\x00" + c.Name
+			if seen[id] || c.Value == "" || !hostMatchesDomain(c.HostKey, strings.TrimPrefix(domain, ".")) || (matcher != nil && !matcher.ShouldSyncHost(c.HostKey)) {
+				continue
+			}
+			seen[id] = true
+			sidecarCookies = append(sidecarCookies, sidecar.Cookie{HostKey: c.HostKey, Name: c.Name, Value: c.Value, Path: c.Path, ExpiresUTC: c.ExpiresUTC, IsSecure: c.IsSecure != 0, IsHTTPOnly: c.IsHTTPOnly != 0})
+		}
+		// CDP's explicit no-fallback contract includes discovery and Keychain.
+		if cfg.CDPSource.Enabled {
+			return sidecarCookies, nil
+		}
+	} else if !os.IsNotExist(statErr) {
+		return nil, statErr
 	}
 
 	// On Darwin, also read from discovered Chrome profiles.
@@ -287,7 +342,22 @@ func readChromeDecryptKey(browserName string) ([]byte, error) {
 
 // readCookiesFromStore reads cookies from a Chrome SQLite file.
 func readCookiesFromStore(cookiesPath, hostPattern string, key []byte) ([]chrome.Cookie, error) {
-	return chrome.ReadCookiesForHost(cookiesPath, hostPattern, key)
+	cfg, err := config.EffectiveSource(&config.SourceConfig{Chrome: config.ChromeRef{DBPath: cookiesPath}}, config.SourceOverrides{})
+	if err != nil {
+		return nil, err
+	}
+	reader, err := source.NewChromiumFileWithKey(cfg, source.Options{}, source.Dependencies{ReadCookies: func(path, _ string, key []byte) ([]chrome.Cookie, error) {
+		return chrome.ReadCookiesForHost(path, hostPattern, key)
+	}}, key)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	snapshot, err := reader.Read(context.Background(), nil)
+	if err != nil {
+		return nil, err
+	}
+	return snapshot.Cookies, nil
 }
 
 // collectDomainCookies is the legacy function that reads only from sidecar.

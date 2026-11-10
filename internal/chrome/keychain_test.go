@@ -9,12 +9,18 @@ import (
 )
 
 func TestSafeStoragePasswordFor_SkipsCGOForUnsignedBinary(t *testing.T) {
-	origCodesign := codesignRunner
-	origKeybase := safeStorageViaKeybaseRunner
+	origCodesign, origKeybase, origLocked, origCLI := codesignRunner, safeStorageViaKeybaseRunner, keychainLockedCheck, securityCLIRead
 	t.Cleanup(func() {
-		codesignRunner = origCodesign
-		safeStorageViaKeybaseRunner = origKeybase
+		codesignRunner, safeStorageViaKeybaseRunner, keychainLockedCheck, securityCLIRead = origCodesign, origKeybase, origLocked, origCLI
 	})
+	// Lane-selection tests must never query a native keychain or invoke the
+	// security executable, including on macOS or if the selected lane regresses.
+	keychainLockedCheck = func() (bool, error) { return false, nil }
+	cliCalled := false
+	securityCLIRead = func(_ context.Context, _, _ string) ([]byte, []byte, error) {
+		cliCalled = true
+		return []byte("fixture-password"), nil, nil
+	}
 
 	codesignRunner = func(string) (string, error) {
 		return "path/to/bin: code object is not signed at all", nil
@@ -26,7 +32,10 @@ func TestSafeStoragePasswordFor_SkipsCGOForUnsignedBinary(t *testing.T) {
 	}
 
 	b, _ := LookupBrowser("")
-	SafeStoragePasswordFor(b) //nolint:errcheck
+	pw, err := SafeStoragePasswordFor(b)
+	if err != nil || pw != "fixture-password" || !cliCalled {
+		t.Fatalf("expected synthetic CLI fallback, got called=%v err=%v", cliCalled, err)
+	}
 	if keybaseCalled {
 		t.Error("safeStorageViaKeybaseRunner must not be called for unsigned binaries")
 	}
@@ -93,12 +102,18 @@ func TestSafeStoragePasswordFor_UnknownLockStateFallsThroughToCLI(t *testing.T) 
 }
 
 func TestSafeStoragePasswordFor_UsesCGOForSignedBinary(t *testing.T) {
-	origCodesign := codesignRunner
-	origKeybase := safeStorageViaKeybaseRunner
+	origCodesign, origKeybase, origLocked, origCLI := codesignRunner, safeStorageViaKeybaseRunner, keychainLockedCheck, securityCLIRead
 	t.Cleanup(func() {
-		codesignRunner = origCodesign
-		safeStorageViaKeybaseRunner = origKeybase
+		codesignRunner, safeStorageViaKeybaseRunner, keychainLockedCheck, securityCLIRead = origCodesign, origKeybase, origLocked, origCLI
 	})
+	// Lane-selection tests must never query a native keychain or invoke the
+	// security executable, including on macOS or if the selected lane regresses.
+	keychainLockedCheck = func() (bool, error) { return false, nil }
+	cliCalled := false
+	securityCLIRead = func(_ context.Context, _, _ string) ([]byte, []byte, error) {
+		cliCalled = true
+		return []byte("fixture-password"), nil, nil
+	}
 
 	codesignRunner = func(string) (string, error) {
 		return "TeamIdentifier=ABC1234DEF", nil
@@ -117,18 +132,27 @@ func TestSafeStoragePasswordFor_UsesCGOForSignedBinary(t *testing.T) {
 	if !keybaseCalled {
 		t.Error("safeStorageViaKeybaseRunner must be called for signed binaries")
 	}
+	if cliCalled {
+		t.Error("signed success must not call the CLI fallback")
+	}
 	if pw != "test-password" {
 		t.Errorf("password = %q, want %q", pw, "test-password")
 	}
 }
 
 func TestSafeStoragePasswordFor_BinaryTeamIDErrorTreatedAsUnsigned(t *testing.T) {
-	origCodesign := codesignRunner
-	origKeybase := safeStorageViaKeybaseRunner
+	origCodesign, origKeybase, origLocked, origCLI := codesignRunner, safeStorageViaKeybaseRunner, keychainLockedCheck, securityCLIRead
 	t.Cleanup(func() {
-		codesignRunner = origCodesign
-		safeStorageViaKeybaseRunner = origKeybase
+		codesignRunner, safeStorageViaKeybaseRunner, keychainLockedCheck, securityCLIRead = origCodesign, origKeybase, origLocked, origCLI
 	})
+	// Lane-selection tests must never query a native keychain or invoke the
+	// security executable, including on macOS or if the selected lane regresses.
+	keychainLockedCheck = func() (bool, error) { return false, nil }
+	cliCalled := false
+	securityCLIRead = func(_ context.Context, _, _ string) ([]byte, []byte, error) {
+		cliCalled = true
+		return []byte("fixture-password"), nil, nil
+	}
 
 	// Non-unsigned codesign error (e.g., binary not found) → treat as unsigned.
 	codesignRunner = func(string) (string, error) {
@@ -141,7 +165,10 @@ func TestSafeStoragePasswordFor_BinaryTeamIDErrorTreatedAsUnsigned(t *testing.T)
 	}
 
 	b, _ := LookupBrowser("")
-	SafeStoragePasswordFor(b) //nolint:errcheck
+	pw, err := SafeStoragePasswordFor(b)
+	if err != nil || pw != "fixture-password" || !cliCalled {
+		t.Fatalf("expected synthetic CLI fallback, got called=%v err=%v", cliCalled, err)
+	}
 	if keybaseCalled {
 		t.Error("safeStorageViaKeybaseRunner must not be called when BinaryTeamID errors")
 	}

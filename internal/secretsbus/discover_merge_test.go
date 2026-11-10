@@ -3,8 +3,17 @@ package secretsbus
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
+
+func loadPayloadWithDiscoveryForTest(t *testing.T, home string) (*Payload, []error) {
+	t.Helper()
+	return loadPayloadWithDiscovery(home, DiscoveryConfig{
+		HomeDir:    home,
+		SystemPath: t.TempDir(),
+	})
+}
 
 func TestLoadPayloadWithDiscovery_V1OnlyStillWorks(t *testing.T) {
 	home := t.TempDir()
@@ -13,7 +22,7 @@ func TestLoadPayloadWithDiscovery_V1OnlyStillWorks(t *testing.T) {
 	os.MkdirAll(d, 0o700)
 	os.WriteFile(filepath.Join(d, "secrets.env"), []byte("A=1\nB=2\n"), 0o600)
 
-	p, errs := LoadPayloadWithDiscovery(home)
+	p, errs := loadPayloadWithDiscoveryForTest(t, home)
 	if len(errs) > 0 {
 		t.Errorf("unexpected errs: %v", errs)
 	}
@@ -45,7 +54,7 @@ path = "~/.config/demo/.env"
 	os.MkdirAll(manDir, 0o700)
 	os.WriteFile(filepath.Join(manDir, "demo.toml"), []byte(manifest), 0o600)
 
-	p, errs := LoadPayloadWithDiscovery(home)
+	p, errs := loadPayloadWithDiscoveryForTest(t, home)
 	if len(errs) > 0 {
 		t.Errorf("unexpected errs: %v", errs)
 	}
@@ -81,7 +90,7 @@ path = "~/.config/demo/.env"
 	os.MkdirAll(manDir, 0o700)
 	os.WriteFile(filepath.Join(manDir, "demo.toml"), []byte(manifest), 0o600)
 
-	p, _ := LoadPayloadWithDiscovery(home)
+	p, _ := loadPayloadWithDiscoveryForTest(t, home)
 	got := p.CLIs["demo"]
 	if got["TOKEN"] != "v1" {
 		t.Errorf("v1 should win on TOKEN; got %q", got["TOKEN"])
@@ -111,7 +120,7 @@ CONFIG = false
 	os.MkdirAll(manDir, 0o700)
 	os.WriteFile(filepath.Join(manDir, "demo.toml"), []byte(manifest), 0o600)
 
-	p, _ := LoadPayloadWithDiscovery(home)
+	p, _ := loadPayloadWithDiscoveryForTest(t, home)
 	got := p.CLIs["demo"]
 	if got["SECRET"] != "yes" {
 		t.Errorf("SECRET should ship: %v", got)
@@ -135,7 +144,7 @@ path = "~/.config/demo/.env"
 	os.MkdirAll(manDir, 0o700)
 	os.WriteFile(filepath.Join(manDir, "demo.toml"), []byte(manifest), 0o600)
 
-	p, errs := LoadPayloadWithDiscovery(home)
+	p, errs := loadPayloadWithDiscoveryForTest(t, home)
 	if _, ok := p.CLIs["demo"]; ok {
 		t.Errorf("missing file should produce no entry: %v", p.CLIs["demo"])
 	}
@@ -147,11 +156,31 @@ path = "~/.config/demo/.env"
 func TestLoadPayloadWithDiscovery_EmptyHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	p, errs := LoadPayloadWithDiscovery(home)
+	p, errs := loadPayloadWithDiscoveryForTest(t, home)
 	if len(errs) != 0 {
 		t.Errorf("empty home: unexpected errors: %v", errs)
 	}
 	if len(p.CLIs) != 0 {
 		t.Errorf("empty home should yield empty CLIs: %v", p.CLIs)
+	}
+}
+
+func TestLoadPayloadWithDiscovery_UsesConfiguredSystemRoot(t *testing.T) {
+	home, systemRoot := t.TempDir(), t.TempDir()
+	secretPath := filepath.Join(home, "system-fixture.env")
+	if err := os.WriteFile(secretPath, []byte("TOKEN=system-fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "schema_version = 2\nname = \"system-fixture\"\ndisplay_name = \"System fixture\"\n[secrets.file]\npath = " + strconv.Quote(secretPath) + "\n"
+	if err := os.WriteFile(filepath.Join(systemRoot, "fixture.toml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, errs := loadPayloadWithDiscovery(home, DiscoveryConfig{HomeDir: home, SystemPath: systemRoot})
+	if len(errs) != 0 || p.CLIs["system-fixture"]["TOKEN"] != "system-fixture" {
+		t.Fatalf("configured system manifest not loaded: payload=%+v errors=%v", p, errs)
+	}
+	p, errs = loadPayloadWithDiscoveryForTest(t, home)
+	if len(errs) != 0 || len(p.CLIs) != 0 {
+		t.Fatalf("empty fixture system root must not load other manifests: payload=%+v errors=%v", p, errs)
 	}
 }

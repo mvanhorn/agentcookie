@@ -84,6 +84,12 @@ func (l *sinkDeliveryLog) forget(peer, rawURL string) {
 // live CDP injection, and the heartbeat carries fresh ones every 10 minutes.
 func envelopeHash(env protocol.SyncEnvelope) ([sha256.Size]byte, error) {
 	env.Sequence = 0
+	if env.Snapshot != nil {
+		meta := *env.Snapshot
+		meta.Generation = 0
+		meta.Inventory.Unread = 0
+		env.Snapshot = &meta
+	}
 	cookies := make([]chrome.Cookie, len(env.Cookies))
 	for i, c := range env.Cookies {
 		c.LastAccessUTC = 0
