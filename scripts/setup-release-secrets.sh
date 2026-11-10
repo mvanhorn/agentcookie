@@ -23,18 +23,31 @@ WORK=$(mktemp -d); chmod 700 "$WORK"; trap 'rm -rf "$WORK"' EXIT
 cat > "$WORK/export.swift" <<'SWIFT'
 import Foundation
 import Security
-let label = CommandLine.arguments[1], out = CommandLine.arguments[2], pass = CommandLine.arguments[3]
+// Picks the newest still-valid identity with this exact name (an old and a
+// renewed certificate can both be in the keychain) and exports it as .p12.
+// The .p12 password comes from the environment, never argv.
+let label = CommandLine.arguments[1], out = CommandLine.arguments[2]
+guard let pass = ProcessInfo.processInfo.environment["P12_PASS"], !pass.isEmpty else { print("P12_PASS not set"); exit(1) }
 var items: CFTypeRef?
 let q: [String: Any] = [kSecClass as String: kSecClassIdentity, kSecMatchLimit as String: kSecMatchLimitAll,
                         kSecReturnRef as String: true]
 guard SecItemCopyMatching(q as CFDictionary, &items) == errSecSuccess, let ids = items as? [SecIdentity] else { print("no identities"); exit(1) }
-var match: SecIdentity?
+func notAfter(_ c: SecCertificate) -> Date? {
+    guard let vals = SecCertificateCopyValues(c, [kSecOIDX509V1ValidityNotAfter] as CFArray, nil) as? [String: Any],
+          let entry = vals[kSecOIDX509V1ValidityNotAfter as String] as? [String: Any],
+          let n = entry[kSecPropertyKeyValue as String] as? NSNumber else { return nil }
+    return Date(timeIntervalSinceReferenceDate: n.doubleValue)
+}
+var best: (SecIdentity, Date)?
 for id in ids {
     var cert: SecCertificate?
     SecIdentityCopyCertificate(id, &cert)
-    if let c = cert, (SecCertificateCopySubjectSummary(c) as String?) == label { match = id }
+    guard let c = cert, (SecCertificateCopySubjectSummary(c) as String?) == label,
+          let exp = notAfter(c), exp > Date() else { continue }
+    if best == nil || exp > best!.1 { best = (id, exp) }
 }
-guard let identity = match else { print("identity not found: \(label)"); exit(1) }
+guard let (identity, exp) = best else { print("no valid identity named: \(label)"); exit(1) }
+print("using the certificate that expires \(exp)")
 var params = SecItemImportExportKeyParameters()
 params.version = UInt32(SEC_KEY_IMPORT_EXPORT_PARAMS_VERSION)
 params.passphrase = Unmanaged.passRetained(pass as CFString)
@@ -46,7 +59,7 @@ SWIFT
 
 P12_PASS=$(openssl rand -base64 24)
 echo "Exporting the Developer ID identity. macOS will ask you to allow it: enter your Mac login password and click Allow."
-swift "$WORK/export.swift" "$IDENTITY" "$WORK/cert.p12" "$P12_PASS"
+P12_PASS="$P12_PASS" swift "$WORK/export.swift" "$IDENTITY" "$WORK/cert.p12"
 
 base64 -i "$WORK/cert.p12" | tr -d '\n' | gh secret set CERTIFICATE_OSX_APPLICATION --repo "$REPO"
 printf '%s' "$P12_PASS" | gh secret set CERTIFICATE_OSX_APPLICATION_PASSWORD --repo "$REPO"

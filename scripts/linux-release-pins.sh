@@ -56,7 +56,10 @@ tag="$1"
 dist="${2:-dist}"
 
 # Same rule as the binary (internal/cli releaseTagRE): a published tag,
-# never `git describe` output between tags, -dirty, or a snapshot.
+# never `git describe` output between tags, -dirty, or a snapshot. One
+# deliberate difference: -ci.N test tags are accepted here so release CI can
+# be proven end to end, but the binary rejects them, so a CI-built binary
+# never sends a teammate notice for a release that was never published.
 if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc|ci)(\.?[0-9]+)?)?$ ]]; then
   echo "linux-release-pins.sh: '$tag' is not a release tag (need e.g. v1.3.0 or v1.3.0-rc.1)" >&2
   exit 2

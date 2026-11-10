@@ -5,7 +5,8 @@
 ### Release CI notarizes with an App Store Connect API key
 
 - The release workflow now notarizes with an App Store Connect API key (`AC_API_KEY_P8`, `AC_API_KEY_ID`, `AC_API_ISSUER_ID`) when those secrets are set, and falls back to the Apple ID + app-specific password only when they are not. No Apple Account password or 2FA is involved.
-- New `scripts/setup-release-secrets.sh <AuthKey_XXXX.p8> <issuer-id>` exports only the Developer ID identity as a .p12, checks the API key with Apple, and sets all release secrets without printing them. The v1.4.0 to v1.6.0 Mac builds failed in CI because these secrets were missing.
+- `vX.Y.Z-ci.N` tags build, sign and notarize but never publish, so release CI can be proven without a release. The binary still rejects `-ci` tags, so a CI-built binary never sends a teammate notice for an unpublished release.
+- New `scripts/setup-release-secrets.sh <AuthKey_XXXX.p8> <issuer-id>` exports only the newest still-valid Developer ID identity as a .p12 (its password goes through the environment, never argv), checks the API key with Apple, and sets all release secrets without printing them. The v1.4.0 to v1.6.0 Mac builds failed in CI because these secrets were missing.
 
 ### New `agentcookie profile-sync`: copy logins into a second local Chrome profile
 
