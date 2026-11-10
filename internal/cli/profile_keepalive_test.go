@@ -382,7 +382,7 @@ func TestKeepaliveWizard_OptOutFlag(t *testing.T) {
 
 func TestCheckProfileKeepalive(t *testing.T) {
 	base := profileKeepaliveCheckEnv{
-		qualify:   func() []chrome.ClaudeProfile { return twoAccounts() },
+		qualify:   func() ([]chrome.ClaudeProfile, []error) { return twoAccounts(), nil },
 		installed: func() bool { return true },
 		optedOut:  func() bool { return false },
 		chromePID: func() (int, bool) { return 764, true },
@@ -394,7 +394,12 @@ func TestCheckProfileKeepalive(t *testing.T) {
 		want Severity
 	}{
 		{"all loaded", func(*profileKeepaliveCheckEnv) {}, SeverityOK},
-		{"gate fails", func(e *profileKeepaliveCheckEnv) { e.qualify = func() []chrome.ClaudeProfile { return nil } }, SeveritySkipped},
+		{"gate fails", func(e *profileKeepaliveCheckEnv) {
+			e.qualify = func() ([]chrome.ClaudeProfile, []error) { return nil, nil }
+		}, SeveritySkipped},
+		{"store unreadable", func(e *profileKeepaliveCheckEnv) {
+			e.qualify = func() ([]chrome.ClaudeProfile, []error) { return nil, []error{errors.New("operation not permitted")} }
+		}, SeverityWarn},
 		{"turned off", func(e *profileKeepaliveCheckEnv) { e.optedOut = func() bool { return true } }, SeveritySkipped},
 		{"chrome closed", func(e *profileKeepaliveCheckEnv) { e.chromePID = func() (int, bool) { return 0, false } }, SeveritySkipped},
 		{"agent missing", func(e *profileKeepaliveCheckEnv) { e.installed = func() bool { return false } }, SeverityWarn},
@@ -482,5 +487,36 @@ func TestKeepalive_RepeatedGateErrorLoggedOnce(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("a repeated read error must be logged once, got %d times", n)
+	}
+}
+
+func TestKeepalive_PauseAfterSendIsNotAFailure(t *testing.T) {
+	f := newFakeKeepalive()
+	l := f.loop()
+	f.loaded["Profile 1"] = false
+	l.tick(context.Background()) // sends a load that does not take
+	f.paused["Profile 1"] = f.now.Add(10 * time.Minute)
+	for range 4 {
+		f.advance(time.Minute)
+		l.tick(context.Background())
+	}
+	if st := l.state["Profile 1"]; st.failures != 0 {
+		t.Fatalf("a paused profile must not collect failures, got %d", st.failures)
+	}
+	if len(f.notes) != 0 {
+		t.Fatalf("no notification while paused, got %v", f.notes)
+	}
+}
+
+func TestKeepaliveEnable_UnreadableStoreIsAnError(t *testing.T) {
+	installs, _ := stubKeepaliveInstall(t, nil)
+	keepaliveQualify = func(string) ([]chrome.ClaudeProfile, []error) {
+		return nil, []error{errors.New("Profile 1: operation not permitted")}
+	}
+	if err := enableProfileKeepalive(false, true); err == nil {
+		t.Fatal("enable must report an unreadable store instead of saying not needed")
+	}
+	if len(*installs) != 0 {
+		t.Fatalf("nothing may be installed, got %v", *installs)
 	}
 }

@@ -2,6 +2,7 @@ package chrome
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -40,6 +41,9 @@ type ClaudeProfile struct {
 // skipped and their errors returned for logging.
 func QualifyingClaudeProfiles(root string) ([]ClaudeProfile, []error) {
 	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil // no Chrome here: nothing to keep alive, not an error
+	}
 	if err != nil {
 		return nil, []error{err}
 	}

@@ -201,3 +201,10 @@ func TestQualifyingClaudeProfiles_CacheSeesAccountChange(t *testing.T) {
 		t.Fatalf("after Profile 1 changed account the cache must not be reused, got %v", profileNames(got))
 	}
 }
+
+func TestQualifyingClaudeProfiles_NoChromeIsNotAnError(t *testing.T) {
+	got, errs := QualifyingClaudeProfiles(filepath.Join(t.TempDir(), "missing"))
+	if got != nil || len(errs) != 0 {
+		t.Fatalf("a machine without Chrome must give no profiles and no errors, got %v %v", got, errs)
+	}
+}

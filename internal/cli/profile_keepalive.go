@@ -222,14 +222,17 @@ func (l *keepaliveLoop) tick(ctx context.Context) {
 			*st = keepaliveProfileState{}
 			continue
 		}
+		if now.Before(l.d.PausedUntil(p.Profile)) {
+			// A paused profile may be unloaded on purpose (profile-sync), so
+			// a load sent before the pause does not count as a failure.
+			st.awaitingVerdict = false
+			continue
+		}
 		if st.awaitingVerdict {
 			st.awaitingVerdict = false
 			l.fail(st, p.Profile, st.sentAt, "it was still not loaded after a load")
 		}
 		if !st.lastFailed.IsZero() && now.Sub(st.lastFailed) < keepaliveRetryAfter {
-			continue
-		}
-		if now.Before(l.d.PausedUntil(p.Profile)) {
 			continue
 		}
 		// Chrome may have quit since the check above; a send with no
@@ -346,8 +349,11 @@ func enableProfileKeepalive(fromWizard, quiet bool) error {
 			return err
 		}
 	}
-	profiles, _ := keepaliveQualify(chromepaths.ChromeProfileRoot())
+	profiles, errs := keepaliveQualify(chromepaths.ChromeProfileRoot())
 	if len(profiles) == 0 {
+		if len(errs) > 0 {
+			return fmt.Errorf("profile-keepalive: could not read Claude in Chrome's account in every profile, so whether it is needed is unknown: %w", errors.Join(errs...))
+		}
 		logf("agentcookie profile-keepalive: not needed (fewer than two Chrome profiles are signed into different Claude accounts in Claude in Chrome)")
 		return nil
 	}
@@ -396,7 +402,7 @@ func disableProfileKeepalive() error {
 }
 
 type profileKeepaliveCheckEnv struct {
-	qualify   func() []chrome.ClaudeProfile
+	qualify   func() ([]chrome.ClaudeProfile, []error)
 	installed func() bool
 	optedOut  func() bool
 	chromePID func() (int, bool)
@@ -406,9 +412,8 @@ type profileKeepaliveCheckEnv struct {
 func checkProfileKeepalive() Check {
 	root := chromepaths.ChromeProfileRoot()
 	return checkProfileKeepaliveWith(profileKeepaliveCheckEnv{
-		qualify: func() []chrome.ClaudeProfile {
-			p, _ := chrome.QualifyingClaudeProfiles(root)
-			return p
+		qualify: func() ([]chrome.ClaudeProfile, []error) {
+			return chrome.QualifyingClaudeProfiles(root)
 		},
 		installed: func() bool { return launchd.IsInstalled(launchd.Spec{Role: launchd.RoleProfileKeepalive}) },
 		optedOut:  keepaliveOptedOut,
@@ -422,8 +427,16 @@ func checkProfileKeepaliveWith(e profileKeepaliveCheckEnv) Check {
 	if e.optedOut() {
 		return Check{Name: name, Severity: SeveritySkipped, Detail: "turned off with `profile-keepalive disable`"}
 	}
-	profiles := e.qualify()
+	profiles, errs := e.qualify()
 	if len(profiles) == 0 {
+		if len(errs) > 0 {
+			return Check{
+				Name:        name,
+				Severity:    SeverityWarn,
+				Detail:      "could not read Claude in Chrome's account in every profile: " + errors.Join(errs...).Error(),
+				Remediation: "check that agentcookie can read Chrome's profile folder, then run `agentcookie doctor` again",
+			}
+		}
 		return Check{Name: name, Severity: SeveritySkipped, Detail: "not needed (fewer than two Chrome profiles signed into different Claude accounts)"}
 	}
 	if !e.installed() {
