@@ -144,6 +144,9 @@ func runSink(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	defer rt.destinations.Close()
+	rt.destinations.Start(cmd.Context())
+	startDestinationStatusUpdates(cmd.Context(), rt)
 	logSinkStartupBlocklistStatus()
 
 	if pullFrom != "" {
@@ -165,8 +168,10 @@ func runSink(cmd *cobra.Command, args []string) error {
 
 	key, seqTracker, stateWriter, sinkState, stateMu := rt.key, rt.seq, rt.writer, rt.st, &rt.mu
 	reinject := newLiveCDPReinjector(cfg, stateWriter, sinkState, stateMu)
-	mux := newSinkMux(cfg, transportSecret, key, seqTracker, stateWriter, sinkState, stateMu, reinject)
-	startLiveCDPReinject(cmd.Context(), cfg, reinject)
+	mux := newSinkMux(cfg, transportSecret, key, seqTracker, stateWriter, sinkState, stateMu, reinject, rt.destinations)
+	if rt.destinations == nil {
+		startLiveCDPReinject(cmd.Context(), cfg, reinject)
+	}
 
 	srv := httpserver.Configure(&http.Server{Addr: cfg.Listen.Addr, Handler: mux}, httpserver.SinkSync)
 	if sinkDryRun {
@@ -181,12 +186,13 @@ func runSink(cmd *cobra.Command, args []string) error {
 // Chrome key (nil when Chrome SQLite is skipped), the persistent replay
 // tracker, and the status file.
 type sinkRuntime struct {
-	cfg    *config.SinkConfig
-	key    []byte
-	seq    *protocol.SequenceTracker
-	writer *state.Writer
-	st     *state.SinkState
-	mu     sync.Mutex
+	cfg          *config.SinkConfig
+	key          []byte
+	seq          *protocol.SequenceTracker
+	writer       *state.Writer
+	st           *state.SinkState
+	mu           sync.Mutex
+	destinations *destinationPipeline
 }
 
 func newSinkRuntime(cfg *config.SinkConfig) (*sinkRuntime, error) {
@@ -199,6 +205,8 @@ func newSinkRuntime(cfg *config.SinkConfig) (*sinkRuntime, error) {
 	switch {
 	case sinkDryRun:
 		fmt.Fprintln(os.Stderr, "agentcookie sink: --dry-run set; skipping Chrome Safe Storage and all write paths")
+	case cfg.LiveDestinationMode():
+	// Explicit destinations own their delivery credentials and never read Chrome Safe Storage.
 	case cfg.SkipChromeSQLite:
 		fmt.Fprintln(os.Stderr, "agentcookie sink: skip_chrome_sqlite set; sidecar + adapter push only (no Chrome Safe Storage read, no Chrome SQLite write)")
 	default:
@@ -224,20 +232,28 @@ func newSinkRuntime(cfg *config.SinkConfig) (*sinkRuntime, error) {
 		return nil, fmt.Errorf("load replay-defense state: %w", err)
 	}
 
+	var destinations *destinationPipeline
+	if !sinkDryRun {
+		destinations, err = newDestinationPipeline(cfg)
+	}
+	if err != nil {
+		return nil, err
+	}
 	// State writer for `agentcookie status` to read.
 	return &sinkRuntime{
-		cfg:    cfg,
-		key:    key,
-		seq:    seqTracker,
-		writer: state.NewWriter(state.SinkPath(home)),
-		st:     &state.SinkState{Role: "sink", ListenAddr: cfg.Listen.Addr},
+		destinations: destinations,
+		cfg:          cfg,
+		key:          key,
+		seq:          seqTracker,
+		writer:       state.NewWriter(state.SinkPath(home)),
+		st:           &state.SinkState{Role: "sink", ListenAddr: cfg.Listen.Addr},
 	}, nil
 }
 
 // applier returns the envelope apply function shared by /sync and pull.
 func (rt *sinkRuntime) applier(ctx context.Context, transportSecret string) func([]byte) envelopeApplyResult {
 	return func(sealed []byte) envelopeApplyResult {
-		return applySealedEnvelope(ctx, rt.cfg, transportSecret, rt.key, rt.seq, rt.writer, rt.st, &rt.mu, sealed)
+		return applySealedEnvelope(ctx, rt.cfg, transportSecret, rt.key, rt.seq, rt.writer, rt.st, &rt.mu, sealed, rt.destinations)
 	}
 }
 
@@ -307,8 +323,17 @@ func newSinkMux(
 	sinkState *state.SinkState,
 	stateMu *sync.Mutex,
 	reinject *liveCDPReinjector,
+	pipelines ...*destinationPipeline,
 ) *http.ServeMux {
 	mux := http.NewServeMux()
+	var pipeline *destinationPipeline
+	if len(pipelines) > 0 {
+		pipeline = pipelines[0]
+	}
+	if pipeline != nil {
+		pipeline.seq = seqTracker
+	}
+	pipeline.register(mux, transportSecret)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintln(w, "ok")
 	})
@@ -324,7 +349,7 @@ func newSinkMux(
 			return
 		}
 		reinject.beginApply()
-		res := applySealedEnvelope(r.Context(), cfg, transportSecret, key, seqTracker, stateWriter, sinkState, stateMu, sealed)
+		res := applySealedEnvelope(r.Context(), cfg, transportSecret, key, seqTracker, stateWriter, sinkState, stateMu, sealed, pipeline)
 		reinject.endApply(res)
 		if res.Status != http.StatusOK {
 			http.Error(w, res.Reply, res.Status)
@@ -360,6 +385,7 @@ func applySealedEnvelope(
 	sinkState *state.SinkState,
 	stateMu *sync.Mutex,
 	sealed []byte,
+	pipelines ...*destinationPipeline,
 ) envelopeApplyResult {
 	plaintext, err := transport.OpenWithSecret(sealed, transportSecret)
 	if err != nil {
@@ -369,8 +395,16 @@ func applySealedEnvelope(
 	if err := json.Unmarshal(plaintext, &envelope); err != nil {
 		return envelopeApplyResult{Status: http.StatusBadRequest, Reply: "unmarshal envelope: " + err.Error()}
 	}
-	if envelope.ProtocolVersion < protocol.MinVersion || envelope.ProtocolVersion > protocol.Version {
-		return envelopeApplyResult{Status: http.StatusBadRequest, Reply: fmt.Sprintf("protocol version mismatch: got %d, sink speaks %d-%d", envelope.ProtocolVersion, protocol.MinVersion, protocol.Version)}
+	var pipeline *destinationPipeline
+	if len(pipelines) > 0 {
+		pipeline = pipelines[0]
+	}
+	maxVersion := protocol.Version
+	if pipeline != nil {
+		maxVersion = protocol.Version3
+	}
+	if envelope.ProtocolVersion < protocol.MinVersion || envelope.ProtocolVersion > maxVersion {
+		return envelopeApplyResult{Status: http.StatusBadRequest, Reply: fmt.Sprintf("protocol version mismatch: got %d, sink speaks %d-%d", envelope.ProtocolVersion, protocol.MinVersion, maxVersion)}
 	}
 
 	bl, err := loadFreshBlocklist()
@@ -381,7 +415,22 @@ func applySealedEnvelope(
 	}
 	blockMatcher := protocol.NewBlocklistMatcherForSink(bl)
 
-	if !seqTracker.Accept(envelope.SourceHostname, envelope.Sequence) {
+	if pipeline != nil {
+		if err := pipeline.validate(envelope); err != nil {
+			return envelopeApplyResult{Status: 400, Reply: err.Error()}
+		}
+		// SourceHostname is a peer-reported replay label, not the peer-key
+		// lookup address. Pairing may store the key under an IP or DNS alias.
+		// OpenWithSecret above authenticates the envelope with that key; the
+		// sequence tracker separately rejects unsafe namespace components.
+	}
+	replayOK := false
+	if envelope.ProtocolVersion >= 3 {
+		replayOK = seqTracker.AcceptDestination(envelope.SourceHostname, envelope.Destination, envelope.Sequence)
+	} else {
+		replayOK = seqTracker.Accept(envelope.SourceHostname, envelope.Sequence)
+	}
+	if !replayOK {
 		return envelopeApplyResult{Status: http.StatusConflict, Reply: fmt.Sprintf("sequence %d not greater than last seen for %q (replay defense)", envelope.Sequence, envelope.SourceHostname)}
 	}
 
@@ -417,6 +466,30 @@ func applySealedEnvelope(
 		return envelopeApplyResult{Status: http.StatusOK, Reply: fmt.Sprintf("dry-run ok: accepted %d cookies; dropped %d %s cookies", len(cookies), dropped, blockMatcher.DropLabel())}
 	}
 
+	if pipeline != nil {
+		envelope.Cookies = cookies
+		reply, err := pipeline.apply(ctx, envelope, blockMatcher)
+		if err != nil {
+			return envelopeApplyResult{Status: 409, Reply: err.Error()}
+		}
+		applySecretsToSink(envelope.Secrets)
+		data, err := json.Marshal(reply)
+		if err != nil {
+			return envelopeApplyResult{Status: 500, Reply: err.Error()}
+		}
+		stateMu.Lock()
+		sinkState.LastWrite = time.Now().UTC()
+		sinkState.LastWriteCount = len(cookies)
+		sinkState.LastWriteMode = "live-destination"
+		sinkState.TotalWrites++
+		sinkState.Destinations = reply.Destinations
+		sinkState.LastSourceBrowser = envelope.SourceBrowser
+		if stateWriter != nil {
+			_ = stateWriter.Save(sinkState)
+		}
+		stateMu.Unlock()
+		return envelopeApplyResult{Status: 200, Reply: string(data)}
+	}
 	var (
 		result    writeResult
 		writeMode string
@@ -529,16 +602,7 @@ func applySealedEnvelope(
 	// key is present AND v0.12's sealing posture is on; the sealed
 	// twin appears alongside the plaintext. R12 regression guard:
 	// when envelope.Secrets is empty/nil this branch is a no-op.
-	if len(envelope.Secrets) > 0 {
-		home, _ := os.UserHomeDir()
-		sealingEnabled := keystore.MasterKeyExists()
-		secResult, secErrs := secretsbus.WritePayload(home, envelope.Secrets, sealingEnabled)
-		for _, e := range secErrs {
-			fmt.Fprintf(os.Stderr, "agentcookie sink: secrets-bus: %v\n", e)
-		}
-		fmt.Fprintf(os.Stderr, "agentcookie sink: secrets-bus wrote %d cli(s), %d key(s), %d sealed, %d file(s) materialized\n",
-			secResult.CLIsWritten, secResult.KeysWritten, secResult.SealedWritten, secResult.FilesMaterialized)
-	}
+	applySecretsToSink(envelope.Secrets)
 
 	// Update sink state under mutex to avoid races from concurrent /sync handlers.
 	stateMu.Lock()
@@ -697,13 +761,19 @@ func SetCDPInjectorForTesting(f func(ctx context.Context, profileDir string, coo
 // when present. Shared between the legacy path (applyEnvelopeToSink)
 // and the v0.12.0-beta.3 skip_chrome_sqlite path (applySidecarOnlyToSink).
 func writeCookiesSidecar(cookies []chrome.Cookie) (int, error) {
+	return chrome.WriteCookiesSidecar(chromepaths.SidecarCookiesDB(), cookies, sinkSidecarMasterKey())
+}
+
+// sinkSidecarMasterKey is injectable so hermetic in-process sinks cannot read
+// the host Keychain even if a test accidentally creates a master-key marker.
+var sinkSidecarMasterKey = func() []byte {
 	var sidecarMaster []byte
 	if keystore.MasterKeyExists() {
 		if mk, err := keystore.ReadMasterKey(); err == nil {
 			sidecarMaster = mk
 		}
 	}
-	return chrome.WriteCookiesSidecar(chromepaths.SidecarCookiesDB(), cookies, sidecarMaster)
+	return sidecarMaster
 }
 
 // applySidecarOnlyToSink is the v0.12.0-beta.3 headless-sink write path.
@@ -1020,4 +1090,18 @@ func isIPBoundLocally(ipStr string) bool {
 		}
 	}
 	return false
+}
+
+func applySecretsToSink(payload map[string]map[string]string) {
+	if len(payload) > 0 {
+		home, _ := os.UserHomeDir()
+		sealingEnabled := keystore.MasterKeyExists()
+		secResult, secErrs := secretsbus.WritePayload(home, payload, sealingEnabled)
+		for _, e := range secErrs {
+			fmt.Fprintf(os.Stderr, "agentcookie sink: secrets-bus: %v\n", e)
+		}
+		fmt.Fprintf(os.Stderr, "agentcookie sink: secrets-bus wrote %d cli(s), %d key(s), %d sealed, %d file(s) materialized\n",
+			secResult.CLIsWritten, secResult.KeysWritten, secResult.SealedWritten, secResult.FilesMaterialized)
+	}
+
 }

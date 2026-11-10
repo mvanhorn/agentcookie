@@ -9,17 +9,20 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chromedp/chromedp"
 	"github.com/spf13/cobra"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/config"
-	"github.com/mvanhorn/agentcookie/internal/livecdp"
+	"github.com/mvanhorn/agentcookie/internal/destination"
+	"github.com/mvanhorn/agentcookie/internal/keystore"
+	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"github.com/mvanhorn/agentcookie/internal/sinkpush"
-	"github.com/mvanhorn/agentcookie/internal/watcher"
+	"github.com/mvanhorn/agentcookie/internal/source"
 )
 
 var (
+	agentSyncProfile     string
+	agentSyncReader      string
 	agentSyncPort        int
 	agentSyncHeaded      bool
 	agentSyncChromePath  string
@@ -59,6 +62,8 @@ transfer to another browser and are reported, not faked. Non-DBSC sites
 }
 
 func init() {
+	agentSyncCmd.Flags().StringVar(&agentSyncProfile, "profile", "", "source profile selector")
+	agentSyncCmd.Flags().StringVar(&agentSyncReader, "reader", "", "source reader: auto or file")
 	agentSyncCmd.Flags().IntVar(&agentSyncPort, "port", 9400, "loopback Chrome remote-debugging port for the owned browser")
 	agentSyncCmd.Flags().BoolVar(&agentSyncHeaded, "headed", false, "show the owned browser window (default: headless)")
 	agentSyncCmd.Flags().StringVar(&agentSyncChromePath, "chrome-path", "", "override the Chrome executable (default: auto-detect)")
@@ -70,10 +75,16 @@ func init() {
 }
 
 func runAgentSync(cmd *cobra.Command, args []string) error {
+	ctx, closeReaders := withGeckoSession(cmd.Context())
+	defer closeReaders()
+	if cmd.Flags().Changed("profile") {
+		ctx = context.WithValue(ctx, geckoExplicitProfileKey{}, true)
+	}
+	cmd.SetContext(ctx)
 	// LoadSourceLocal: the agent-sync loop has no push target, so it must not
 	// require sink.url or a peer/secret. Missing source.yaml is fine (default
 	// Chrome path, no blocklist).
-	cfg, err := config.LoadSourceLocal(common.ConfigDir)
+	cfg, err := config.LoadSourceLocalWithOverrides(common.ConfigDir, config.SourceOverrides{Browser: agentSyncBrowser, Profile: agentSyncProfile, Reader: agentSyncReader})
 	if err != nil {
 		return err
 	}
@@ -82,7 +93,7 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	}
 
 	var key []byte
-	if !cfg.CDPSource.Enabled {
+	if !cfg.CDPSource.Enabled && !isGeckoSource(cfg) {
 		browserName := agentSyncBrowser
 		if browserName == "" {
 			browserName = cfg.Browser.Name
@@ -105,21 +116,17 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 
 	// Cookie provider: read+decrypt+filter fresh each call so the loop always
 	// injects current values.
-	provider := func() ([]chrome.Cookie, error) {
+	provider := func() (*source.Snapshot, error) {
 		blocklist, err := loadFreshBlocklist()
 		if err != nil {
 			return nil, err
 		}
-		cookies, st, err := readConfiguredCookies(cmd.Context(), cfg, blocklist, key, skipDBSC, time.Now().UTC())
+		snap, err := readConfiguredSnapshot(ctx, cfg, blocklist, key, skipDBSC, time.Now().UTC(), true)
 		if err != nil {
 			return nil, err
 		}
-		cookies = sinkpush.FilterByHostPatterns(cookies, domainFilter)
-		if agentSyncVerbose {
-			fmt.Fprintf(os.Stderr, "agentcookie agent-sync: read %d, filtered %d, dbsc(warn=%d skip=%d), injecting %d\n",
-				st.totalRead, st.totalDropped, st.dbsc.warned, st.dbsc.skipped, len(cookies))
-		}
-		return cookies, nil
+		snap.Cookies = sinkpush.FilterByHostPatterns(snap.Cookies, domainFilter)
+		return snap, nil
 	}
 
 	userDataDir := agentSyncUserDataDir
@@ -134,75 +141,84 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	oc, err := livecdp.LaunchOwnedChrome(ctx, agentSyncChromePath, userDataDir, agentSyncPort, !agentSyncHeaded)
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	defer oc.Close()
-
-	allocCtx, allocCancel := chromedp.NewRemoteAllocator(ctx, oc.Endpoint)
-	defer allocCancel()
-	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
-	defer browserCancel()
-
-	syncLog := func(format string, a ...any) {
-		if agentSyncVerbose {
-			fmt.Fprintf(os.Stderr, "agentcookie agent-sync: "+format+"\n", a...)
-		}
-	}
-	syncer := livecdp.NewSyncer(browserCtx, provider, syncLog)
-
-	// Initial inject so the owned browser's default context is logged in
-	// immediately; also surfaces connection/cookie errors at startup.
-	n, err := syncer.ReinjectAll()
+	headed := agentSyncHeaded
+	owned := destination.NewManaged(config.DestinationRef{Name: "agent-sync", Kind: "live_chrome", Required: true, Chrome: config.DestinationChrome{UserDataDir: userDataDir, Port: agentSyncPort, Headed: &headed, Start: "on_demand", Relaunch: "after_crash", Path: agentSyncChromePath}})
+	defer owned.Close()
+	applier, _, err := newDestinationApplier(owned)
 	if err != nil {
-		return fmt.Errorf("agent-sync: initial inject: %w", err)
+		return err
 	}
-
-	fmt.Fprintf(os.Stderr, "agentcookie agent-sync: owned Chrome on %s (profile %s); injected %d context(s)\n", oc.Endpoint, userDataDir, n)
-	fmt.Fprintln(os.Stderr, "Connect an agent browser:")
-	fmt.Fprintf(os.Stderr, "  browser-use --cdp-url %s open https://github.com\n", oc.Endpoint)
-	fmt.Fprintf(os.Stderr, "  agent-browser --cdp %d\n", oc.Port)
-	fmt.Fprintln(os.Stderr, "Watching Chrome cookies + new contexts. Ctrl-C to stop.")
-
-	// Poll for new contexts (e.g. the one browser-use creates on connect) and
-	// inject them. Runs concurrently with the cookie-change watcher below.
-	go func() {
-		if runErr := syncer.Run(ctx); runErr != nil && runErr != context.Canceled {
-			syncLog("context poll: %v", runErr)
-		}
-	}()
-
-	// Watch the source Chrome cookie DB; on each debounced change, re-inject
-	// current cookies into every live context so a site the user just logged
-	// into in their real Chrome becomes logged-in in the agent browser too.
-	// A failed cycle is logged and the watcher keeps running.
-	if cfg.CDPSource.Enabled {
-		if err := runCDPSourceWatch(ctx, func(ctx context.Context) (int, error) {
-			return syncer.ReinjectAll()
-		}, cfg.CDPSource.Endpoint, agentSyncVerbose); err != nil && err != context.Canceled {
-			return err
-		}
-	} else {
-		w, err := watcher.New(watcher.Config{
-			CookiesPath: cfg.Chrome.DBPath,
-			LogLabel:    "agentcookie agent-sync",
-			Push: func(context.Context) (int, error) {
-				return syncer.ReinjectAll()
-			},
-			OnEvent: func(ev watcher.Event) {
-				if agentSyncVerbose {
-					fmt.Fprintf(os.Stderr, "agentcookie agent-sync: %s\n", ev.String())
-				}
-			},
-		})
+	var master []byte
+	if keystore.MasterKeyExists() {
+		master, err = keystore.ReadMasterKey()
 		if err != nil {
-			return fmt.Errorf("init watcher: %w", err)
-		}
-		if err := w.Run(ctx); err != nil && err != context.Canceled {
 			return err
 		}
 	}
+	engine, err := destination.Open(filepath.Join(home, ".agentcookie", "destinations", "agent-sync"), master, applier)
+	if err != nil {
+		return err
+	}
+	counters := source.Counters{Dir: filepath.Join(home, ".agentcookie")}
+	syncOnce := func() error {
+		snap, err := provider()
+		if err != nil {
+			return err
+		}
+		g, err := counters.NextGeneration()
+		if err != nil {
+			return err
+		}
+		if prior, ok := engine.Status("local"); ok && g <= prior.Accepted {
+			g, err = counters.ReseedGeneration(prior.Accepted + 1)
+			if err != nil {
+				return err
+			}
+		}
+		snap.Meta.Generation = g
+		env := protocol.SyncEnvelope{ProtocolVersion: 3, SourceHostname: "local", Snapshot: &snap.Meta, Cookies: snap.Cookies, Storage: snap.Storage}
+		desired, _, err := convertDestinationSnapshot(env)
+		if err != nil {
+			return err
+		}
+		status, err := engine.Accept(ctx, "local", desired)
+		if err != nil {
+			return err
+		}
+		if !status.Ready {
+			return fmt.Errorf("destination pending: %v", status.Failed)
+		}
+		return nil
+	}
+	if err = syncOnce(); err != nil {
+		return fmt.Errorf("agent-sync initial restore: %w", err)
+	}
+	if agentSyncHeaded {
+		if err = owned.OpenWindow(ctx); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(os.Stderr, "agentcookie agent-sync: restored owned Chrome at %s; source logout removes only owned records\n", owned.Chrome.Endpoint)
+	go func() { _ = owned.Run(ctx, engine) }()
+	// A bounded baseline tick works for file, CDP and Gecko live readers. Each
+	// read revalidates its own running-browser preconditions and never falls back.
+	tick := time.NewTicker(30 * time.Second)
+	defer tick.Stop()
+	for running := true; running; {
+		select {
+		case <-ctx.Done():
+			running = false
+		case <-tick.C:
+			if err := syncOnce(); err != nil {
+				fmt.Fprintf(os.Stderr, "agentcookie agent-sync: %v\n", err)
+			}
+		}
+	}
+
 	fmt.Fprintln(os.Stderr, "agentcookie agent-sync: stopped")
 	return nil
 }
