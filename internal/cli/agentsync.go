@@ -20,6 +20,8 @@ import (
 )
 
 var (
+	agentSyncProfile     string
+	agentSyncReader      string
 	agentSyncPort        int
 	agentSyncHeaded      bool
 	agentSyncChromePath  string
@@ -59,6 +61,8 @@ transfer to another browser and are reported, not faked. Non-DBSC sites
 }
 
 func init() {
+	agentSyncCmd.Flags().StringVar(&agentSyncProfile, "profile", "", "source profile selector")
+	agentSyncCmd.Flags().StringVar(&agentSyncReader, "reader", "", "source reader: auto or file")
 	agentSyncCmd.Flags().IntVar(&agentSyncPort, "port", 9400, "loopback Chrome remote-debugging port for the owned browser")
 	agentSyncCmd.Flags().BoolVar(&agentSyncHeaded, "headed", false, "show the owned browser window (default: headless)")
 	agentSyncCmd.Flags().StringVar(&agentSyncChromePath, "chrome-path", "", "override the Chrome executable (default: auto-detect)")
@@ -73,7 +77,7 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	// LoadSourceLocal: the agent-sync loop has no push target, so it must not
 	// require sink.url or a peer/secret. Missing source.yaml is fine (default
 	// Chrome path, no blocklist).
-	cfg, err := config.LoadSourceLocal(common.ConfigDir)
+	cfg, err := config.LoadSourceLocalWithOverrides(common.ConfigDir, config.SourceOverrides{Browser: agentSyncBrowser, Profile: agentSyncProfile, Reader: agentSyncReader})
 	if err != nil {
 		return err
 	}

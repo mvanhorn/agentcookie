@@ -38,6 +38,9 @@ type LoadResult struct {
 // this cli."
 var ErrInvalidCLIName = errors.New("agentcookiesecret: cli name violates v1 naming rules")
 
+// readMasterKey is a test seam; production uses the native keystore reader.
+var readMasterKey = keystore.ReadMasterKey
+
 // Load resolves secrets for the given CLI from the agentcookie bus and
 // returns them as a flat map. Equivalent to LoadWithFallback(cliName, "").
 //
@@ -128,7 +131,7 @@ func LoadDetailed(cliName string, fallbackPath string) (*LoadResult, error) {
 	// 1. Sealed bus file (highest priority).
 	sealedPath := plainPath + ".sealed"
 	if _, err := os.Stat(sealedPath); err == nil {
-		masterKey, mkErr := keystore.ReadMasterKey()
+		masterKey, mkErr := readMasterKey()
 		if mkErr != nil {
 			// Sealed file present but no master key. Caller almost
 			// certainly wants to know about this; return the error.

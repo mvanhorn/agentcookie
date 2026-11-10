@@ -18,6 +18,8 @@ import (
 )
 
 var (
+	cmuxSyncProfile  string
+	cmuxSyncReader   string
 	cmuxSyncOnce     bool
 	cmuxSyncWatch    bool
 	cmuxSyncVerbose  bool
@@ -60,6 +62,8 @@ launchd, set automation.socketControlMode to allowAll or password in
 }
 
 func init() {
+	cmuxSyncCmd.Flags().StringVar(&cmuxSyncProfile, "profile", "", "source profile selector")
+	cmuxSyncCmd.Flags().StringVar(&cmuxSyncReader, "reader", "", "source reader: auto or file")
 	cmuxSyncCmd.Flags().BoolVar(&cmuxSyncOnce, "once", false, "single read+inject cycle, then exit")
 	cmuxSyncCmd.Flags().BoolVar(&cmuxSyncWatch, "watch", false, "long-running fsnotify watcher; re-injects on every Chrome cookie write (debounced)")
 	cmuxSyncCmd.Flags().BoolVar(&cmuxSyncVerbose, "verbose", false, "log per-cycle counts to stderr")
@@ -82,7 +86,7 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 	// LoadSourceLocal, not LoadSource: the local loop has no push target,
 	// so it must not require sink.url or a peer/secret. A missing
 	// source.yaml is fine (defaults: default Chrome path, no blocklist).
-	cfg, err := config.LoadSourceLocal(common.ConfigDir)
+	cfg, err := config.LoadSourceLocalWithOverrides(common.ConfigDir, config.SourceOverrides{Browser: cmuxSyncBrowser, Profile: cmuxSyncProfile, Reader: cmuxSyncReader})
 	if err != nil {
 		return err
 	}

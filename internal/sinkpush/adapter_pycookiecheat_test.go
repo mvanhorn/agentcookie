@@ -15,6 +15,7 @@ import (
 // returns true. Returns the adapter and the temp dir for assertions.
 func newTestAdapter(t *testing.T, name, domain, baseURL string) (*PycookiecheatStyleAdapter, string) {
 	t.Helper()
+	stubMissingMasterKey(t)
 	dir := t.TempDir()
 	bin := filepath.Join(dir, name)
 	if err := os.WriteFile(bin, []byte("#!/bin/bash\nexit 0\n"), 0o755); err != nil {

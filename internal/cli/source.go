@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -19,13 +18,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
-	"github.com/mvanhorn/agentcookie/internal/chromedirsync"
 	"github.com/mvanhorn/agentcookie/internal/cli/httpserver"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/pairing"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"github.com/mvanhorn/agentcookie/internal/secretsbus"
+	"github.com/mvanhorn/agentcookie/internal/source"
 	"github.com/mvanhorn/agentcookie/internal/state"
 	"github.com/mvanhorn/agentcookie/internal/transport"
 	"github.com/mvanhorn/agentcookie/internal/tsclient"
@@ -33,6 +32,9 @@ import (
 )
 
 var (
+	sourceBrowserFlag      string
+	sourceProfile          string
+	sourceReaderMode       string
 	sourceOnce             bool
 	sourceWatch            bool
 	sourceVerbose          bool
@@ -152,6 +154,9 @@ receiving POST /sync:
 }
 
 func init() {
+	sourceCmd.Flags().StringVar(&sourceBrowserFlag, "browser", "", "source browser name")
+	sourceCmd.Flags().StringVar(&sourceProfile, "profile", "", "source profile selector")
+	sourceCmd.Flags().StringVar(&sourceReaderMode, "reader", "", "source reader: auto or file")
 	sourceCmd.Flags().BoolVar(&sourceOnce, "once", false, "single read+push cycle, then exit")
 	sourceCmd.Flags().BoolVar(&sourceWatch, "watch", false, "long-running fsnotify watcher; pushes on every Chrome cookie write (debounced)")
 	sourceCmd.Flags().BoolVar(&sourceVerbose, "verbose", false, "log per-pattern decisions to stderr")
@@ -170,7 +175,7 @@ func runSource(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--once and --watch are mutually exclusive")
 	}
 
-	cfg, err := config.LoadSource(common.ConfigDir)
+	cfg, err := config.LoadSourceWithOverrides(common.ConfigDir, config.SourceOverrides{Browser: sourceBrowserFlag, Profile: sourceProfile, Reader: sourceReaderMode})
 	if err != nil {
 		return err
 	}
@@ -251,14 +256,14 @@ func runSource(cmd *cobra.Command, args []string) error {
 	// Storage write, so don't watch it either (it changes constantly).
 	localStorageDir := ""
 	if !skipLocalStorage() {
-		localStorageDir = sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile)
+		localStorageDir = source.ChromiumPaths(cfg.Chrome.DBPath).LocalStorageDir
 	} else {
 		fmt.Fprintf(os.Stderr, "agentcookie source --watch: skipping Local Storage (--skip-local-storage / %s=1)\n", envSkipLocalStorage)
 	}
 	w, err := watcher.New(watcher.Config{
 		CookiesPath:     cfg.Chrome.DBPath,
 		LocalStorageDir: localStorageDir,
-		IndexedDBDir:    sourceBrowser.IndexedDBDir(cfg.Browser.Profile),
+		IndexedDBDir:    source.ChromiumPaths(cfg.Chrome.DBPath).IndexedDBDir,
 		Push:            push,
 		PushTimeout:     sourcePushBudget(),
 		OnEvent: func(ev watcher.Event) {
@@ -326,7 +331,7 @@ func newSourceState(statePath string, sinks []config.SinkTarget) *state.SourceSt
 	st := &state.SourceState{Role: "source", SinkURL: legacySinkURL}
 	prev, err := state.LoadSource(statePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "agentcookie source: ignoring unreadable %s (%v); starting with fresh per-sink state\n", statePath, err)
+		fmt.Fprintf(os.Stderr, "agentcookie source: ignoring unreadable %s (%v); starting with fresh per-sink status (sequence allocation still fails closed on corrupt state)\n", statePath, err)
 		return st
 	}
 	if prev == nil {
@@ -619,22 +624,14 @@ func pushOnce(
 	// Shared read pipeline (decrypt -> cookie policy -> DBSC). See
 	// readFilteredCookies in cookie_pipeline.go; `source` and `cmux-sync`
 	// both use it so they filter identically.
-	var all []chrome.Cookie
-	var st readStats
-	var err error
-	if cfg.CDPSource.Enabled {
-		all, err = readCDPSource(ctx, cfg.CDPSource.Endpoint)
-		if err != nil {
-			pullPayloadCache.ClearIfCurrent(pullGen)
-			return nil, dbsc, secrets, fmt.Errorf("read cookies from cdp source: %w", err)
-		}
-		all, st = filterCookies(all, blocklist, skipDBSC, time.Now().UTC())
-	} else {
-		all, st, err = readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
-		if err != nil {
-			pullPayloadCache.ClearIfCurrent(pullGen)
-			return nil, dbsc, secrets, err
-		}
+	snap, err := readConfiguredSnapshot(ctx, cfg, blocklist, key, skipDBSC, time.Now().UTC(), !dryRun)
+	if err != nil {
+		pullPayloadCache.ClearIfCurrent(pullGen)
+		return nil, dbsc, secrets, err
+	}
+	all, st := snap.Cookies, convertReadStats(snap.Stats)
+	for _, warning := range snap.Warnings {
+		fmt.Fprintf(os.Stderr, "agentcookie source: %s\n", warning)
 	}
 	totalRead := st.totalRead
 	totalDropped := st.totalDropped
@@ -717,59 +714,27 @@ func pushOnce(
 		return []sinkResult{}, dbsc, secrets, nil
 	}
 
-	// v0.7: pack Local Storage and IndexedDB alongside cookies from the
-	// configured source browser/profile. The envelope carries the bytes, the
-	// sink unpacks into its real Chrome profile. Errors fetching either are
-	// non-fatal so the source still pushes whatever it could read.
-	// Resolve the same adapter the watcher uses. cfg.Browser.Name was already
-	// validated in LoadSource, so a failure here means the config changed
-	// underneath us; fail loud rather than silently packing Chrome's profile
-	// (which would mismatch the cookies/localStorage/IndexedDB the watcher and
-	// the rest of this push are reading from the configured browser).
-	var lsTarball []byte
-	var idbTarball []byte
-	var idbSkipped []string
-	if !cfg.CDPSource.Enabled {
-		// CDP source mode intentionally carries cookies only: localStorage and
-		// IndexedDB remain in the existing browser and must not be scraped from
-		// an on-disk profile as a fallback.
-		sourceBrowser, err := chrome.LookupBrowser(cfg.Browser.Name)
-		if err != nil {
-			pullPayloadCache.ClearIfCurrent(pullGen)
-			return nil, dbsc, secrets, err
-		}
-		// --skip-local-storage skips the pack: a Linux sink (or any sink
-		// with skip_chrome_sqlite) never applies it, and the leveldb is
-		// often tens of MB, re-sent on every push.
-		if !skipLocalStorage() {
-			if lt, _, err := chromedirsync.Pack(sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile), 0); err == nil {
-				lsTarball = lt
-			} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
-				fmt.Fprintf(os.Stderr, "agentcookie source: localStorage pack failed (%v); continuing without it\n", err)
-			}
-		}
-		// IndexedDB is opt-in for v0.7: typical user dirs are 400MB+ (Gmail caches,
-		// Slack message history) and inlining that in the JSON envelope blows
-		// past the source-side POST timeout. Most PP CLIs auth via localStorage
-		// or cookies; IndexedDB is rarely an auth-state surface in practice.
-		// Set AGENTCOOKIE_SYNC_INDEXEDDB=1 to opt in.
-		if os.Getenv("AGENTCOOKIE_SYNC_INDEXEDDB") == "1" {
-			if it, sk, err := chromedirsync.Pack(sourceBrowser.IndexedDBDir(cfg.Browser.Profile), 5*1024*1024); err == nil {
-				idbTarball = it
-				// Pack builds this list from a map; sort it so an unchanged
-				// profile hashes the same every cycle.
-				slices.Sort(sk)
-				idbSkipped = sk
-			} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
-				fmt.Fprintf(os.Stderr, "agentcookie source: indexedDB pack failed (%v); continuing without it\n", err)
-			}
-		}
-	}
+	lsTarball, idbTarball, idbSkipped := snap.LocalStorageTarball, snap.IndexedDBTarball, snap.IndexedDBSkipped
 
+	counters := source.Counters{Dir: filepath.Dir(sourceStatePath(cfg.CDPSource.Enabled, common.ConfigDir, home))}
+	generation, err := counters.NextGeneration()
+	if err != nil {
+		pullPayloadCache.ClearIfCurrent(pullGen)
+		return nil, dbsc, secrets, fmt.Errorf("persist source generation: %w", err)
+	}
+	sequence, err := counters.NextSequence()
+	if err != nil {
+		pullPayloadCache.ClearIfCurrent(pullGen)
+		return nil, dbsc, secrets, fmt.Errorf("persist source sequence: %w", err)
+	}
+	if srcState != nil {
+		srcState.LastGeneration = generation
+		srcState.LastSequence = sequence
+	}
 	envelope := protocol.SyncEnvelope{
 		ProtocolVersion:     protocol.Version,
 		SourceHostname:      pairing.LocalHostname(),
-		Sequence:            time.Now().UnixNano(),
+		Sequence:            sequence,
 		Cookies:             all,
 		LocalStorageTarball: lsTarball,
 		IndexedDBTarball:    idbTarball,
