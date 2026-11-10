@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  AGENTCOOKIE_E2E_REQUIRED: "1"
+
 jobs:
   test-macos:
     name: vet + test (macOS)
@@ -16,8 +19,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.2'
+      - name: Deterministic storage codec tests
+        working-directory: internal/storagecodec
+        run: npm ci --ignore-scripts && npm test
       - name: go vet
         run: go vet ./...
+      - name: Download checksum-pinned fixture Chrome
+        run: bash scripts/install-e2e-browsers.sh macos-chrome "$RUNNER_TEMP/agentcookie-browsers"
       - name: go test
         run: go test -race ./...
       - name: release asset shell tests
@@ -28,6 +39,9 @@ jobs:
           bash scripts/release_asset_test.sh
       - name: go build
         run: go build ./...
+      - name: Remove fixture downloads
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/agentcookie-browsers"
 
   test-linux:
     name: vet + test (Linux)
@@ -38,8 +52,41 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.2'
+      - name: Deterministic storage codec tests
+        working-directory: internal/storagecodec
+        run: npm ci --ignore-scripts && npm test
       - name: go vet
         run: go vet ./...
+      - name: install filesystem tracing tool
+        run: sudo apt-get update && sudo apt-get install -y strace xvfb
+      - name: Download checksum-pinned fixture browsers and previous Linux release
+        run: bash scripts/install-e2e-browsers.sh linux "$RUNNER_TEMP/agentcookie-browsers"
+      - name: Build fixture CLI and require Gecko and compatibility gates
+        run: |
+          go build -o "$RUNNER_TEMP/agentcookie" ./cmd/agentcookie
+          echo "AGENTCOOKIE_BINARY=$RUNNER_TEMP/agentcookie" >> "$GITHUB_ENV"
+          echo "AGENTCOOKIE_GECKO_REQUIRED=1" >> "$GITHUB_ENV"
+          echo "AGENTCOOKIE_BROWSER_TEST=1" >> "$GITHUB_ENV"
+          test -x "$AGENTCOOKIE_OLD_BINARY"
+          "$AGENTCOOKIE_GECKO_BINARY" --version
+          "$AGENTCOOKIE_CHROME_BINARY" --version
+          go test ./internal/e2e -list . | grep -Fx TestGeckoLiveLifecycle
+          go test ./internal/e2e -list . | grep -Fx TestGeckoDaemonCrash
+          go test ./internal/e2e -list . | grep -Fx TestGeckoStartsAfterSource
+          go test ./internal/e2e -list . | grep -Fx TestGeckoCompanionRemovalRequiresBrowserRestart
+          go test ./internal/e2e -list . | grep -Fx TestGeckoBrokerCrashKeepsCookiesWithoutRetryStorm
+          go test ./internal/e2e -list . | grep -Fx TestGeckoStorageSourceSinkChrome
+          go test ./internal/e2e -list . | grep -Fx TestPreviousV2SinkAcceptsCurrentSource
+          go test ./internal/e2e -list . | grep -Fx TestPreviousCDPSourceSendsToCurrentSink
+      - name: Required Gecko cookie source-to-sink owned Chrome gate
+        env:
+          AGENTCOOKIE_COOKIE_E2E: '1'
+        run: |
+          go test -tags agentcookie_cookie_e2e ./internal/cli -list '^TestGeckoLiveCookieSourceSinkOwnedChrome$' | grep -Fx TestGeckoLiveCookieSourceSinkOwnedChrome
+          go test -tags agentcookie_cookie_e2e ./internal/cli -run '^TestGeckoLiveCookieSourceSinkOwnedChrome$' -count=1 -timeout=10m -v
       # Linux tests run without -race to avoid CGO requirements for some
       # macOS-specific code paths that are stubbed but still compiled.
       - name: go test
@@ -53,3 +100,13 @@ jobs:
           bash scripts/release_asset_test.sh
       - name: go build
         run: go build ./...
+      - name: Headed Gecko storage source-to-sink gate
+        env:
+          AGENTCOOKIE_GECKO_STORAGE_REQUIRED: '1'
+          AGENTCOOKIE_GECKO_HEADED: '1'
+        run: xvfb-run --auto-servernum go test ./internal/e2e -run '^TestGeckoStorageSourceSinkChrome$' -count=1 -timeout=15m -v
+      - name: Storage codec browser round-trips
+        run: node --test internal/storagecodec/browser_test.cjs
+      - name: Remove fixture downloads
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/agentcookie-browsers" "$RUNNER_TEMP/agentcookie"

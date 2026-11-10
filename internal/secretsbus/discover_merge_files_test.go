@@ -42,7 +42,7 @@ env = "DEMO_CONFIG_PATH"
 		t.Fatal(err)
 	}
 
-	p, _ := LoadPayloadWithDiscovery(home)
+	p, _ := loadPayloadWithDiscoveryForTest(t, home)
 	kv := p.CLIs["demo-cli"]
 	if kv["DEMO_CONFIG"] == "" {
 		t.Fatalf("[[files]]-only manifest did not carry the file; payload keys: %v", keysOf(kv))
@@ -85,7 +85,7 @@ func TestLoadPayloadWithDiscovery_UnconfiguredDerivedProjectIsQuiet(t *testing.T
 	home := t.TempDir()
 	writePPProject(t, home, "unconfigured-pp-cli", "")
 
-	p, errs := LoadPayloadWithDiscovery(home)
+	p, errs := loadPayloadWithDiscoveryForTest(t, home)
 	if len(errs) != 0 {
 		t.Errorf("unconfigured CLI must not report errors, got: %v", errs)
 	}
@@ -100,7 +100,7 @@ func TestLoadPayloadWithDiscovery_ConfiguredDerivedProjectCarries(t *testing.T) 
 	body := "# comment\n[section]\nkey = \"value\"\n"
 	writePPProject(t, home, "configured-pp-cli", body)
 
-	p, errs := LoadPayloadWithDiscovery(home)
+	p, errs := loadPayloadWithDiscoveryForTest(t, home)
 	if len(errs) != 0 {
 		t.Errorf("unexpected errors: %v", errs)
 	}
@@ -131,7 +131,7 @@ func TestLoadPayloadWithDiscovery_DerivedSourceThatIsNotAFileStillErrors(t *test
 		t.Fatal(err)
 	}
 
-	_, errs := LoadPayloadWithDiscovery(home)
+	_, errs := loadPayloadWithDiscoveryForTest(t, home)
 	if len(errs) == 0 {
 		t.Fatal("a present-but-uncarryable derived source must still error")
 	}
@@ -159,7 +159,7 @@ target = "explicit-cli/config.toml"
 		t.Fatal(err)
 	}
 
-	_, errs := LoadPayloadWithDiscovery(home)
+	_, errs := loadPayloadWithDiscoveryForTest(t, home)
 	if len(errs) == 0 {
 		t.Fatal("explicit manifest with a missing declared source must still error")
 	}
@@ -210,7 +210,7 @@ func TestLoadPayloadWithDiscovery_RealPPCLIShapes(t *testing.T) {
 	writePPProjectSpecs(t, home, "neverauthed-pp-cli",
 		`[{"name": "ACCESS_TOKEN", "sensitive": true}]`, "")
 
-	p, errs := LoadPayloadWithDiscovery(home)
+	p, errs := loadPayloadWithDiscoveryForTest(t, home)
 	if len(errs) != 0 {
 		t.Errorf("no shape here is an error condition, got: %v", errs)
 	}
@@ -258,7 +258,7 @@ func TestLoadPayloadWithDiscovery_V1StillWinsOverCarriedKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p, _ := LoadPayloadWithDiscovery(home)
+	p, _ := loadPayloadWithDiscoveryForTest(t, home)
 	if got := p.CLIs["dup-pp-cli"]["DUP_PP_CLI_CONFIG_TOML"]; got != "v1-wins" {
 		t.Errorf("v1 must win per section 10.3, got %q", got)
 	}

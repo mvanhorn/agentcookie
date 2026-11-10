@@ -10,9 +10,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
+	"github.com/mvanhorn/agentcookie/internal/browsers"
 	"github.com/mvanhorn/agentcookie/internal/cdpsource"
 	"gopkg.in/yaml.v3"
 )
@@ -23,6 +23,9 @@ import (
 // legacy Security.SharedSecret field is kept for backwards compat with v0
 // configs that predate pairing.
 type SourceConfig struct {
+	// resolvedDBPath distinguishes computed paths from explicit overrides.
+	resolvedDBPath string `yaml:"-" json:"-"`
+
 	// Sinks is the multi-sink fan-out list: each entry carries its own
 	// URL and peer (key). When non-empty it is authoritative and the
 	// legacy scalar Sink/Peer fields below are ignored. When empty, a
@@ -66,15 +69,17 @@ type SourceConfig struct {
 // written before this field keeps its current behavior with no migration
 // and no silent flip on a binary upgrade.
 type SinkConfig struct {
-	Listen           ListenRef   `yaml:"listen" json:"listen"`
-	Chrome           ChromeRef   `yaml:"chrome" json:"chrome"`
-	Peer             PeerRef     `yaml:"peer,omitempty" json:"peer,omitempty"`
-	Security         SecurityRef `yaml:"security,omitempty" json:"security,omitempty"`
-	SkipChromeSQLite bool        `yaml:"skip_chrome_sqlite,omitempty" json:"skip_chrome_sqlite,omitempty"`
-	CDP              CDPRef      `yaml:"cdp,omitempty" json:"cdp,omitempty"`
-	LiveCDP          LiveCDPRef  `yaml:"live_cdp,omitempty" json:"live_cdp,omitempty"`
-	Cmux             CmuxRef     `yaml:"cmux,omitempty" json:"cmux,omitempty"`
-	Delivery         string      `yaml:"delivery,omitempty" json:"delivery,omitempty"`
+	Destination      *DestinationRef  `yaml:"destination,omitempty" json:"destination,omitempty"`
+	Destinations     []DestinationRef `yaml:"destinations,omitempty" json:"destinations,omitempty"`
+	Listen           ListenRef        `yaml:"listen" json:"listen"`
+	Chrome           ChromeRef        `yaml:"chrome" json:"chrome"`
+	Peer             PeerRef          `yaml:"peer,omitempty" json:"peer,omitempty"`
+	Security         SecurityRef      `yaml:"security,omitempty" json:"security,omitempty"`
+	SkipChromeSQLite bool             `yaml:"skip_chrome_sqlite,omitempty" json:"skip_chrome_sqlite,omitempty"`
+	CDP              CDPRef           `yaml:"cdp,omitempty" json:"cdp,omitempty"`
+	LiveCDP          LiveCDPRef       `yaml:"live_cdp,omitempty" json:"live_cdp,omitempty"`
+	Cmux             CmuxRef          `yaml:"cmux,omitempty" json:"cmux,omitempty"`
+	Delivery         string           `yaml:"delivery,omitempty" json:"delivery,omitempty"`
 	// Pull makes this sink a puller (a teammate written by `agentcookie
 	// join`): it polls the pinned laptop's GET /pull and never binds a
 	// listener, so listen.addr is not required.
@@ -162,8 +167,9 @@ type SinkRef struct {
 // scalar Sink/Peer fields, in which case the transport falls back to the
 // legacy Security.SharedSecret (see ResolvedSinks and LoadSource).
 type SinkTarget struct {
-	URL  string `yaml:"url" json:"url"`
-	Peer string `yaml:"peer,omitempty" json:"peer,omitempty"`
+	Destination string `yaml:"destination,omitempty" json:"destination,omitempty"`
+	URL         string `yaml:"url" json:"url"`
+	Peer        string `yaml:"peer,omitempty" json:"peer,omitempty"`
 }
 
 // ResolvedSinks returns the effective fan-out list. Sinks wins when
@@ -198,31 +204,22 @@ type CDPSourceRef struct {
 }
 
 type BrowserRef struct {
+	AppPath         string              `yaml:"app_path,omitempty" json:"app_path,omitempty"`
+	BiDiPort        int                 `yaml:"bidi_port,omitempty" json:"bidi_port,omitempty"`
+	CompanionPort   int                 `yaml:"companion_port,omitempty" json:"companion_port,omitempty"`
+	StorageReadMode string              `yaml:"storage_read_mode,omitempty" json:"storage_read_mode,omitempty"`
+	Containers      []string            `yaml:"containers,omitempty" json:"containers,omitempty"`
+	ContainerSites  map[string][]string `yaml:"container_sites,omitempty" json:"container_sites,omitempty"`
+
+	Reader  string `yaml:"reader,omitempty" json:"reader,omitempty"`
 	Name    string `yaml:"name" json:"name"`
 	Profile string `yaml:"profile" json:"profile"`
 }
 
-type browserPathRef struct {
-	SupportDir []string
-}
-
 const (
-	defaultBrowserName    = "chrome"
-	defaultBrowserProfile = "Default"
+	defaultBrowserName    = browsers.DefaultName
+	defaultBrowserProfile = browsers.DefaultProfile
 )
-
-// Mirror of internal/chrome's browser registry (path side only). Kept in
-// sync by the guard tests in internal/cli; config stays free of the chrome
-// package's CGO sqlite dependency. See internal/chrome/browser.go for the
-// keychain strings and per-browser notes.
-var sourceBrowserPaths = map[string]browserPathRef{
-	defaultBrowserName: {SupportDir: []string{"Google", "Chrome"}},
-	"atlas":            {SupportDir: []string{"com.openai.atlas", "browser-data", "host"}},
-	"brave":            {SupportDir: []string{"BraveSoftware", "Brave-Browser"}},
-	"edge":             {SupportDir: []string{"Microsoft Edge"}},
-	"arc":              {SupportDir: []string{"Arc", "User Data"}},
-	"dia":              {SupportDir: []string{"Dia", "User Data"}},
-}
 
 // SecurityRef holds transport credentials. SharedSecret is the pre-pairing
 // stopgap; U5 replaces it with a pairing-derived per-peer key persisted in the
@@ -233,6 +230,11 @@ type SecurityRef struct {
 
 // LoadSource reads source.yaml from dir.
 func LoadSource(dir string) (*SourceConfig, error) {
+	return LoadSourceWithOverrides(dir, SourceOverrides{})
+}
+
+// LoadSourceWithOverrides applies selectors before resolving browser paths.
+func LoadSourceWithOverrides(dir string, overrides SourceOverrides) (*SourceConfig, error) {
 	path := filepath.Join(dir, "source.yaml")
 	var cfg SourceConfig
 	if err := loadYAML(path, &cfg); err != nil {
@@ -268,10 +270,7 @@ func LoadSource(dir string) (*SourceConfig, error) {
 	if err := validateSharedSecret(path, cfg.Security.SharedSecret); err != nil {
 		return nil, err
 	}
-	if err := resolveSourcePaths(path, &cfg); err != nil {
-		return nil, err
-	}
-	return &cfg, nil
+	return EffectiveSource(&cfg, overrides)
 }
 
 // LoadSourceLocal loads source.yaml for local-only consumers like
@@ -281,17 +280,7 @@ func LoadSource(dir string) (*SourceConfig, error) {
 // documented "no sink, no peer" use case. A missing source.yaml is fine:
 // it yields defaults (default Chrome path, no blocklist, cmux off).
 func LoadSourceLocal(dir string) (*SourceConfig, error) {
-	path := filepath.Join(dir, "source.yaml")
-	var cfg SourceConfig
-	if _, statErr := os.Stat(path); statErr == nil {
-		if err := loadYAML(path, &cfg); err != nil {
-			return nil, err
-		}
-	}
-	if err := resolveSourcePaths(path, &cfg); err != nil {
-		return nil, err
-	}
-	return &cfg, nil
+	return LoadSourceLocalWithOverrides(dir, SourceOverrides{})
 }
 
 // resolveSourcePaths applies the browser/Chrome-path/cmux-path resolution
@@ -302,10 +291,44 @@ func resolveSourcePaths(path string, cfg *SourceConfig) error {
 		if err := cdpsource.ValidateEndpoint(cfg.CDPSource.Endpoint); err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
-		if cfg.Chrome.DBPath != "" || cfg.Browser.Name != "" || cfg.Browser.Profile != "" {
+		if cfg.Chrome.DBPath != "" || cfg.Browser.Name != "" || cfg.Browser.Profile != "" || cfg.Browser.Reader != "" {
 			return fmt.Errorf("%s: cdp_source cannot be combined with chrome.db_path or browser configuration", path)
 		}
 		return nil
+	}
+	browser, browserErr := browsers.Lookup(cfg.Browser.Name)
+	if browserErr != nil {
+		return fmt.Errorf("%s: %w", path, browserErr)
+	}
+	if browser.Family == browsers.Gecko {
+		if cfg.Chrome.DBPath != "" {
+			return fmt.Errorf("%s: chrome.db_path cannot select a Gecko source; use browser.profile", path)
+		}
+		if cfg.Browser.Reader != "" && cfg.Browser.Reader != "auto" && cfg.Browser.Reader != "live" && cfg.Browser.Reader != "file" {
+			return fmt.Errorf("%s: invalid Gecko reader", path)
+		}
+		if cfg.Browser.StorageReadMode == "" {
+			cfg.Browser.StorageReadMode = "intercept"
+		}
+		if cfg.Browser.StorageReadMode != "intercept" && cfg.Browser.StorageReadMode != "request" {
+			return fmt.Errorf("%s: storage_read_mode must be intercept or request", path)
+		}
+		if cfg.Browser.BiDiPort == 0 {
+			cfg.Browser.BiDiPort = 9224
+		}
+		if cfg.Browser.CompanionPort == 0 {
+			cfg.Browser.CompanionPort = 9225
+		}
+		if cfg.Browser.BiDiPort < 1 || cfg.Browser.BiDiPort > 65535 || cfg.Browser.CompanionPort < 1 || cfg.Browser.CompanionPort > 65535 || cfg.Browser.BiDiPort == cfg.Browser.CompanionPort {
+			return fmt.Errorf("%s: distinct valid BiDi and companion ports required", path)
+		}
+		cfg.Browser.AppPath = ExpandTilde(cfg.Browser.AppPath)
+		cfg.Browser.Profile = ExpandTilde(cfg.Browser.Profile)
+		cfg.Cmux.CmuxPath = ExpandTilde(cfg.Cmux.CmuxPath)
+		return nil
+	}
+	if cfg.Browser.Reader != "" && cfg.Browser.Reader != "auto" && cfg.Browser.Reader != "file" {
+		return fmt.Errorf("%s: browser.reader %q requires a supported live reader", path, cfg.Browser.Reader)
 	}
 	cfg.Chrome.DBPath = ExpandTilde(cfg.Chrome.DBPath)
 	if cfg.Browser.Name != "" {
@@ -314,6 +337,7 @@ func resolveSourcePaths(path string, cfg *SourceConfig) error {
 		}
 	}
 	if cfg.Chrome.DBPath == "" {
+		defer func() { cfg.resolvedDBPath = cfg.Chrome.DBPath }()
 		if cfg.Browser.Name != "" || cfg.Browser.Profile != "" {
 			dbPath, err := SourceBrowserCookiesPath(cfg.Browser.Name, cfg.Browser.Profile)
 			if err != nil {
@@ -379,8 +403,11 @@ func LoadSink(dir string) (*SinkConfig, error) {
 	// Linux sink defaults: skip Chrome SQLite (no Keychain to read Safe Storage),
 	// enable live CDP attach (inject into agent runtime's Chrome) unless
 	// sink.yaml sets live_cdp.enabled explicitly.
-	if IsLinux() {
+	if IsLinux() && !cfg.HasDestinations() {
 		applyLinuxSinkDefaults(&cfg, liveCDPEnabled)
+	}
+	if _, err := cfg.ResolveDestinations(); err != nil {
+		return nil, err
 	}
 	return &cfg, nil
 }
@@ -501,6 +528,9 @@ func SourceBrowserCookiesPath(name, profile string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if ref.Family != browsers.Chromium {
+		return "", fmt.Errorf("%s requires install-aware Gecko profile resolution", ref.Name)
+	}
 	if profile == "" {
 		profile = defaultBrowserProfile
 	}
@@ -511,7 +541,7 @@ func SourceBrowserCookiesPath(name, profile string) (string, error) {
 	var parts []string
 	if IsLinux() {
 		parts = []string{home, ".config"}
-		parts = append(parts, linuxSupportDir(ref.SupportDir)...)
+		parts = append(parts, browsers.LinuxSupportDir(ref.SupportDir)...)
 	} else {
 		parts = []string{home, "Library", "Application Support"}
 		parts = append(parts, ref.SupportDir...)
@@ -520,54 +550,12 @@ func SourceBrowserCookiesPath(name, profile string) (string, error) {
 	return filepath.Join(parts...), nil
 }
 
-// linuxSupportDir converts macOS Application Support subdirectory names to
-// their Linux ~/.config equivalents.
-func linuxSupportDir(macDirs []string) []string {
-	if len(macDirs) == 0 {
-		return macDirs
-	}
-	// Map known macOS paths to Linux equivalents.
-	switch macDirs[0] {
-	case "Google":
-		if len(macDirs) >= 2 && macDirs[1] == "Chrome" {
-			return []string{"google-chrome"}
-		}
-		return macDirs
-	case "Chromium":
-		return []string{"chromium"}
-	case "BraveSoftware":
-		return macDirs // Same structure on Linux
-	case "Microsoft Edge":
-		return []string{"microsoft-edge"}
-	case "com.openai.atlas":
-		return macDirs // Atlas is macOS-only
-	case "Arc", "Dia":
-		return macDirs // Arc and Dia are macOS-only
-	default:
-		return macDirs
-	}
-}
-
-func lookupSourceBrowserPath(name string) (browserPathRef, error) {
-	key := strings.ToLower(strings.TrimSpace(name))
-	if key == "" {
-		key = defaultBrowserName
-	}
-	ref, ok := sourceBrowserPaths[key]
-	if !ok {
-		return browserPathRef{}, fmt.Errorf("unsupported browser %q (supported: %s)", name, strings.Join(SupportedBrowserNames(), ", "))
-	}
-	ref.SupportDir = append([]string(nil), ref.SupportDir...)
-	return ref, nil
+func lookupSourceBrowserPath(name string) (browsers.Browser, error) {
+	return browsers.Lookup(name)
 }
 
 // SupportedBrowserNames returns the source-browser adapter names accepted by
 // source.yaml.
 func SupportedBrowserNames() []string {
-	names := make([]string, 0, len(sourceBrowserPaths))
-	for name := range sourceBrowserPaths {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return browsers.SupportedNames("")
 }
