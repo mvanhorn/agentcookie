@@ -461,3 +461,26 @@ func TestKeepaliveWizard_EnableFailureIsNonFatal(t *testing.T) {
 		t.Fatal("wizard did not try to enable the keep-alive")
 	}
 }
+
+func TestKeepalive_RepeatedGateErrorLoggedOnce(t *testing.T) {
+	f := newFakeKeepalive()
+	l := f.loop()
+	var logs []string
+	l.d.Logf = func(format string, a ...any) { logs = append(logs, format) }
+	l.d.Qualify = func(string) ([]chrome.ClaudeProfile, []error) {
+		return nil, []error{errors.New("open Chrome: operation not permitted")}
+	}
+	for range 3 {
+		l.tick(context.Background())
+		f.advance(time.Minute)
+	}
+	n := 0
+	for _, s := range logs {
+		if strings.HasPrefix(s, "skipped a profile") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("a repeated read error must be logged once, got %d times", n)
+	}
+}

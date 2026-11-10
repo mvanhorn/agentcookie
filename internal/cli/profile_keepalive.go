@@ -131,6 +131,7 @@ type keepaliveLoop struct {
 	d        keepaliveDeps
 	gate     []chrome.ClaudeProfile
 	gateAt   time.Time
+	gateErrs string
 	idleLogd bool
 	state    map[string]*keepaliveProfileState
 }
@@ -178,8 +179,17 @@ func (l *keepaliveLoop) tick(ctx context.Context) {
 	now := l.d.Now()
 	if l.gateAt.IsZero() || now.Sub(l.gateAt) >= keepaliveGateEvery {
 		gate, errs := l.d.Qualify(l.d.Root)
+		msgs := make([]string, 0, len(errs))
 		for _, err := range errs {
-			l.d.Logf("skipped a profile: %v", err)
+			msgs = append(msgs, err.Error())
+		}
+		// Log read errors when they change, not on every gate check: a
+		// permission error repeats every minute until it is fixed.
+		if joined := strings.Join(msgs, "\n"); joined != l.gateErrs {
+			for _, m := range msgs {
+				l.d.Logf("skipped a profile: %s", m)
+			}
+			l.gateErrs = joined
 		}
 		l.gate, l.gateAt = gate, now
 	}
