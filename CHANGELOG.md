@@ -1,6 +1,56 @@
 # Changelog
 
+## Unreleased — Gecko onboarding and release gates (PR6)
+
+- Add explicit source-browser onboarding, container-hold decisions, owned Chrome launcher generation and readiness-first install planning.
+- Document experimental Gecko-to-live-Chrome setup, protocol/storage/replay caveats and broad companion permissions.
+- Add pinned headed Zen and required Linux browser gate configuration. Branch protection remains a maintainer action; blocked or unrun gates are not passes.
+
+
 ## [Unreleased]
+
+### Isolated per-container destinations
+
+- Route one Gecko capture to named sink-owned Chrome profiles with independent cookies, localStorage and IndexedDB account selection, replay namespaces, delivery history and readiness. Logout never falls back to another account.
+- Validate non-overlapping owned profiles, distinct ports and safe destination names; create distinct readiness-gated macOS launchers per account. Named routes refuse unsafe legacy sink fallback.
+- Add encrypted-wire multi-account fixtures and an opt-in dual-Chrome browser gate. See [container destinations](docs/container-destinations.md) for configuration and explicit default-pull scope.
+
+### Gecko storage IR and live Chrome storage primitives
+
+- Add a shared bounded structured-clone codec, container hidden-tab storage reader, durable source cache and per-record Chrome storage adapter with value read-back and database transactions.
+- Preserve lone UTF-16 units in storage values and IndexedDB schema names. Fresh version-1 databases create their schema during their first upgrade.
+- Document explicit real-navigation fallback, source-only generator probing, additive schema upgrades and their possible VersionError impact. Real-browser acceptance remains gated; local fixture browser startup is blocked by the VM socket policy.
+
+### Durable live Chrome destinations and negotiated cookie snapshots
+
+- Harden response/source/command authentication, preserve verified persistent-profile ownership across Chrome restarts, prevent revoked owners from deleting later owners, and repair torn intent journals before appending. Add durable diagnostic timing, fair per-group retry progress, persisted cap exclusions, and an explicitly tagged live Gecko-to-owned-Chrome encrypted cookie pipeline gate. Browser execution is still required before release.
+
+- Add `destination.kind: live_chrome`, explicit `attach`/`ppcli` selection, durable accepted/desired state, per-source ownership, context-incarnation ledgers, intent recovery and value/attribute-verified cookie application. Complete logout snapshots remove only owned records; held/incomplete reads preserve prior records, and incomplete cookie reads can still add available cookies.
+- Add authenticated capability/status endpoints, v3 cookie push and pull negotiation, truthful accepted-versus-applied readiness, pending-status monitoring, `destination open`, and explicit `destination repair --yes`. Pre-v3 sinks retain v2 projection and legacy empty-pull behavior. Storage capabilities are advertised only when a storage adapter is installed; this change's default live adapter delivers cookies.
+- Keep the old replay-state map readable by older binaries while adding per-destination namespaces, a stable migration floor and a v3 legacy-watermark marker. This accepts reversed first-use destination arrival without reopening replay windows after rollback. Source generation and transport sequence can recover from authenticated sink high-water marks after local state loss.
+- Owned Chrome starts without a visible window and is used only after its dedicated profile, PID and browser incarnation are verified. Default profiles, their ancestors and symlink aliases are refused. A private receipt permits safe recovery of a surviving owned process after sink restart. An adopted process's unknown exit reason is conservatively held under `after_crash`; explicit open or `always` can reopen it. Exact-key expiry avoids deleting partitioned cookie siblings, and ppcli runs separately from live destinations.
+- Deterministic lifecycle, sealed-wire, policy, replay, crash-recovery and source-state-loss tests are included. The real-browser cookie lifecycle gate is present and honors the pinned Chrome binary, but was not run in the development VM because its Unix-socket restriction blocks browsers; final browser/broker end-to-end gates remain required. See `docs/live-destinations.md` for the compatibility and safety details.
+
+### Source reader contracts and hermetic browser testing
+
+- Chromium file and live CDP sources share a reader contract, cookie policy and diagnostics. `source`, `export`, `agent-sync` and `cmux-sync` resolve `--browser`, `--profile` and `--reader` before computing paths. CDP remains cookies-only and never falls back to disk, discovery or Keychain access. Configured CDP sources also work with `cookies` and `doctor`.
+- **Behavior change:** cold CDP injection now uses the live lane's cookie shaping. Parent-domain cookies retain their leading dot instead of narrowing to an apex host; host-only and `__Host-` cookies remain host-only. Insecure SameSite=None rows follow the live lane's Lax correction. CHIPS partition keys retain both ancestor-bit values; opaque CDP partition keys fail closed instead of becoming unpartitioned.
+- Explicit `chrome.db_path` now anchors storage and watcher paths to the same profile as its cookies, rather than silently packing the default browser profile's storage.
+- Source generation and transport sequences persist privately and durably. Sequence allocation remains nanosecond-compatible with v1/v2 sinks and strictly increases across restarts or clock rollback. Corrupt counter state now fails closed; authenticated reconciliation can reseed counters after state loss.
+- Protocol v3 snapshot/completeness and storage IR types are available for subsequent changes; this change still sends v2. IndexedDB database/store/index names use tagged strings to preserve every UTF-16 code unit.
+- The fixture-only end-to-end harness injects credentials, disables discovery/adapters/secrets, and panics before any accidental host credential read. CI requires Chromium wire-to-browser cookie assertions; Linux also traces the CDP reader for forbidden opens of a running fixture profile. Native Keychain timing integration is excluded from the default test build.
+
+### Experimental Gecko source readers
+
+- Register Zen, Firefox, LibreWolf and Floorp with install-aware CityHash v1 profile resolution and fail-closed identity changes.
+- Add the bounded authenticated companion cookie/identity/event channel, independently supervised BiDi session broker, durable directory-name origin catalog, and per-site container routing with full cookie partition provenance.
+- Add closed-browser-only cookie reads under Mozilla's real profile lock, private-copy SQLite recovery, bounded clean-quit session decoding, and opt-in macOS/Linux Gecko launchers. Gecko readers never call a browser Safe Storage provider.
+- Source, export, cmux-sync and agent-sync share Gecko adapters; status and doctor report reader/profile/catalog state. Storage reading and durable destination reconciliation remain subsequent stages; real-browser lifecycle and no-live-database tracing gates are not yet verified in the restricted implementation VM. See docs/gecko-source-experimental.md.
+
+### Shared Chromium source-browser registry
+
+- Chrome, Atlas, Brave, Edge, Arc and Dia now share one dependency-free metadata registry between configuration and the Chromium reader. Browser family metadata prepares for separate source engines; no new browser is enabled by this refactor.
+- Browser names, defaults, profile paths, Safe Storage strings and existing OS-selection behavior are unchanged. Atlas's file-based decryption limitation is unchanged.
 
 ### New `agentcookie profile-keepalive`: Claude in Chrome stays connected on every Claude account
 

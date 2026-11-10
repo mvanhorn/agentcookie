@@ -1,0 +1,15 @@
+# Explicit per-account routes. Container names are case-sensitive Gecko names.
+browser:
+  name: zen
+  profile: default
+  reader: live
+  storage_read_mode: intercept
+sinks:
+  - url: http://mini:9999/sync
+    peer: mini
+    destination: personal
+    containers: [Personal]
+  - url: http://mini:9999/sync
+    peer: mini
+    destination: work
+    containers: [Work]

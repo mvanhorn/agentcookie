@@ -64,7 +64,7 @@ func runSinkPullLoop(
 ) error {
 	apply := rt.applier(ctx, transportSecret)
 	return pullLoop(ctx, true, func() time.Duration { return interval }, func(ctx context.Context) error {
-		_, err := pullFromSource(ctx, client, pullURL, transportSecret, rt.cfg.Pull.As, apply)
+		_, err := pullFromSource(ctx, client, pullURL, transportSecret, rt.cfg.Pull.As, apply, sinkProtocolVersion(rt.cfg))
 		return err
 	})
 }
@@ -172,7 +172,7 @@ const teammateHeader = "X-Agentcookie-Teammate"
 // client uses the stock pull client. An empty secret sends the request
 // unsigned: the keyless /pull a teammate with no key sends so the laptop
 // can start a re-pair. A non-empty as is sent in teammateHeader.
-func pullFromSource(ctx context.Context, client *http.Client, pullURL, secret, as string, apply func([]byte) envelopeApplyResult) (pullOutcome, error) {
+func pullFromSource(ctx context.Context, client *http.Client, pullURL, secret, as string, apply func([]byte) envelopeApplyResult, versions ...int) (pullOutcome, error) {
 	if client == nil {
 		client = httpserver.Client(httpserver.PullClient)
 	}
@@ -190,6 +190,9 @@ func pullFromSource(ctx context.Context, client *http.Client, pullURL, secret, a
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, resolved, nil)
 	if err != nil {
 		return pullNothingNew, fmt.Errorf("new request: %w", err)
+	}
+	if len(versions) > 0 && versions[0] >= 3 {
+		req.Header.Set("X-Agentcookie-Protocol-Version", "3")
 	}
 	if as != "" {
 		req.Header.Set(teammateHeader, as)
@@ -372,7 +375,7 @@ func pullOnceLocked(ctx context.Context, cfg *config.SinkConfig) pullOnceResult 
 
 	delay := pullOnceRetryMin
 	for {
-		outcome, err := pullFromSource(budgetCtx, client, pullURL, string(pk.Key), cfg.Pull.As, apply)
+		outcome, err := pullFromSource(budgetCtx, client, pullURL, string(pk.Key), cfg.Pull.As, apply, sinkProtocolVersion(cfg))
 		if err == nil {
 			if outcome == pullApplied {
 				return pullOnceResult{summary: "applied fresh cookies from " + cfg.Pull.From}
@@ -491,4 +494,11 @@ func runTeammatePullLoop(ctx context.Context) error {
 		fmt.Fprintf(os.Stderr, "agentcookie sink --pull-loop: %s\n", res.summary)
 		return nil
 	})
+}
+
+func sinkProtocolVersion(cfg *config.SinkConfig) int {
+	if cfg.LiveDestinationMode() {
+		return 3
+	}
+	return 2
 }

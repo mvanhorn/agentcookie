@@ -1,4 +1,4 @@
-//go:build darwin && cgo
+//go:build darwin && cgo && keychain_integration
 
 package chrome
 
@@ -7,6 +7,10 @@ import (
 	"time"
 )
 
+// This opt-in integration test is excluded from normal CI and all hermetic
+// browser tests. Run it only with an isolated test Keychain, never a user
+// login Keychain. The queried service is intentionally nonexistent.
+//
 // TestSafeStoragePasswordViaKeybase_ReturnsPromptly is the regression guard for
 // the #106 leak: with kSecUseAuthenticationUIFail the SecItem call can never
 // block on a SecurityAgent prompt, so it must return quickly whether or not
@@ -19,7 +23,7 @@ func TestSafeStoragePasswordViaKeybase_ReturnsPromptly(t *testing.T) {
 	}
 	done := make(chan res, 1)
 	go func() {
-		pw, err := safeStoragePasswordViaKeybaseFor(keychainService, keychainAccount)
+		pw, err := safeStoragePasswordViaKeybaseFor("agentcookie-hermetic-nonexistent-"+t.Name(), "fixture")
 		done <- res{pw, err}
 	}()
 

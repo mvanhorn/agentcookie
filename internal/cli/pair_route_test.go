@@ -347,7 +347,8 @@ func TestPairRouteRefusesReboundRecord(t *testing.T) {
 }
 
 // One code used twice at once: exactly one pairing succeeds; the other is
-// refused as already used (409) or no longer pending (401).
+// refused as already used (409), no longer pending (401), or by the
+// closed route (404) when the winning request finishes before routing.
 func TestPairRouteConcurrentUseOfOneCode(t *testing.T) {
 	f := newPairFixture(t, grokNode)
 	code, _, err := f.hub.MintPairing("grokbot", grokNode)
@@ -367,7 +368,7 @@ func TestPairRouteConcurrentUseOfOneCode(t *testing.T) {
 		switch {
 		case err == nil:
 			ok++
-		case strings.Contains(err.Error(), "409") || strings.Contains(err.Error(), "401"):
+		case strings.Contains(err.Error(), "409") || strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "404"):
 			refused++
 		default:
 			t.Fatalf("unexpected error: %v", err)

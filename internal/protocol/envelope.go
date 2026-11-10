@@ -32,6 +32,12 @@ const MinVersion = 1
 // a source can sync cookies only, localStorage only, both, or all three
 // in a single envelope. The sink applies whatever is present.
 type SyncEnvelope struct {
+	// Optional v3 fields are types only until capability-negotiated sending.
+	SourceBrowser       string          `json:"source_browser,omitempty"`
+	ReaderMode          string          `json:"reader_mode,omitempty"`
+	Destination         string          `json:"destination,omitempty"`
+	Snapshot            *SnapshotMeta   `json:"snapshot,omitempty"`
+	Storage             *StorageRecords `json:"storage,omitempty"`
 	ProtocolVersion     int             `json:"protocol_version"`
 	SourceHostname      string          `json:"source_hostname"`
 	Sequence            int64           `json:"sequence"`

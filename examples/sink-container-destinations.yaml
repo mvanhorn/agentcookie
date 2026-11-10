@@ -1,0 +1,20 @@
+listen:
+  addr: 127.0.0.1:9999
+# Pair transport keys using the existing peer workflow before running the sink.
+destinations:
+  - name: personal
+    kind: live_chrome
+    required: true
+    chrome:
+      port: 9424
+      headed: true
+      start: on_boot
+      relaunch: after_crash
+  - name: work
+    kind: live_chrome
+    required: true
+    chrome:
+      port: 9425
+      headed: true
+      start: on_boot
+      relaunch: after_crash
