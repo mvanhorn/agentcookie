@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -112,17 +113,43 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	statePath := profileSyncStatePath(browser.Name, profileSyncTo)
+	// Hold a per-target lock from the target/state read through the state
+	// save, so overlapping runs cannot interleave writes and ownership.
+	unlock, err := profileSyncLock(statePath + ".lock")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	// Chrome keeps no SQLite lock on Cookies, and a loaded profile would never
+	// pick up rows written under it (and could later overwrite them). A real
+	// run refuses unless no process holds the target's cookie store open.
+	open, err := profileSyncFileInUse(dstPath)
+	if err != nil {
+		return fmt.Errorf("check whether profile %q is open: %w", profileSyncTo, err)
+	}
+	if open && !profileSyncDryRun {
+		return fmt.Errorf("profile %q is open in Chrome; close every window of that profile (Chrome may take a few seconds to let go) and run again", profileSyncTo)
+	}
+
 	// skipDBSC=true: device-bound cookies cannot move between profiles.
 	src, st, err := readFilteredCookies(srcPath, blocklist, key, true, time.Now().UTC())
 	if err != nil {
 		return fmt.Errorf("read source profile %q: %w", profileSyncFrom, err)
 	}
-	dst, err := chrome.ReadCookiesForHost(dstPath, "%", key)
+	// A closed target is read WAL-aware, so committed rows Chrome left in
+	// Cookies-wal count as the target's own. An open one (dry-run only) is
+	// read as a snapshot.
+	readTarget := chrome.ReadCookiesForHostClosed
+	if open {
+		readTarget = chrome.ReadCookiesForHost
+	}
+	dst, err := readTarget(dstPath, "%", key)
 	if err != nil {
 		return fmt.Errorf("read target profile %q: %w", profileSyncTo, err)
 	}
 
-	statePath := profileSyncStatePath(browser.Name, profileSyncTo)
 	state, err := loadProfileSyncState(statePath)
 	if err != nil {
 		return err
@@ -147,22 +174,12 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Chrome keeps no SQLite lock on Cookies, and a loaded profile would never
-	// pick up rows written under it (and could later overwrite them). Refuse
-	// unless no process holds the target's cookie store open.
-	open, err := profileSyncFileInUse(dstPath)
-	if err != nil {
-		return fmt.Errorf("check whether profile %q is open: %w", profileSyncTo, err)
-	}
-	if open {
-		return fmt.Errorf("profile %q is open in Chrome; close every window of that profile (Chrome may take a few seconds to let go) and run again", profileSyncTo)
-	}
 	n, err := chrome.WriteCookiesChromeNative(dstPath, plan.write, key)
 	if err != nil {
 		return fmt.Errorf("write target profile %q: %w", profileSyncTo, err)
 	}
 	for _, c := range plan.write {
-		state.Written[cmuxCookieKey(c)] = profileSyncValueHash(c)
+		state.Written[profileSyncKey(c)] = profileSyncValueHash(c)
 	}
 	if err := saveProfileSyncState(statePath, state); err != nil {
 		return err
@@ -186,6 +203,26 @@ var profileSyncFileInUse = func(path string) (bool, error) {
 	return len(strings.TrimSpace(string(out))) > 0, nil
 }
 
+// profileSyncLock takes an exclusive flock on path, failing fast when another
+// profile-sync for the same target holds it.
+func profileSyncLock(path string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create profile-sync state dir: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open profile-sync lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("another profile-sync for this profile is running (%s): %w", path, err)
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		f.Close()
+	}, nil
+}
+
 // profileSyncState records, per copied cookie, a hash of the value
 // profile-sync last wrote. A target cookie whose current value still matches
 // is "ours" and may be updated; anything else belongs to the target.
@@ -206,7 +243,7 @@ type profileSyncPlan struct {
 func planProfileSync(src, dst []chrome.Cookie, state *profileSyncState, excludes []string) profileSyncPlan {
 	current := make(map[string]chrome.Cookie, len(dst))
 	for _, c := range dst {
-		current[cmuxCookieKey(c)] = c
+		current[profileSyncKey(c)] = c
 	}
 	var p profileSyncPlan
 	for _, c := range src {
@@ -214,7 +251,7 @@ func planProfileSync(src, dst []chrome.Cookie, state *profileSyncState, excludes
 			p.excluded++
 			continue
 		}
-		k := cmuxCookieKey(c)
+		k := profileSyncKey(c)
 		have, ok := current[k]
 		switch {
 		case !ok:
@@ -230,6 +267,14 @@ func planProfileSync(src, dst []chrome.Cookie, state *profileSyncState, excludes
 		}
 	}
 	return p
+}
+
+// profileSyncKey is Chrome's full unique cookie key, so partitioned (CHIPS)
+// cookies and scheme/port variants of the same name stay distinct rows through
+// planning, state, and the upsert.
+func profileSyncKey(c chrome.Cookie) string {
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d",
+		c.HostKey, c.TopFrameSiteKey, c.Name, c.Path, c.HasCrossSiteAncestor, c.SourceScheme, c.SourcePort)
 }
 
 // profileSyncValueHash is the content identity used for ownership: the same
@@ -298,9 +343,20 @@ func saveProfileSyncState(path string, st *profileSyncState) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return fmt.Errorf("write profile-sync state: %w", err)
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create profile-sync state temp: %w", err)
 	}
-	return os.Rename(tmp, path)
+	tmp := f.Name()
+	_, werr := f.Write(b)
+	cerr := f.Close()
+	if werr != nil || cerr != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("write profile-sync state: %v", errors.Join(werr, cerr))
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("publish profile-sync state: %w", err)
+	}
+	return nil
 }

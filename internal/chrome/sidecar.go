@@ -99,7 +99,7 @@ func WriteCookiesSidecar(targetPath string, cookies []Cookie, masterKey []byte) 
 	}
 
 	cols := sidecarColumnSet()
-	insertSQL, args := buildUpsert(cols)
+	insertSQL, args := buildUpsert(cols, false)
 
 	tx, err := db.Begin()
 	if err != nil {

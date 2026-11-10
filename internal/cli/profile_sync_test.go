@@ -14,7 +14,7 @@ func ck(host, name, value string) chrome.Cookie {
 func TestPlanProfileSync_Ownership(t *testing.T) {
 	ours := ck(".example.com", "sid", "old")
 	state := &profileSyncState{Written: map[string]uint64{
-		cmuxCookieKey(ours): profileSyncValueHash(ours),
+		profileSyncKey(ours): profileSyncValueHash(ours),
 	}}
 	src := []chrome.Cookie{
 		ck(".new.com", "a", "1"),          // missing in target -> add
@@ -83,4 +83,35 @@ func TestRunProfileSync_RejectsBadProfiles(t *testing.T) {
 			t.Errorf("from=%q to=%q: expected error", tc.from, tc.to)
 		}
 	}
+}
+
+func TestPlanProfileSync_PartitionedRowsStayDistinct(t *testing.T) {
+	plain := ck(".site.com", "c", "src")
+	part := plain
+	part.TopFrameSiteKey = "https://top.example"
+	part.HasCrossSiteAncestor = 1
+	// Target has only the partitioned row, set by itself.
+	dstPart := part
+	dstPart.Value = "target-own"
+	p := planProfileSync([]chrome.Cookie{plain, part}, []chrome.Cookie{dstPart}, &profileSyncState{Written: map[string]uint64{}}, nil)
+	if p.added != 1 || len(p.targetOwned) != 1 || len(p.write) != 1 || p.write[0].TopFrameSiteKey != "" {
+		t.Fatalf("added=%d owned=%d write=%#v", p.added, len(p.targetOwned), p.write)
+	}
+}
+
+func TestProfileSyncLock_Exclusive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x.lock")
+	unlock, err := profileSyncLock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := profileSyncLock(path); err == nil {
+		t.Fatal("second lock succeeded, want error")
+	}
+	unlock()
+	again, err := profileSyncLock(path)
+	if err != nil {
+		t.Fatalf("relock after unlock: %v", err)
+	}
+	again()
 }

@@ -58,7 +58,7 @@ func writeCookies(dbPath string, cookies []Cookie, key []byte, native bool) (int
 		return 0, fmt.Errorf("read cookies schema: %w", err)
 	}
 
-	insertSQL, args := buildUpsert(cols)
+	insertSQL, args := buildUpsert(cols, native)
 
 	appBound := false
 	if native {
@@ -214,7 +214,11 @@ type rowInput struct {
 // buildUpsert returns an INSERT ... ON CONFLICT statement targeting only the
 // columns present in the live schema, plus a function that returns the matching
 // args slice for a given Cookie.
-func buildUpsert(cols map[string]bool) (string, func(rowInput) []any) {
+//
+// keepSiteKey writes each cookie's own top_frame_site_key and
+// has_cross_site_ancestor (the native-profile path) instead of the sink's
+// fixed "" and 1.
+func buildUpsert(cols map[string]bool, keepSiteKey bool) (string, func(rowInput) []any) {
 	// Column order is fixed for stable arg-binding regardless of map iteration.
 	type field struct {
 		name string
@@ -223,7 +227,12 @@ func buildUpsert(cols map[string]bool) (string, func(rowInput) []any) {
 	candidates := []field{
 		{"creation_utc", func(r rowInput) any { return r.creationUTC }},
 		{"host_key", func(r rowInput) any { return r.cookie.HostKey }},
-		{"top_frame_site_key", func(r rowInput) any { return "" }},
+		{"top_frame_site_key", func(r rowInput) any {
+			if keepSiteKey {
+				return r.cookie.TopFrameSiteKey
+			}
+			return ""
+		}},
 		{"name", func(r rowInput) any { return r.cookie.Name }},
 		{"value", func(r rowInput) any { return "" }},
 		{"encrypted_value", func(r rowInput) any { return r.encrypted }},
@@ -240,7 +249,12 @@ func buildUpsert(cols map[string]bool) (string, func(rowInput) []any) {
 		{"source_port", func(r rowInput) any { return r.cookie.SourcePort }},
 		{"last_update_utc", func(r rowInput) any { return r.lastUpdateUTC }},
 		{"source_type", func(r rowInput) any { return 0 }},
-		{"has_cross_site_ancestor", func(r rowInput) any { return 1 }},
+		{"has_cross_site_ancestor", func(r rowInput) any {
+			if keepSiteKey {
+				return r.cookie.HasCrossSiteAncestor
+			}
+			return 1
+		}},
 	}
 
 	var present []field

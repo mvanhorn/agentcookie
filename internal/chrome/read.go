@@ -28,6 +28,12 @@ type Cookie struct {
 	SameSite      int    `json:"samesite"`
 	SourceScheme  int    `json:"source_scheme"`
 	SourcePort    int    `json:"source_port"`
+	// TopFrameSiteKey and HasCrossSiteAncestor are part of Chrome's unique
+	// cookie key (partitioned/CHIPS cookies). Read when the schema has them;
+	// only WriteCookiesChromeNative writes them back. omitempty keeps the
+	// wire shape unchanged for unpartitioned cookies.
+	TopFrameSiteKey      string `json:"top_frame_site_key,omitempty"`
+	HasCrossSiteAncestor int    `json:"has_cross_site_ancestor,omitempty"`
 }
 
 // DefaultCookiesPath returns the default Chrome cookies SQLite path on macOS.
@@ -41,18 +47,41 @@ func DefaultCookiesPath() string {
 // match, e.g. "%instacart.com").
 func ReadCookiesForHost(dbPath, hostPattern string, key []byte) ([]Cookie, error) {
 	// immutable=1 lets us read while Chrome holds its lock.
-	dsn := fmt.Sprintf("file:%s?mode=ro&immutable=1", dbPath)
+	return readCookies(fmt.Sprintf("file:%s?mode=ro&immutable=1", dbPath), hostPattern, key)
+}
+
+// ReadCookiesForHostClosed reads a Cookies database that no process has open,
+// applying any committed rows still in Cookies-wal (immutable=1 would skip
+// them, e.g. after Chrome exited uncleanly). Use it only after confirming the
+// profile is closed.
+func ReadCookiesForHostClosed(dbPath, hostPattern string, key []byte) ([]Cookie, error) {
+	return readCookies(fmt.Sprintf("file:%s?mode=ro", dbPath), hostPattern, key)
+}
+
+func readCookies(dsn, hostPattern string, key []byte) ([]Cookie, error) {
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open cookies db: %w", err)
 	}
 	defer db.Close()
 
+	cols, err := readTableColumns(db, "cookies")
+	if err != nil {
+		return nil, fmt.Errorf("read cookies schema: %w", err)
+	}
+	topFrame, crossSite := "''", "0"
+	if cols["top_frame_site_key"] {
+		topFrame = "top_frame_site_key"
+	}
+	if cols["has_cross_site_ancestor"] {
+		crossSite = "has_cross_site_ancestor"
+	}
+
 	query := `
 SELECT host_key, name, encrypted_value, path,
        expires_utc, is_secure, is_httponly, last_access_utc,
        has_expires, is_persistent, priority, samesite,
-       source_scheme, source_port
+       source_scheme, source_port, ` + topFrame + `, ` + crossSite + `
 FROM cookies
 WHERE host_key LIKE ?`
 	rows, err := db.Query(query, hostPattern)
@@ -71,7 +100,7 @@ WHERE host_key LIKE ?`
 			&c.HostKey, &c.Name, &encryptedValue, &c.Path,
 			&c.ExpiresUTC, &c.IsSecure, &c.IsHTTPOnly, &c.LastAccessUTC,
 			&c.HasExpires, &c.IsPersistent, &c.Priority, &c.SameSite,
-			&c.SourceScheme, &c.SourcePort,
+			&c.SourceScheme, &c.SourcePort, &c.TopFrameSiteKey, &c.HasCrossSiteAncestor,
 		); err != nil {
 			return nil, fmt.Errorf("scan row: %w", err)
 		}

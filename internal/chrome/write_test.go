@@ -242,3 +242,24 @@ func TestWriteCookiesChromeNative_AppBoundAndKeepsVersion(t *testing.T) {
 		t.Fatalf("read back: %#v %v", got, err)
 	}
 }
+
+func TestWriteCookiesChromeNative_KeepsSiteKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Cookies")
+	seedEmptyCookiesDB(t, path)
+	in := []Cookie{
+		{HostKey: ".site.com", Name: "c", Value: "plain", Path: "/", IsSecure: 1},
+		{HostKey: ".site.com", Name: "c", Value: "part", Path: "/", IsSecure: 1, TopFrameSiteKey: "https://top.example", HasCrossSiteAncestor: 1},
+	}
+	if _, err := WriteCookiesChromeNative(path, in, testKey); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadCookiesForHostClosed(path, "%site.com", testKey)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("read: %#v %v", got, err)
+	}
+	for _, c := range got {
+		if (c.TopFrameSiteKey == "") != (c.Value == "plain") || (c.HasCrossSiteAncestor == 1) != (c.Value == "part") {
+			t.Errorf("site key not preserved: %#v", c)
+		}
+	}
+}
