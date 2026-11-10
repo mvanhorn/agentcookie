@@ -20,6 +20,12 @@ import (
 // individual manifest parse failures) accumulate in the returned slice and
 // do not stop the push.
 func LoadPayloadWithDiscovery(homeDir string) (*Payload, []error) {
+	return loadPayloadWithDiscovery(homeDir, DiscoveryConfig{HomeDir: homeDir})
+}
+
+// loadPayloadWithDiscovery lets tests supply isolated discovery roots rather
+// than inspecting system manifests, which can name arbitrary secret files.
+func loadPayloadWithDiscovery(homeDir string, cfg DiscoveryConfig) (*Payload, []error) {
 	var errs []error
 
 	// v1 bus.
@@ -30,7 +36,7 @@ func LoadPayloadWithDiscovery(homeDir string) (*Payload, []error) {
 	}
 
 	// v2 discovery.
-	reg, discoverErrs := Discover(DiscoveryConfig{HomeDir: homeDir})
+	reg, discoverErrs := Discover(cfg)
 	errs = append(errs, discoverErrs...)
 
 	for slug, rp := range reg.Projects {

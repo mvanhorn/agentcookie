@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Shared Chromium source-browser registry
+
+- Chrome, Atlas, Brave, Edge, Arc and Dia now share one dependency-free metadata registry between configuration and the Chromium reader. Browser family metadata prepares for separate source engines; no new browser is enabled by this refactor.
+- Browser names, defaults, profile paths, Safe Storage strings and existing OS-selection behavior are unchanged. Atlas's file-based decryption limitation is unchanged.
+
 ### New `agentcookie profile-keepalive`: Claude in Chrome stays connected on every Claude account
 
 - Claude in Chrome pairs only with the Claude account it is signed into, so a Mac with two Claude accounts uses one Chrome profile per account. Chrome unloads a profile when its last window closes, and at launch it reopens only the last one used. After that, Claude in Chrome silently stopped working for the other account.

@@ -8,17 +8,9 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/config"
 )
 
-// The source-browser adapter table is intentionally maintained in two places:
-// internal/chrome (which derives the Cookies path AND owns the Safe Storage
-// keychain strings) and internal/config (which derives the Cookies path while
-// staying free of the chrome package's CGO sqlite dependency). The two tables
-// must agree, or a source.yaml `browser:` block could resolve a Cookies path
-// the decryptor was never told about. These guards fail loudly the moment a
-// new fork is added to one table but not the other.
-//
-// The cleaner long-term shape is a single dependency-free registry (e.g. in
-// internal/chromepaths) consumed by both packages; until that refactor lands
-// these tests are the drift backstop.
+// Chrome and config are views of internal/browsers. Keep these public-path
+// agreement guards so a future change to either view cannot silently select
+// a different profile or omit a supported Chromium adapter.
 
 func TestSourceBrowserRegistriesAgreeOnSupportedNames(t *testing.T) {
 	chromeNames := chrome.SupportedBrowserNames()
@@ -35,6 +27,8 @@ func TestSourceBrowserRegistriesAgreeOnSupportedNames(t *testing.T) {
 }
 
 func TestSourceBrowserRegistriesAgreeOnCookiesPath(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GOOS", "")
 	for _, name := range chrome.SupportedBrowserNames() {
 		b, err := chrome.LookupBrowser(name)
 		if err != nil {
@@ -61,6 +55,8 @@ func TestSourceBrowserRegistriesAgreeOnCookiesPath(t *testing.T) {
 // the rest of the chrome-default code would silently disagree on where the
 // profile lives.
 func TestChromeAdapterMatchesChromepaths(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GOOS", "")
 	chromeBrowser, err := chrome.LookupBrowser("chrome")
 	if err != nil {
 		t.Fatalf("chrome.LookupBrowser(\"chrome\"): %v", err)
