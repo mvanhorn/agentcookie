@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -75,14 +74,12 @@ func init() {
 	profileSyncCmd.Flags().BoolVar(&profileSyncVerbose, "verbose", false, "list skipped target-owned cookies by host")
 }
 
-var profileDirNameRE = regexp.MustCompile(`^(Default|Profile [0-9]+)$`)
-
 func runProfileSync(cmd *cobra.Command, args []string) error {
 	if profileSyncTo == "" {
 		return fmt.Errorf(`--to is required, e.g. --to "Profile 1"`)
 	}
 	for _, p := range []string{profileSyncFrom, profileSyncTo} {
-		if !profileDirNameRE.MatchString(p) {
+		if !chrome.IsProfileDirName(p) {
 			return fmt.Errorf("profile %q is not a Chrome profile directory name (Default or \"Profile N\")", p)
 		}
 	}
@@ -130,7 +127,7 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("check whether profile %q is open: %w", profileSyncTo, err)
 	}
 	if open && !profileSyncDryRun {
-		return fmt.Errorf("profile %q is open in Chrome; close every window of that profile (Chrome may take a few seconds to let go) and run again", profileSyncTo)
+		return fmt.Errorf("profile %q is open in Chrome; close every window of that profile (Chrome may take a few seconds to let go) and run again. If the profile keep-alive is on, it keeps the profile loaded with no window: run `agentcookie profile-keepalive pause --profile %q`, then open a window of that profile and close it (or quit Chrome), then run again", profileSyncTo, profileSyncTo)
 	}
 
 	// skipDBSC=true: device-bound cookies cannot move between profiles.

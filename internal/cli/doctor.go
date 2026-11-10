@@ -95,6 +95,10 @@ type doctorDeps struct {
 	// LoginItems reports whether the LaunchAgents show as "agentcookie" in
 	// macOS Login Items. nil skips the check (tests, Linux).
 	LoginItems func() Check
+
+	// ProfileKeepalive reports the Chrome profile keep-alive. nil skips the
+	// check (tests, Linux).
+	ProfileKeepalive func() Check
 }
 
 var doctorCmd = &cobra.Command{
@@ -144,6 +148,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		SourceAdapterDecrypt:  sourceAdapterDecryptSmoke,
 	}
 	if !config.IsLinux() {
+		deps.ProfileKeepalive = checkProfileKeepalive
 		deps.LoginItems = func() Check {
 			return checkLoginItems(loginItemsEnv{
 				home:         home,
@@ -367,6 +372,11 @@ func buildReport(d doctorDeps) DoctorReport {
 	// worst: the installer treats a FAIL as "run the wizard".
 	if d.LoginItems != nil {
 		checks = append(checks, d.LoginItems())
+	}
+
+	// 13c. Chrome profile keep-alive. WARN at worst, for the same reason.
+	if d.ProfileKeepalive != nil {
+		checks = append(checks, d.ProfileKeepalive())
 	}
 
 	// 14. Cookie delivery (v0.13 universal cookie delivery) -- sink role

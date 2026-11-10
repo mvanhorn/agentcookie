@@ -340,6 +340,20 @@ agentcookie services refresh
 - `agentcookie doctor` has a Login Items line that says which jobs show as agentcookie and what to run if one doesn't.
 - macOS may keep showing the old name until it re-registers the jobs, at the latest after your next login. If it still shows the old name after that, the last resort is `sfltool resetbtm` and a restart. That resets the Login Items approvals of every app, not just agentcookie.
 
+## Claude in Chrome on two Claude accounts
+
+Claude in Chrome pairs only with the Claude account it is signed into. To use it from two Claude Code accounts, give each account its own Chrome profile with the extension signed in, and copy your logins across once with `agentcookie profile-sync --to "Profile 1"`.
+
+Chrome unloads a profile when its last window closes, which disconnects Claude in Chrome for that account. `agentcookie profile-keepalive` keeps every such profile loaded inside the running Chrome, with no window and no focus change. The wizard turns it on when two or more profiles are signed into different Claude accounts. Otherwise it does nothing. Like the other background jobs, it runs through `agentcookie.app`, which needs the signed release build (`install-beta.sh`): macOS blocks an unsigned build run by launchd from reading Chrome's profile folder.
+
+```bash
+agentcookie profile-keepalive enable                      # turn on (no-op with one account)
+agentcookie profile-keepalive pause --profile "Profile 1" # hold off 10 minutes, e.g. before profile-sync
+agentcookie profile-keepalive disable                     # turn off and keep it off
+```
+
+While it is on, closing a profile's windows does not cut Claude in Chrome's access to that profile. Only `disable` does. Pausing only stops reloads; to unload a profile the keep-alive already loaded (before `profile-sync`, say), pause it, then open a window of that profile and close it, or quit Chrome.
+
 ## Fan out to multiple sinks
 
 One source can push the same cookies and secrets to several sinks. A source push reads and filters your cookies once, then seals and POSTs to each sink independently with that sink's own paired key. A sink that is down or unreachable is isolated: it fails on its own while the other sinks still receive the payload.
