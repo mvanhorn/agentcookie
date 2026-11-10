@@ -153,8 +153,6 @@ func runWizardInstall(cmd *cobra.Command, args []string) error {
 	// machine's Chrome -> cmux delivery automatically (no-op when cmux is
 	// absent, non-fatal, --no-cmux opts out).
 	maybeAutoEnableCmux()
-	// Keep each Chrome profile paired with a different Claude account
-	// loaded (no-op unless there are two or more such accounts).
 	maybeAutoEnableProfileKeepalive()
 	return nil
 }

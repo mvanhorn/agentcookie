@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"syscall"
@@ -18,16 +17,14 @@ import (
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/chromectl"
+	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/launchd"
 	"github.com/mvanhorn/agentcookie/internal/notify"
 )
 
 const (
-	keepaliveTick = 15 * time.Second
-	// keepaliveGateEvery bounds how often the account gate copies and reads
-	// each profile's extension storage.
-	keepaliveGateEvery = time.Minute
-	// keepaliveRetryAfter is the wait after a load that did not take.
+	keepaliveTick       = 15 * time.Second
+	keepaliveGateEvery  = time.Minute
 	keepaliveRetryAfter = 60 * time.Second
 	// keepaliveSendDeadline stays well under the ~20s after which Chrome
 	// kills a browser that does not answer a handoff; a healthy handoff
@@ -35,8 +32,6 @@ const (
 	keepaliveSendDeadline = 10 * time.Second
 	keepaliveNotifyAfter  = 3
 )
-
-var keepaliveProfileRE = regexp.MustCompile(`^(Default|Profile [0-9]+)$`)
 
 var profileKeepaliveCmd = &cobra.Command{
 	Use:   "profile-keepalive",
@@ -111,8 +106,7 @@ func init() {
 	profileKeepaliveCmd.AddCommand(profileKeepaliveRunCmd, profileKeepaliveEnableCmd, profileKeepaliveDisableCmd, profileKeepalivePauseCmd)
 }
 
-// keepaliveDeps are the outside calls the loop makes, injected so tests run
-// a scripted Chrome.
+// keepaliveDeps are the outside calls the loop makes.
 type keepaliveDeps struct {
 	Root        string
 	Qualify     func(root string) ([]chrome.ClaudeProfile, []error)
@@ -126,11 +120,11 @@ type keepaliveDeps struct {
 }
 
 type keepaliveProfileState struct {
-	sent       bool // a load was sent last cycle and not yet judged
-	sentAt     time.Time
-	failures   int
-	notified   bool
-	lastFailed time.Time
+	awaitingVerdict bool
+	sentAt          time.Time
+	failures        int
+	notified        bool
+	lastFailed      time.Time
 }
 
 type keepaliveLoop struct {
@@ -145,14 +139,9 @@ func newKeepaliveLoop(d keepaliveDeps) *keepaliveLoop {
 	return &keepaliveLoop{d: d, state: map[string]*keepaliveProfileState{}}
 }
 
-func chromeUserDataRoot() string {
-	b, _ := chrome.LookupBrowser("")
-	return filepath.Dir(b.ProfileDir("Default"))
-}
-
 func liveKeepaliveLoop() *keepaliveLoop {
 	return newKeepaliveLoop(keepaliveDeps{
-		Root:      chromeUserDataRoot(),
+		Root:      chromepaths.ChromeProfileRoot(),
 		Qualify:   chrome.QualifyingClaudeProfiles,
 		ChromePID: chromectl.RunningChromePID,
 		Loaded:    chromectl.ProfileLoaded,
@@ -199,7 +188,9 @@ func (l *keepaliveLoop) tick(ctx context.Context) {
 			l.d.Logf("idle: fewer than two Chrome profiles are signed into different Claude accounts")
 			l.idleLogd = true
 		}
-		l.state = map[string]*keepaliveProfileState{}
+		if len(l.state) > 0 {
+			l.state = map[string]*keepaliveProfileState{}
+		}
 		return
 	}
 	l.idleLogd = false
@@ -215,21 +206,20 @@ func (l *keepaliveLoop) tick(ctx context.Context) {
 			l.state[p.Profile] = st
 		}
 		if l.d.Loaded(pid, l.d.Root, p.Profile) {
-			if st.failures > 0 || st.sent {
+			if st.failures > 0 || st.awaitingVerdict {
 				l.d.Logf("%s is loaded", p.Profile)
 			}
 			*st = keepaliveProfileState{}
 			continue
 		}
-		if st.sent {
-			st.sent = false
-			// The retry wait runs from the send that did not take.
+		if st.awaitingVerdict {
+			st.awaitingVerdict = false
 			l.fail(st, p.Profile, st.sentAt, "it was still not loaded after a load")
 		}
-		if now.Before(l.d.PausedUntil(p.Profile)) {
+		if !st.lastFailed.IsZero() && now.Sub(st.lastFailed) < keepaliveRetryAfter {
 			continue
 		}
-		if !st.lastFailed.IsZero() && now.Sub(st.lastFailed) < keepaliveRetryAfter {
+		if now.Before(l.d.PausedUntil(p.Profile)) {
 			continue
 		}
 		l.d.Logf("loading %s", p.Profile)
@@ -237,7 +227,7 @@ func (l *keepaliveLoop) tick(ctx context.Context) {
 			l.fail(st, p.Profile, now, err.Error())
 			continue
 		}
-		st.sent, st.sentAt = true, now
+		st.awaitingVerdict, st.sentAt = true, now
 	}
 }
 
@@ -250,10 +240,6 @@ func (l *keepaliveLoop) fail(st *keepaliveProfileState, profile string, sentAt t
 		l.d.Notify("agentcookie", fmt.Sprintf("Chrome profile %q will not stay loaded, so Claude in Chrome is disconnected for its account. Run `agentcookie doctor`.", profile))
 	}
 }
-
-// Pause markers and the opted-out marker live in agentcookie's own state
-// dir. The loop never touches profile-sync's lock: profile-sync takes it
-// without waiting and would fail if the keep-alive held it.
 
 func keepaliveStateDir() string {
 	home, _ := os.UserHomeDir()
@@ -269,7 +255,7 @@ type keepalivePause struct {
 }
 
 func writeKeepalivePause(profile string, until time.Time) error {
-	if !keepaliveProfileRE.MatchString(profile) {
+	if !profileDirNameRE.MatchString(profile) {
 		return fmt.Errorf("profile-keepalive: %q is not a Chrome profile folder (want Default or \"Profile N\")", profile)
 	}
 	if err := os.MkdirAll(keepaliveStateDir(), 0o700); err != nil {
@@ -305,21 +291,19 @@ func keepaliveOptedOut() bool {
 	return err == nil
 }
 
-// Seams so tests exercise enable/disable without touching launchd or Chrome.
 var (
 	keepaliveQualify        = chrome.QualifyingClaudeProfiles
 	keepaliveInstallAgent   = installLaunchAgent
 	keepaliveUninstallAgent = launchd.Uninstall
 )
 
-// keepaliveAutoEnable is what the wizard calls; a var so tests can spy.
 var keepaliveAutoEnable = enableProfileKeepalive
 
 // maybeAutoEnableProfileKeepalive runs at the tail of `wizard install`. It
 // is skipped by --no-profile-keepalive or an earlier disable, and never
 // fails the install.
 func maybeAutoEnableProfileKeepalive() {
-	if wizardNoProfileKeepalive || keepaliveOptedOut() || runtime.GOOS != "darwin" && !keepaliveForceOS {
+	if wizardNoProfileKeepalive || keepaliveOptedOut() || (runtime.GOOS != "darwin" && !keepaliveForceOS) {
 		return
 	}
 	if err := keepaliveAutoEnable(true, false); err != nil {
@@ -327,7 +311,6 @@ func maybeAutoEnableProfileKeepalive() {
 	}
 }
 
-// keepaliveForceOS lets tests on Linux CI exercise the macOS-only paths.
 var keepaliveForceOS = false
 
 // enableProfileKeepalive installs the launch agent when two or more Chrome
@@ -344,7 +327,7 @@ func enableProfileKeepalive(fromWizard, quiet bool) error {
 		logf("agentcookie profile-keepalive: macOS only; nothing to do")
 		return nil
 	}
-	profiles, _ := keepaliveQualify(chromeUserDataRoot())
+	profiles, _ := keepaliveQualify(chromepaths.ChromeProfileRoot())
 	if len(profiles) == 0 {
 		logf("agentcookie profile-keepalive: not needed (fewer than two Chrome profiles are signed into different Claude accounts in Claude in Chrome)")
 		return nil
@@ -398,8 +381,6 @@ func disableProfileKeepalive() error {
 	return nil
 }
 
-// Doctor check.
-
 type profileKeepaliveCheckEnv struct {
 	qualify   func() []chrome.ClaudeProfile
 	installed func() bool
@@ -409,7 +390,7 @@ type profileKeepaliveCheckEnv struct {
 }
 
 func checkProfileKeepalive() Check {
-	root := chromeUserDataRoot()
+	root := chromepaths.ChromeProfileRoot()
 	return checkProfileKeepaliveWith(profileKeepaliveCheckEnv{
 		qualify: func() []chrome.ClaudeProfile {
 			p, _ := chrome.QualifyingClaudeProfiles(root)

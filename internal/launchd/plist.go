@@ -21,11 +21,9 @@ import (
 type Role string
 
 const (
-	RoleSource   Role = "source"
-	RoleSink     Role = "sink"
-	RoleCmuxSync Role = "cmux-sync"
-	// RoleProfileKeepalive keeps each Chrome profile paired with a
-	// different Claude account loaded, so Claude in Chrome stays connected.
+	RoleSource           Role = "source"
+	RoleSink             Role = "sink"
+	RoleCmuxSync         Role = "cmux-sync"
 	RoleProfileKeepalive Role = "profile-keepalive"
 )
 

@@ -22,15 +22,12 @@ const ChromeBinary = "/Applications/Google Chrome.app/Contents/MacOS/Google Chro
 // killed first; Chrome itself is never signalled.
 var ErrSenderTimeout = errors.New("chromectl: profile handoff did not finish in time; the sender was stopped and Chrome was left alone")
 
-// Test seams for profileload. Tests replace all of them so no test touches
-// the developer's real Chrome.
 var (
 	readSingletonLock = func(root string) (string, error) {
 		return os.Readlink(filepath.Join(root, "SingletonLock"))
 	}
 	localHostname = os.Hostname
-	// psStatComm returns "<stat> <executable path>" for pid.
-	psStatComm = func(pid int) (string, error) {
+	psStatComm    = func(pid int) (string, error) {
 		out, err := exec.Command("/bin/ps", "-o", "stat=,comm=", "-p", strconv.Itoa(pid)).Output()
 		return strings.TrimSpace(string(out)), err
 	}
@@ -135,7 +132,6 @@ func LoadProfileWindowless(ctx context.Context, profile string, deadline time.Du
 	case <-timer.C:
 		_ = cmd.Process.Kill()
 		if err := <-done; err == nil {
-			// The sender finished just as the deadline hit.
 			return nil
 		}
 		return ErrSenderTimeout

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
+	"sync"
 
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/opt"
@@ -16,8 +18,6 @@ import (
 // ClaudeExtensionID is the Chrome Web Store id of Claude in Chrome.
 const ClaudeExtensionID = "fcoeoabgfenejglbffodgkkbkcdhcgfn"
 
-// claudeExtTempPrefix names the private temp dirs that hold a short-lived
-// copy of an extension's storage while its account is read.
 const claudeExtTempPrefix = "agentcookie-claudeext-"
 
 var claudeProfileDirRE = regexp.MustCompile(`^(Default|Profile [0-9]+)$`)
@@ -52,7 +52,7 @@ func QualifyingClaudeProfiles(root string) ([]ClaudeProfile, []error) {
 		if st, err := os.Stat(store); err != nil || !st.IsDir() {
 			continue
 		}
-		account, err := readClaudeAccount(store)
+		account, err := cachedClaudeAccount(store)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", e.Name(), err))
 			continue
@@ -68,6 +68,66 @@ func QualifyingClaudeProfiles(root string) ([]ClaudeProfile, []error) {
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].Profile < found[j].Profile })
 	return found, errs
+}
+
+// claudeAccountCache remembers each store's account by a signature of its
+// files (name, size, mtime), so an unchanged store is not copied again.
+// LevelDB appends to its .log in place, so the signature changes on any
+// write, including a sign-in or sign-out.
+var (
+	claudeAccountMu    sync.Mutex
+	claudeAccountCache = map[string]claudeAccountEntry{}
+)
+
+type claudeAccountEntry struct {
+	sig     string
+	account string
+}
+
+func cachedClaudeAccount(store string) (string, error) {
+	sig, err := storeSignature(store)
+	if err != nil {
+		return "", err
+	}
+	claudeAccountMu.Lock()
+	e, ok := claudeAccountCache[store]
+	claudeAccountMu.Unlock()
+	if ok && e.sig == sig {
+		return e.account, nil
+	}
+	account, err := readClaudeAccount(store)
+	if err != nil {
+		return "", err
+	}
+	claudeAccountMu.Lock()
+	claudeAccountCache[store] = claudeAccountEntry{sig: sig, account: account}
+	claudeAccountMu.Unlock()
+	return account, nil
+}
+
+func storeSignature(store string) (string, error) {
+	entries, err := os.ReadDir(store)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for _, e := range entries { // ReadDir sorts by name
+		if skipLevelDBFile(e.Name()) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&b, "%s:%d:%d;", e.Name(), info.Size(), info.ModTime().UnixNano())
+	}
+	return b.String(), nil
+}
+
+// skipLevelDBFile names files a read-only open never needs: the lock Chrome
+// holds and LevelDB's text logs.
+func skipLevelDBFile(name string) bool {
+	return name == "LOCK" || name == "LOG" || name == "LOG.old"
 }
 
 // readClaudeAccount copies the extension's LevelDB into a private temp dir
@@ -109,7 +169,7 @@ func copyLevelDB(src, dst string) error {
 		return err
 	}
 	for _, e := range entries {
-		if e.IsDir() || e.Name() == "LOCK" {
+		if e.IsDir() || skipLevelDBFile(e.Name()) {
 			continue
 		}
 		if err := copyFile(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {

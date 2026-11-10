@@ -370,11 +370,13 @@ func buildReport(d doctorDeps) DoctorReport {
 	// 13b. Login Items. Whether the LaunchAgents show as "agentcookie" in
 	// System Settings, and whether a wrapped job can still start. WARN at
 	// worst: the installer treats a FAIL as "run the wizard".
-	if d.ProfileKeepalive != nil {
-		checks = append(checks, d.ProfileKeepalive())
-	}
 	if d.LoginItems != nil {
 		checks = append(checks, d.LoginItems())
+	}
+
+	// 13c. Chrome profile keep-alive. WARN at worst, for the same reason.
+	if d.ProfileKeepalive != nil {
+		checks = append(checks, d.ProfileKeepalive())
 	}
 
 	// 14. Cookie delivery (v0.13 universal cookie delivery) -- sink role
