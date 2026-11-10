@@ -10,7 +10,7 @@ import (
 
 // managedRoles are the LaunchAgents agentcookie installs, and the only ones
 // that can start through agentcookie.app.
-var managedRoles = []launchd.Role{launchd.RoleSource, launchd.RoleSink, launchd.RoleCmuxSync}
+var managedRoles = []launchd.Role{launchd.RoleSource, launchd.RoleSink, launchd.RoleCmuxSync, launchd.RoleProfileKeepalive}
 
 // removeAppIfUnused deletes ~/Applications/agentcookie.app once no
 // agentcookie LaunchAgent plist is left to start through it. Best-effort:

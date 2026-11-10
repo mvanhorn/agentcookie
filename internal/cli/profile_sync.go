@@ -130,7 +130,7 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("check whether profile %q is open: %w", profileSyncTo, err)
 	}
 	if open && !profileSyncDryRun {
-		return fmt.Errorf("profile %q is open in Chrome; close every window of that profile (Chrome may take a few seconds to let go) and run again", profileSyncTo)
+		return fmt.Errorf("profile %q is open in Chrome; close every window of that profile (Chrome may take a few seconds to let go) and run again. If the profile keep-alive is on, first run: agentcookie profile-keepalive pause --profile %q", profileSyncTo, profileSyncTo)
 	}
 
 	// skipDBSC=true: device-bound cookies cannot move between profiles.

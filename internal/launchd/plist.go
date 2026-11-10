@@ -24,6 +24,9 @@ const (
 	RoleSource   Role = "source"
 	RoleSink     Role = "sink"
 	RoleCmuxSync Role = "cmux-sync"
+	// RoleProfileKeepalive keeps each Chrome profile paired with a
+	// different Claude account loaded, so Claude in Chrome stays connected.
+	RoleProfileKeepalive Role = "profile-keepalive"
 )
 
 // Spec is the input to plist generation. All paths must be absolute.
@@ -54,7 +57,7 @@ func (s Spec) Render() ([]byte, error) {
 	if s.LogDir == "" {
 		return nil, fmt.Errorf("LogDir is required")
 	}
-	if s.Role != RoleSource && s.Role != RoleSink && s.Role != RoleCmuxSync {
+	if s.Role != RoleSource && s.Role != RoleSink && s.Role != RoleCmuxSync && s.Role != RoleProfileKeepalive {
 		return nil, fmt.Errorf("invalid Role %q", s.Role)
 	}
 
