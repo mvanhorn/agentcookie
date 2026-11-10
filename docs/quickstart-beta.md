@@ -38,7 +38,7 @@ Optional: Go 1.22+ if you want to build from source. Not required when using the
    - Verify your binary is notarized (so macOS doesn't block it)
    - Place it at `/usr/local/bin/agentcookie` (or `~/bin/agentcookie` if you don't have admin)
    - Prompt for the sink machine's Tailscale hostname (e.g. `second-mac`)
-   - Run `agentcookie wizard install --as source --peer <sink>` interactively
+   - Run `agentcookie wizard install --as source --browser chrome --peer <sink>` interactively
    - End by printing a pairing code
 
 Save the pairing code. You'll need it on the sink.

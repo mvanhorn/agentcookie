@@ -302,3 +302,7 @@ func parseProbeResult(raw string) (ready, authed bool, err error) {
 func boundSessionGuidance(host string) string {
 	return fmt.Sprintf("cookies for %s were delivered but the session did not authenticate; if it persists, log in to %s once inside the cmux browser, or use the gh CLI for git and PR work", host, host)
 }
+
+// BooleanScript exposes the same safe predicate used by cmux for CDP's
+// isolated world. Its only returned data is ready/authenticated booleans.
+func (s VerifySpec) BooleanScript() string { return probeScript(s.Predicate, s.Host) }

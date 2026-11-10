@@ -1,5 +1,33 @@
 # agentcookie threat model
 
+## Experimental Gecko / live destination additions
+
+Gecko stores cookies and site storage in plaintext by design. Filesystem access
+is not permission to read a running profile: locks and uncertain lock state
+refuse cold reads, and only private temporary copies are used after clean close.
+Profile identity changes require deliberate selection, never default guessing.
+
+BiDi is a powerful loopback-only automation interface. The broker owns its
+session and authenticated local channel; it must never take over a foreign
+session. The companion uses a per-profile token, loopback Host/Origin checks,
+bounded frames and explicit broad browser permissions (cookies, identities,
+tabs, tab hiding, navigation, scripting and all origins). Local same-user malware
+remains inside the trust boundary. Request-mode storage reads make authenticated
+network requests; interception's zero-network claim requires browser evidence.
+
+The owned Chrome's CDP endpoint is loopback-only and exposes full session power
+to local processes. Never bind it publicly or use the normal Chrome profile.
+The destination ledger authorizes deletion only for owned records with matching
+last-applied value hashes. Source updates are authoritative for owned records;
+sink-only values survive. The sink owner's policy is final per origin, including
+storage. Accepted desired state is not applied state. Crash intents and explicit
+repair-needed prevent failed/partial writes from being reported as success.
+
+Cross-engine transfer cannot defeat device-, engine-, IP- or server-bound
+sessions. Gecko DBSC classification is not applicable. Unknown partition/origin
+attributes fail closed. Chromium cold-storage support is narrowed separately,
+not a general cross-engine database converter. See [limits](gecko-source.md).
+
 This document captures what agentcookie does and does not protect against. Read it before deploying anywhere you care about; the absence of a threat in this list is a statement of scope, not of safety.
 
 ## What agentcookie does

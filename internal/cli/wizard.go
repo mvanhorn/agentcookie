@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
@@ -56,7 +57,7 @@ var wizardCmd = &cobra.Command{
 	Long: `agentcookie wizard is the install front door for v0.2. One command per
 machine, runnable by an AI agent over SSH or locally, end-to-end.
 
-  agentcookie wizard install --as source --peer <sink-hostname>
+  agentcookie wizard install --as source --browser chrome --peer <sink-hostname>
   agentcookie wizard install --as sink   --peer <source-hostname> \
                                          --code <pairing-code>    \
                                          --pair-url <source-pair-url>
@@ -66,10 +67,12 @@ sink-run command into ~/.agentcookie/pairing.json so an agent can SSH
 to the sink and read it, and on successful pairing installs a LaunchAgent
 that runs 'agentcookie source --watch' from then on.
 
-The sink-side run drops configs (with cdp.managed: true by default so no
-Keychain prompt fires), runs the sink-side handshake against the source's
-pairing URL, and installs a LaunchAgent that runs 'agentcookie sink' from
-then on.
+The sink selects a live destination for new installs: an owned live_chrome
+on GUI Macs or an explicit loopback attach endpoint on Linux/non-GUI sessions.
+It preflights readiness before pairing and daemon installation; existing
+configurations remain unchanged unless --force explicitly requests migration.
+Gecko sources require an explicit companion permission decision and report
+profile resolution, reader mode and held container sites before installation.
 
 The combined effect: two CLI invocations and the user is done. No two-
 terminal copy-paste, no screen-sharing, no manual YAML editing.`,
@@ -125,6 +128,21 @@ func runWizardInstall(cmd *cobra.Command, args []string) error {
 	if wizardPeer == "" {
 		return fmt.Errorf("--peer is required (the OTHER machine's hostname)")
 	}
+	if role == "source" {
+		if err := prepareWizardBrowser(cmd); err != nil {
+			return err
+		}
+		if wizardDryRun {
+			return nil
+		}
+	}
+	if role == "sink" && !wizardForce && fileExists(filepath.Join(common.ConfigDir, "sink.yaml")) {
+		for _, flag := range []string{"destination-profile", "destination-port", "destination-endpoint", "chrome-path"} {
+			if cmd.Flags().Changed(flag) {
+				return fmt.Errorf("existing sink configuration is preserved; review and use --force to change --%s", flag)
+			}
+		}
+	}
 	if wizardLocalName == "" {
 		wizardLocalName = pairing.LocalHostname()
 	}
@@ -152,8 +170,10 @@ func runWizardInstall(cmd *cobra.Command, args []string) error {
 	// Default-on cmux local loop: when cmux is installed, wire this
 	// machine's Chrome -> cmux delivery automatically (no-op when cmux is
 	// absent, non-fatal, --no-cmux opts out).
-	maybeAutoEnableCmux()
-	maybeAutoEnableProfileKeepalive()
+	if (role == "source" && wizardBrowser.Name != "" && !isGeckoSource(&config.SourceConfig{Browser: wizardBrowser})) || (role == "sink" && selectedWizardDestination() == "ppcli") {
+		maybeAutoEnableCmux()
+		maybeAutoEnableProfileKeepalive()
+	}
 	return nil
 }
 
@@ -182,7 +202,7 @@ func wizardInstallSource(ctx context.Context, binPath, logDir string) error {
 	}
 	if err := writeYAMLIfMissing(
 		filepath.Join(common.ConfigDir, "source.yaml"),
-		renderSourceYAML(wizardPeer, wizardSinkURL),
+		wizardSourceYAML(),
 		wizardForce,
 	); err != nil {
 		return err
@@ -254,6 +274,12 @@ func wizardInstallSource(ctx context.Context, binPath, logDir string) error {
 }
 
 func wizardInstallSink(ctx context.Context, binPath, logDir string) error {
+	if selectedWizardDestination() != "ppcli" {
+		return wizardInstallLiveSink(ctx, binPath, logDir)
+	}
+	if wizardDryRun {
+		return fmt.Errorf("legacy ppcli dry-run is unsupported; use an explicit live_chrome or attach destination")
+	}
 	if wizardCode == "" || wizardPairURL == "" {
 		return fmt.Errorf("--code and --pair-url are required when --as sink")
 	}
@@ -779,23 +805,23 @@ func renderSourceYAMLSinks(cfg *config.SourceConfig, sinks []config.SinkTarget) 
 		if cfg.CDPSource.Endpoint != "" {
 			fmt.Fprintf(&b, "  endpoint: %s\n", cfg.CDPSource.Endpoint)
 		}
+	} else if isGeckoSource(cfg) {
+		data, _ := yaml.Marshal(struct {
+			Browser config.BrowserRef `yaml:"browser"`
+		}{cfg.Browser})
+		b.Write(data)
 	} else {
 		dbPath := cfg.Chrome.DBPath
 		if dbPath == "" {
 			dbPath = "~/Library/Application Support/Google/Chrome/Default/Cookies"
 		}
-		b.WriteString("chrome:\n")
-		fmt.Fprintf(&b, "  db_path: %s\n", dbPath)
-		if cfg.Browser.Name != "" || cfg.Browser.Profile != "" {
-			b.WriteString("browser:\n")
-			if cfg.Browser.Name != "" {
-				fmt.Fprintf(&b, "  name: %s\n", cfg.Browser.Name)
-			}
-			if cfg.Browser.Profile != "" {
-				fmt.Fprintf(&b, "  profile: %s\n", cfg.Browser.Profile)
-			}
-		}
+		data, _ := yaml.Marshal(struct {
+			Chrome  config.ChromeRef  `yaml:"chrome"`
+			Browser config.BrowserRef `yaml:"browser,omitempty"`
+		}{config.ChromeRef{DBPath: dbPath}, cfg.Browser})
+		b.Write(data)
 	}
+
 	if cfg.Security.SharedSecret != "" {
 		b.WriteString("security:\n")
 		fmt.Fprintf(&b, "  shared_secret: %s\n", cfg.Security.SharedSecret)
