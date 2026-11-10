@@ -159,10 +159,12 @@ jobs:
           if-no-files-found: error
 
   # Publish release after both builds complete
+  # A tag like v1.6.1-ci1 builds, signs and notarizes but never publishes,
+  # so release CI can be proven without cutting a release.
   publish:
     runs-on: ubuntu-latest
     needs: [build-linux, build-darwin]
-    if: ${{ vars.RELEASE_CI_ENABLED == 'true' }}
+    if: ${{ vars.RELEASE_CI_ENABLED == 'true' && !contains(github.ref_name, '-ci') }}
     steps:
       - uses: actions/checkout@v4
         with:
