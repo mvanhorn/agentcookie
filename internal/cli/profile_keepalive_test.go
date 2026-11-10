@@ -412,3 +412,52 @@ func TestCheckProfileKeepalive(t *testing.T) {
 		}
 	}
 }
+
+func TestKeepalive_ChromeQuitMidTickStopsSending(t *testing.T) {
+	f := newFakeKeepalive()
+	l := f.loop()
+	f.loaded = map[string]bool{}
+	calls := 0
+	l.d.ChromePID = func(string) (int, bool) {
+		calls++
+		return 764, calls <= 2 // running for the tick's check and the first send only
+	}
+	l.tick(context.Background())
+	if strings.Join(f.loads, ",") != "Default" {
+		t.Fatalf("after Chrome quits mid-tick no further send may run, loads = %v", f.loads)
+	}
+}
+
+func TestKeepaliveEnable_ClearsOptOutEvenWhenNotNeeded(t *testing.T) {
+	installs, _ := stubKeepaliveInstall(t, nil)
+	if err := disableProfileKeepalive(); err != nil {
+		t.Fatal(err)
+	}
+	if err := enableProfileKeepalive(false, true); err != nil {
+		t.Fatal(err)
+	}
+	if keepaliveOptedOut() {
+		t.Fatal("an explicit enable must clear the opt-out marker even when the gate fails")
+	}
+	if len(*installs) != 0 {
+		t.Fatalf("nothing may be installed while the gate fails, got %v", *installs)
+	}
+}
+
+func TestKeepaliveWizard_EnableFailureIsNonFatal(t *testing.T) {
+	stubKeepaliveInstall(t, twoAccounts())
+	orig := keepaliveAutoEnable
+	t.Cleanup(func() { keepaliveAutoEnable = orig })
+	called := false
+	keepaliveAutoEnable = func(fromWizard, quiet bool) error {
+		called = true
+		if !fromWizard {
+			t.Error("the wizard must call enable with fromWizard")
+		}
+		return errors.New("boom")
+	}
+	maybeAutoEnableProfileKeepalive() // must return, not panic or exit
+	if !called {
+		t.Fatal("wizard did not try to enable the keep-alive")
+	}
+}

@@ -20,7 +20,11 @@ const ClaudeExtensionID = "fcoeoabgfenejglbffodgkkbkcdhcgfn"
 
 const claudeExtTempPrefix = "agentcookie-claudeext-"
 
-var claudeProfileDirRE = regexp.MustCompile(`^(Default|Profile [0-9]+)$`)
+var profileDirRE = regexp.MustCompile(`^(Default|Profile [0-9]+)$`)
+
+// IsProfileDirName reports whether name is a Chrome profile folder name
+// (Default or "Profile N").
+func IsProfileDirName(name string) bool { return profileDirRE.MatchString(name) }
 
 // ClaudeProfile is a Chrome profile whose Claude in Chrome extension is
 // signed into a Claude account.
@@ -45,7 +49,7 @@ func QualifyingClaudeProfiles(root string) ([]ClaudeProfile, []error) {
 	)
 	accounts := map[string]bool{}
 	for _, e := range entries {
-		if !e.IsDir() || !claudeProfileDirRE.MatchString(e.Name()) {
+		if !e.IsDir() || !IsProfileDirName(e.Name()) {
 			continue
 		}
 		store := filepath.Join(root, e.Name(), "Local Extension Settings", ClaudeExtensionID)

@@ -183,3 +183,21 @@ func TestCleanupClaudeExtTemp_RemovesLeftovers(t *testing.T) {
 		t.Fatalf("unrelated dir removed: %v", err)
 	}
 }
+
+func TestQualifyingClaudeProfiles_CacheSeesAccountChange(t *testing.T) {
+	useTempDir(t)
+	root := t.TempDir()
+	writeClaudeExtFixture(t, root, "Default", "acct-a")
+	writeClaudeExtFixture(t, root, "Profile 1", "acct-b")
+	if got, _ := QualifyingClaudeProfiles(root); len(got) != 2 {
+		t.Fatalf("first read: got %v, want two profiles", profileNames(got))
+	}
+	if got, _ := QualifyingClaudeProfiles(root); len(got) != 2 {
+		t.Fatalf("cached read: got %v, want two profiles", profileNames(got))
+	}
+	// Profile 1 signs into the same account as Default: the gate must fail.
+	writeClaudeExtFixture(t, root, "Profile 1", "acct-a")
+	if got, _ := QualifyingClaudeProfiles(root); got != nil {
+		t.Fatalf("after Profile 1 changed account the cache must not be reused, got %v", profileNames(got))
+	}
+}

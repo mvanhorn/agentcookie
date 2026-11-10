@@ -28,18 +28,28 @@ var (
 	}
 	localHostname = os.Hostname
 	psStatComm    = func(pid int) (string, error) {
-		out, err := exec.Command("/bin/ps", "-o", "stat=,comm=", "-p", strconv.Itoa(pid)).Output()
-		return strings.TrimSpace(string(out)), err
+		out, err := probe("/bin/ps", "-o", "stat=,comm=", "-p", strconv.Itoa(pid))
+		return strings.TrimSpace(out), err
 	}
 	// lsofNames returns lsof -Fn output (one "n<path>" line per open file).
 	lsofNames = func(pid int) (string, error) {
-		out, err := exec.Command("/usr/sbin/lsof", "-n", "-P", "-Fn", "-p", strconv.Itoa(pid)).Output()
-		return string(out), err
+		return probe("/usr/sbin/lsof", "-n", "-P", "-Fn", "-p", strconv.Itoa(pid))
 	}
 	senderCommand = func(ctx context.Context, bin string, args []string) *exec.Cmd {
 		return exec.CommandContext(ctx, bin, args...)
 	}
 )
+
+// probeTimeout bounds ps and lsof, so a probe stuck on a process in a bad
+// state reads as a failed probe instead of stalling the caller.
+const probeTimeout = 5 * time.Second
+
+func probe(bin string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, args...).Output()
+	return string(out), err
+}
 
 // RunningChromePID returns the PID of the Google Chrome that owns root, and
 // whether it is safe to hand a profile to. The PID comes from Chrome's

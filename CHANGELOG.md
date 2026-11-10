@@ -9,7 +9,7 @@
 - It does nothing unless two or more Chrome profiles are signed into different Claude accounts in Claude in Chrome. It reads that account from a private, short-lived copy of the extension's storage. `wizard install` turns it on only then, and `--no-profile-keepalive` opts out.
 - It never starts, quits or restarts Chrome, and waits while Chrome is not running. Before trusting the Chrome process in `SingletonLock`, it checks that the lock was written on this Mac and that the PID still runs Chrome. The handoff to Chrome has a 10-second deadline that kills the sender, never Chrome, so a hung Chrome is not killed by the handoff.
 - After three loads in a row do not take, it sends one macOS notification. `agentcookie doctor` has a Profile keep-alive line that warns and never fails.
-- `agentcookie profile-keepalive pause --profile "Profile 1"` holds off for 10 minutes (`--for` changes it), so `profile-sync` can run. profile-sync's "profile is open" error says so.
+- `agentcookie profile-keepalive pause --profile "Profile 1"` holds off for 10 minutes (`--for` changes it), so `profile-sync` can run. Pausing does not unload a profile the keep-alive already loaded, so after pausing, open a window of that profile and close it (or quit Chrome). profile-sync's "profile is open" error lists these steps.
 - While it is on, closing a profile's windows no longer cuts Claude in Chrome's access to that profile. `agentcookie profile-keepalive disable` does, and keeps it off across later wizard installs until `enable`.
 
 ### Release CI notarizes with an App Store Connect API key

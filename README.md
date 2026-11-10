@@ -352,7 +352,7 @@ agentcookie profile-keepalive pause --profile "Profile 1" # hold off 10 minutes,
 agentcookie profile-keepalive disable                     # turn off and keep it off
 ```
 
-While it is on, closing a profile's windows does not cut Claude in Chrome's access to that profile. Only `disable` does.
+While it is on, closing a profile's windows does not cut Claude in Chrome's access to that profile. Only `disable` does. Pausing only stops reloads; to unload a profile the keep-alive already loaded (before `profile-sync`, say), pause it, then open a window of that profile and close it, or quit Chrome.
 
 ## Fan out to multiple sinks
 

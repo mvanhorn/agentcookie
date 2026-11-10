@@ -222,6 +222,11 @@ func (l *keepaliveLoop) tick(ctx context.Context) {
 		if now.Before(l.d.PausedUntil(p.Profile)) {
 			continue
 		}
+		// Chrome may have quit since the check above; a send with no
+		// browser to hand off to would start one.
+		if again, ok := l.d.ChromePID(l.d.Root); !ok || again != pid {
+			return
+		}
 		l.d.Logf("loading %s", p.Profile)
 		if err := l.d.Load(ctx, p.Profile); err != nil {
 			l.fail(st, p.Profile, now, err.Error())
@@ -255,7 +260,7 @@ type keepalivePause struct {
 }
 
 func writeKeepalivePause(profile string, until time.Time) error {
-	if !profileDirNameRE.MatchString(profile) {
+	if !chrome.IsProfileDirName(profile) {
 		return fmt.Errorf("profile-keepalive: %q is not a Chrome profile folder (want Default or \"Profile N\")", profile)
 	}
 	if err := os.MkdirAll(keepaliveStateDir(), 0o700); err != nil {
@@ -295,9 +300,10 @@ var (
 	keepaliveQualify        = chrome.QualifyingClaudeProfiles
 	keepaliveInstallAgent   = installLaunchAgent
 	keepaliveUninstallAgent = launchd.Uninstall
+	keepaliveAutoEnable     = enableProfileKeepalive
+	// keepaliveForceOS lets tests on Linux CI run the macOS-only paths.
+	keepaliveForceOS = false
 )
-
-var keepaliveAutoEnable = enableProfileKeepalive
 
 // maybeAutoEnableProfileKeepalive runs at the tail of `wizard install`. It
 // is skipped by --no-profile-keepalive or an earlier disable, and never
@@ -310,8 +316,6 @@ func maybeAutoEnableProfileKeepalive() {
 		fmt.Fprintf(os.Stderr, "agentcookie wizard: profile keep-alive setup failed (non-fatal): %v\n", err)
 	}
 }
-
-var keepaliveForceOS = false
 
 // enableProfileKeepalive installs the launch agent when two or more Chrome
 // profiles are signed into different Claude accounts, and is a clean no-op
@@ -327,15 +331,15 @@ func enableProfileKeepalive(fromWizard, quiet bool) error {
 		logf("agentcookie profile-keepalive: macOS only; nothing to do")
 		return nil
 	}
-	profiles, _ := keepaliveQualify(chromepaths.ChromeProfileRoot())
-	if len(profiles) == 0 {
-		logf("agentcookie profile-keepalive: not needed (fewer than two Chrome profiles are signed into different Claude accounts in Claude in Chrome)")
-		return nil
-	}
 	if !fromWizard {
 		if err := os.Remove(keepaliveOptedOutPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+	}
+	profiles, _ := keepaliveQualify(chromepaths.ChromeProfileRoot())
+	if len(profiles) == 0 {
+		logf("agentcookie profile-keepalive: not needed (fewer than two Chrome profiles are signed into different Claude accounts in Claude in Chrome)")
+		return nil
 	}
 	binPath, err := os.Executable()
 	if err != nil {
