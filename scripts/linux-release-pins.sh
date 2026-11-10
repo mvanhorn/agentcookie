@@ -57,7 +57,7 @@ dist="${2:-dist}"
 
 # Same rule as the binary (internal/cli releaseTagRE): a published tag,
 # never `git describe` output between tags, -dirty, or a snapshot.
-if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)(\.?[0-9]+)?)?$ ]]; then
+if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc|ci)(\.?[0-9]+)?)?$ ]]; then
   echo "linux-release-pins.sh: '$tag' is not a release tag (need e.g. v1.3.0 or v1.3.0-rc.1)" >&2
   exit 2
 fi
