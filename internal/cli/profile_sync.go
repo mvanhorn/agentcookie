@@ -174,6 +174,15 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	// Re-check right before writing: the profile may have been reopened while
+	// we read and planned. This narrows the window to the write itself; the
+	// first check stays so a dry run against a closed profile reads WAL.
+	if open, err := profileSyncFileInUse(dstPath); err != nil || open {
+		if err != nil {
+			return fmt.Errorf("check whether profile %q is open: %w", profileSyncTo, err)
+		}
+		return fmt.Errorf("profile %q was reopened while profile-sync was planning; nothing written. Close it and run again", profileSyncTo)
+	}
 	n, err := chrome.WriteCookiesChromeNative(dstPath, plan.write, key)
 	if err != nil {
 		return fmt.Errorf("write target profile %q: %w", profileSyncTo, err)
