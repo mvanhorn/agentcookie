@@ -136,7 +136,7 @@ func TestKeepalive_NotifiesOnceAfterThreeFailedLoads(t *testing.T) {
 	l := f.loop()
 	f.loaded["Profile 1"] = false // loads never take
 
-	for i := 0; i < 12; i++ { // 12 ticks of 61s: well past four sends
+	for range 12 { // 12 ticks of 61s: well past four sends
 		l.tick(context.Background())
 		f.advance(61 * time.Second)
 	}
@@ -149,7 +149,7 @@ func TestKeepalive_NotifiesOnceAfterThreeFailedLoads(t *testing.T) {
 	l.tick(context.Background())
 	f.advance(61 * time.Second)
 	f.loaded["Profile 1"] = false
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		l.tick(context.Background())
 		f.advance(61 * time.Second)
 	}
@@ -221,7 +221,7 @@ func TestKeepalive_SenderErrorCountsAsFailure(t *testing.T) {
 	f.loaded["Profile 1"] = false
 	f.loadErr = errors.New("handoff timed out")
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		l.tick(context.Background())
 		f.advance(61 * time.Second)
 	}
@@ -245,7 +245,7 @@ func TestKeepalive_GateFailingGoesIdle(t *testing.T) {
 func TestKeepalive_GateRecheckedAtMostOncePerMinute(t *testing.T) {
 	f := newFakeKeepalive()
 	l := f.loop()
-	for i := 0; i < 4; i++ { // one minute of 15s ticks
+	for range 4 { // one minute of 15s ticks
 		l.tick(context.Background())
 		f.advance(15 * time.Second)
 	}

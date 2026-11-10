@@ -99,7 +99,7 @@ func ProfileLoaded(pid int, root, profile string) bool {
 		return false
 	}
 	prefix := "n" + filepath.Join(root, profile) + string(filepath.Separator)
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.HasPrefix(line, prefix) {
 			return true
 		}
@@ -134,7 +134,10 @@ func LoadProfileWindowless(ctx context.Context, profile string, deadline time.Du
 		return nil
 	case <-timer.C:
 		_ = cmd.Process.Kill()
-		<-done
+		if err := <-done; err == nil {
+			// The sender finished just as the deadline hit.
+			return nil
+		}
 		return ErrSenderTimeout
 	}
 }
