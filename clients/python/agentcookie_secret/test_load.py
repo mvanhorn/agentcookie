@@ -69,7 +69,7 @@ class _BusTestCase(unittest.TestCase):
 
 class LoadTest(_BusTestCase):
     def test_invalid_cli_name_raises_before_touching_filesystem(self):
-        for name in ["Bad-Name", "../etc", "a/b", "", "-x", "x-", "a" * 65]:
+        for name in ["Bad-Name", "../etc", "a/b", "", "-x", "x-", "a--b", "a" * 65]:
             with self.subTest(name=name):
                 with mock.patch("os.path.exists") as exists, mock.patch(
                     "builtins.open"
@@ -88,6 +88,12 @@ class LoadTest(_BusTestCase):
         env = load("demo-cli")
         self.assertEqual(env["FOO"], "from-bus")
         self.assertEqual(env["BAR"], "also-bus")
+
+    def test_leading_bom_is_ignored(self):
+        self.write(self.bus_path("demo-cli"), "\ufeffFOO=from-bus\nBAR=2\n")
+        env = load("demo-cli")
+        self.assertEqual(env["FOO"], "from-bus")
+        self.assertEqual(env["BAR"], "2")
 
     def test_bus_wins_over_env(self):
         os.environ["OAUTH_BEARER"] = "from-env-stale"
@@ -246,6 +252,8 @@ class ParseEnvTest(unittest.TestCase):
             with self.subTest(text=text):
                 with self.assertRaisesRegex(AgentcookieSecretError, "unterminated"):
                     _parse_env(text)
+        with self.assertRaisesRegex(AgentcookieSecretError, "line 3: unterminated"):
+            _parse_env("A=1\n# c\nLONG=part1\\\nmore\\\n")
 
     def test_crlf_line_endings(self):
         self.assertEqual(_parse_env("A=1\r\nB=2\r\n"), {"A": "1", "B": "2"})
@@ -281,6 +289,7 @@ class ValidCLINameTest(unittest.TestCase):
             "foo.bar": False,
             "-foo": False,
             "foo-": False,
+            "foo--bar": False,
             "": False,
             "a" * 65: False,
         }

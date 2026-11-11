@@ -174,7 +174,8 @@ def _read_env_file(path: str) -> Dict[str, str]:
     with open(path, "rb") as f:
         data = f.read()
     try:
-        return _parse_env(data.decode("utf-8", errors="surrogateescape"))
+        # utf-8-sig drops one leading BOM, which spec section 3.1 permits.
+        return _parse_env(data.decode("utf-8-sig", errors="surrogateescape"))
     except AgentcookieSecretError as exc:
         raise AgentcookieSecretError(f"{path}: {exc}") from None
 
@@ -193,6 +194,7 @@ def _parse_env(text: str) -> Dict[str, str]:
     out: Dict[str, str] = {}
     pending: List[str] = []
     pending_key = ""
+    pending_line = 0
     in_continuation = False
 
     for line_num, line in enumerate(_split_lines(text), start=1):
@@ -225,13 +227,15 @@ def _parse_env(text: str) -> Dict[str, str]:
         if value.endswith("\\"):
             pending.append(value[:-1])
             pending_key = key
+            pending_line = line_num
             in_continuation = True
             continue
         out[key] = _strip_quotes(value)
 
     if in_continuation:
         raise AgentcookieSecretError(
-            f"unterminated backslash continuation for key {pending_key!r}"
+            f"line {pending_line}: unterminated backslash continuation "
+            f"for key {pending_key!r}"
         )
     return out
 
@@ -245,7 +249,7 @@ def _strip_quotes(value: str) -> str:
 def _valid_cli_name(name: object) -> bool:
     if not isinstance(name, str) or not name or len(name) > 64:
         return False
-    if name[0] == "-" or name[-1] == "-":
+    if name[0] == "-" or name[-1] == "-" or "--" in name:
         return False
     return all(c in _CLI_NAME_CHARS for c in name)
 
