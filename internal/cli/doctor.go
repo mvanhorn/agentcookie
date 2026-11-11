@@ -21,6 +21,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/config"
+	"github.com/mvanhorn/agentcookie/internal/gecko/profilelock"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/launchd"
 	"github.com/mvanhorn/agentcookie/internal/macapp"
@@ -99,6 +100,7 @@ type doctorDeps struct {
 	// ProfileKeepalive reports the Chrome profile keep-alive. nil skips the
 	// check (tests, Linux).
 	ProfileKeepalive func() Check
+	DestinationProbe func(config.DestinationRef, []sinkpush.VerifySpec) []sinkpush.VerifyResult
 }
 
 var doctorCmd = &cobra.Command{
@@ -109,8 +111,8 @@ keystore, sink listener, sink state, source state, sealing state) and
 prints one line per check. Exit code is 0 only when no check FAILs.
 
 Use --json to emit a stable machine-readable envelope. doctor opens
-no network connections beyond local Tailscale daemon introspection;
-it never phones home.
+local diagnostic connections. Explicit destination probe_hosts opt in to
+site navigation in an owned Chrome; probes return only authentication booleans.
 
 Typical run:
   agentcookie doctor
@@ -123,9 +125,10 @@ syncs look stuck.`,
 func runDoctor(cmd *cobra.Command, args []string) error {
 	home, _ := os.UserHomeDir()
 	deps := doctorDeps{
-		ConfigDir:       common.ConfigDir,
-		Home:            home,
-		BinarySignature: probeBinarySignature,
+		ConfigDir:        common.ConfigDir,
+		DestinationProbe: probeDoctorDestination,
+		Home:             home,
+		BinarySignature:  probeBinarySignature,
 		TailscaleIP: func() (string, error) {
 			return tsclient.RequireTailnetIP(context.Background())
 		},
@@ -221,6 +224,7 @@ func buildReport(d doctorDeps) DoctorReport {
 	if sinkCfg != nil {
 		st, err := d.LoadSinkState()
 		checks = append(checks, checkSinkStateFrom(st, err))
+		checks = append(checks, checkDoctorDestinations(sinkCfg, st, d)...)
 	} else {
 		checks = append(checks, Check{
 			Name:     "Sink state",
@@ -233,7 +237,7 @@ func buildReport(d doctorDeps) DoctorReport {
 	if srcCfg != nil {
 		st, err := d.LoadSourceState()
 		checks = append(checks, checkSourceStateFrom(st, err))
-		checks = append(checks, checkDBSCFrom(st))
+		checks = append(checks, checkDBSCForSource(srcCfg, st))
 		checks = append(checks, checkSecretsBusFrom(st))
 		checks = append(checks, checkSourceAdapter(srcCfg, d.SourceAdapterCookiesExists, d.SourceAdapterPassword, d.SourceAdapterDecrypt))
 	} else {
@@ -782,6 +786,44 @@ func checkSourceAdapter(
 			Detail:   "sink-only install",
 		}
 	}
+	if isGeckoSource(srcCfg) {
+		identity, e := resolveGeckoProfile(srcCfg)
+		if e != nil {
+			return Check{Name: "Source adapter", Severity: SeverityFail, Detail: e.Error()}
+		}
+		mode := "file (browser not running; cookies only, incomplete)"
+		severity := SeverityWarn
+		if _, e := os.Stat(filepath.Join(identity.Dir, "WebDriverBiDiServer.json")); e == nil {
+			mode = "live requested; use status to confirm companion and broker connectivity"
+		} else {
+			if lock, err := profilelock.Acquire(identity.Dir); err != nil {
+				mode = "browser running or lock unavailable; live companion required, file read refused"
+			} else {
+				lock.Close()
+			}
+		}
+
+		return Check{Name: "Source adapter", Severity: severity, Detail: fmt.Sprintf("Gecko %s; %s; profile %s (%s), install hash %s; DBSC classification not applicable", srcCfg.Browser.Name, mode, identity.Dir, identity.How, identity.InstallHash)}
+	}
+	if srcCfg.CDPSource.Enabled {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		reader, err := newSourceReader(srcCfg, nil, false, time.Now(), false)
+		if err != nil {
+			return Check{Name: "Source adapter", Severity: SeverityFail, Detail: err.Error()}
+		}
+		defer reader.Close()
+		checks := reader.Diagnose(ctx)
+		if len(checks) > 0 && checks[0].Severity == "fail" {
+			return Check{Name: "Source adapter", Severity: SeverityFail, Detail: checks[0].Detail}
+		}
+		return Check{Name: "Source adapter", Severity: SeverityOK, Detail: "adapter: Chromium - live CDP (cookies only; no filesystem or Keychain fallback)"}
+	}
+	effective, err := config.EffectiveSource(srcCfg, config.SourceOverrides{})
+	if err != nil {
+		return Check{Name: "Source adapter", Severity: SeverityFail, Detail: err.Error()}
+	}
+	srcCfg = effective
 	if cookiesExists == nil {
 		cookiesExists = func(path string) error {
 			_, err := os.Stat(path)
@@ -1071,6 +1113,13 @@ func failingSinkLabels(st *state.SourceState) string {
 // to this Mac that likely will not work on the sink. Zero suspects (or no
 // state yet) is OK; any suspects are a WARN so the user understands why those
 // sessions may not carry over.
+func checkDBSCForSource(cfg *config.SourceConfig, st *state.SourceState) Check {
+	if isGeckoSource(cfg) {
+		return Check{Name: "DBSC", Severity: SeveritySkipped, Detail: "not applicable to Gecko sources; Chromium DBSC heuristics are not run"}
+	}
+	return checkDBSCFrom(st)
+}
+
 func checkDBSCFrom(st *state.SourceState) Check {
 	if st == nil || (st.LastDBSCWarned == 0 && st.LastDBSCSkipped == 0) {
 		return Check{

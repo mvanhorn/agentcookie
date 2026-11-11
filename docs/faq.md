@@ -1,5 +1,34 @@
 # agentcookie FAQ
 
+## Can Zen or Firefox supply my Chrome agent's sessions?
+
+Experimentally, yes, through the companion and broker reader with a live Chrome
+destination. Choose `--browser` explicitly and review the [setup guide](gecko-source.md).
+It remains experimental until the [full release matrix](release-gates.md) passes.
+
+### Why does accepted not mean logged in?
+
+Accepted means durable desired state. Ready means required state has actually
+been applied and verified in the destination. Pending, failed and repair-needed
+are not success. Engine-bound sessions can still need a site login.
+
+### Why are my containers held?
+
+One Chrome account jar cannot represent two different accounts for the same
+site. Select containers/site routing or explicitly accept holding. Separate
+destinations are needed for simultaneous accounts. Holding is not logout.
+
+### Why did an IndexedDB application get VersionError?
+
+Adding missing destination schema requires an upgrade to V+1. A site that opens
+a fixed lower version now receives VersionError. This is reported, not masked.
+
+### Can I reset counters to fix a replay rejection?
+
+No. Lost source generation state needs authenticated reseeding against the sink.
+Resetting timestamps or deleting replay state can resurrect an old login after
+logout. The v2→v3 migration must retain a stable floor across restarts.
+
 ## Why not just use a Chrome extension to sync cookies?
 
 Existing extensions (sync-my-cookie, sync-your-cookie, cookie-share) are built for humans switching accounts between two laptops they both touch interactively. They assume someone will click "Merge" or open Chrome periodically. The agentcookie target is the opposite: continuous one-way replication from a laptop you live in to a Mac mini or cloud VM where AI agents act on your behalf, with no human in the loop on the sink side.

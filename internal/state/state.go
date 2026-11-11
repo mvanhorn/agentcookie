@@ -5,6 +5,8 @@ package state
 
 import (
 	"encoding/json"
+	"github.com/mvanhorn/agentcookie/internal/destination"
+	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,14 +15,22 @@ import (
 
 // SourceState is the source watcher's observable state, written on every push.
 type SourceState struct {
-	Role          string    `json:"role"`
-	LastPush      time.Time `json:"last_push,omitempty"`
-	LastPushCount int       `json:"last_push_count"`
-	TotalPushes   int       `json:"total_pushes"`
-	TotalFailures int       `json:"total_failures"`
-	LastError     string    `json:"last_error,omitempty"`
-	LastErrorAt   time.Time `json:"last_error_at,omitempty"`
-	SinkURL       string    `json:"sink_url"`
+	DroppedScopes map[string]int            `json:"dropped_scopes,omitempty"`
+	Reader        *ReaderStatus             `json:"reader,omitempty"`
+	Profile       *ProfileIdentity          `json:"profile,omitempty"`
+	Catalog       *protocol.InventoryStatus `json:"catalog,omitempty"`
+	LastSnapshot  *protocol.SnapshotMeta    `json:"last_snapshot,omitempty"`
+
+	LastSequence   int64     `json:"last_sequence,omitempty"`
+	LastGeneration uint64    `json:"last_generation,omitempty"`
+	Role           string    `json:"role"`
+	LastPush       time.Time `json:"last_push,omitempty"`
+	LastPushCount  int       `json:"last_push_count"`
+	TotalPushes    int       `json:"total_pushes"`
+	TotalFailures  int       `json:"total_failures"`
+	LastError      string    `json:"last_error,omitempty"`
+	LastErrorAt    time.Time `json:"last_error_at,omitempty"`
+	SinkURL        string    `json:"sink_url"`
 
 	// LastDBSCWarned / LastDBSCSkipped count cookies the last push flagged
 	// as Device Bound Session Credentials (DBSC) suspects: cookies that are
@@ -54,19 +64,37 @@ type SourceState struct {
 	PullListenerAddr string `json:"pull_listener_addr,omitempty"`
 }
 
+type ReaderStatus struct {
+	Mode     string `json:"mode"`
+	Degraded bool   `json:"degraded"`
+	Reason   string `json:"reason,omitempty"`
+}
+type ProfileIdentity struct {
+	Dir         string `json:"dir"`
+	Created     int64  `json:"created"`
+	Name        string `json:"name"`
+	How         string `json:"how"`
+	InstallHash string `json:"install_hash,omitempty"`
+}
+
 // SinkPushState is one fan-out sink's push record, keyed by peer hostname
 // (the stable pairing identity). URL is stored for display and updated in
 // place when a sink's URL changes, so a URL edit does not orphan the record
 // or lose its history.
 type SinkPushState struct {
-	Peer          string    `json:"peer,omitempty"`
-	URL           string    `json:"url"`
-	LastPush      time.Time `json:"last_push,omitempty"`
-	LastPushCount int       `json:"last_push_count"`
-	TotalPushes   int       `json:"total_pushes"`
-	TotalFailures int       `json:"total_failures"`
-	LastError     string    `json:"last_error,omitempty"`
-	LastErrorAt   time.Time `json:"last_error_at,omitempty"`
+	Destination     string               `json:"destination,omitempty"`
+	ProtocolVersion int                  `json:"protocol_version,omitempty"`
+	SurfaceNote     string               `json:"surface_note,omitempty"`
+	LastStatus      string               `json:"last_status,omitempty"`
+	Destinations    []destination.Status `json:"destinations,omitempty"`
+	Peer            string               `json:"peer,omitempty"`
+	URL             string               `json:"url"`
+	LastPush        time.Time            `json:"last_push,omitempty"`
+	LastPushCount   int                  `json:"last_push_count"`
+	TotalPushes     int                  `json:"total_pushes"`
+	TotalFailures   int                  `json:"total_failures"`
+	LastError       string               `json:"last_error,omitempty"`
+	LastErrorAt     time.Time            `json:"last_error_at,omitempty"`
 
 	// ConsecutiveFailures counts failed pushes since the last success.
 	// BackoffUntil is when the source next tries this sink; pushes before
@@ -85,7 +113,11 @@ type SinkPushState struct {
 // no peer), creating and appending it on first use. Keying on peer keeps the
 // record stable across a URL change; the record's URL is refreshed to the
 // current value on each call so display stays accurate.
-func (s *SourceState) SinkFor(peer, url string) *SinkPushState {
+func (s *SourceState) SinkFor(peer, url string, destinations ...string) *SinkPushState {
+	destination := ""
+	if len(destinations) > 0 {
+		destination = destinations[0]
+	}
 	key := peer
 	for i := range s.Sinks {
 		match := s.Sinks[i].Peer == peer
@@ -93,29 +125,31 @@ func (s *SourceState) SinkFor(peer, url string) *SinkPushState {
 			// Peerless sink: fall back to URL identity.
 			match = s.Sinks[i].Peer == "" && s.Sinks[i].URL == url
 		}
-		if match {
+		if match && s.Sinks[i].Destination == destination {
 			s.Sinks[i].URL = url
 			return &s.Sinks[i]
 		}
 	}
-	s.Sinks = append(s.Sinks, SinkPushState{Peer: peer, URL: url})
+	s.Sinks = append(s.Sinks, SinkPushState{Peer: peer, URL: url, Destination: destination})
 	return &s.Sinks[len(s.Sinks)-1]
 }
 
 // SinkState is the sink daemon's observable state, written on every accepted
 // /sync write.
 type SinkState struct {
-	Role           string    `json:"role"`
-	LastWrite      time.Time `json:"last_write,omitempty"`
-	LastWriteCount int       `json:"last_write_count"`
-	LastWriteMode  string    `json:"last_write_mode"`
-	TotalWrites    int       `json:"total_writes"`
-	TotalDropped   int       `json:"total_dropped"`
-	TotalRejects   int       `json:"total_rejects"`
-	LastError      string    `json:"last_error,omitempty"`
-	LastErrorAt    time.Time `json:"last_error_at,omitempty"`
-	ListenAddr     string    `json:"listen_addr"`
-	CDPManaged     bool      `json:"cdp_managed"`
+	Destinations      []destination.Status `json:"destinations,omitempty"`
+	LastSourceBrowser string               `json:"last_source_browser,omitempty"`
+	Role              string               `json:"role"`
+	LastWrite         time.Time            `json:"last_write,omitempty"`
+	LastWriteCount    int                  `json:"last_write_count"`
+	LastWriteMode     string               `json:"last_write_mode"`
+	TotalWrites       int                  `json:"total_writes"`
+	TotalDropped      int                  `json:"total_dropped"`
+	TotalRejects      int                  `json:"total_rejects"`
+	LastError         string               `json:"last_error,omitempty"`
+	LastErrorAt       time.Time            `json:"last_error_at,omitempty"`
+	ListenAddr        string               `json:"listen_addr"`
+	CDPManaged        bool                 `json:"cdp_managed"`
 
 	// LastAdapterResults records the v0.11 sinkpush adapter run that
 	// followed LastWrite. One entry per registered adapter. Empty when
@@ -173,12 +207,36 @@ func NewWriter(path string) *Writer {
 }
 
 // Save writes v as JSON to the writer's path atomically and durably: the
-// temp file is fsynced before the rename, and the directory after it (best
-// effort), so a crash or power loss leaves either the old or the new file.
+// temp file is fsynced before the rename, and the directory after it, so a crash or power loss leaves either the old or the new file.
 func (w *Writer) Save(v any) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(w.path), 0o755); err != nil {
+	if value, ok := v.(*SourceState); ok {
+		return UpdateJSON(w.path, func(fields map[string]json.RawMessage) error {
+			var previous SourceState
+			data, err := json.Marshal(fields)
+			if err != nil {
+				return err
+			}
+			if err = json.Unmarshal(data, &previous); err != nil {
+				return err
+			}
+			copy := *value
+			copy.LastSequence = max(copy.LastSequence, previous.LastSequence)
+			copy.LastGeneration = max(copy.LastGeneration, previous.LastGeneration)
+			data, err = json.Marshal(copy)
+			if err != nil {
+				return err
+			}
+			clear(fields)
+			return json.Unmarshal(data, &fields)
+		})
+	}
+	return w.saveAtomic(v)
+}
+
+func (w *Writer) saveAtomic(v any) error {
+	if err := os.MkdirAll(filepath.Dir(w.path), 0o700); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(w.path), ".tmp-state-*.json")
@@ -186,6 +244,7 @@ func (w *Writer) Save(v any) error {
 		return err
 	}
 	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
 	enc := json.NewEncoder(tmp)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
@@ -205,19 +264,18 @@ func (w *Writer) Save(v any) error {
 	if err := os.Rename(tmpName, w.path); err != nil {
 		return err
 	}
-	syncDir(filepath.Dir(w.path))
-	return nil
+	return syncDir(filepath.Dir(w.path))
 }
 
-// syncDir fsyncs dir so a rename into it is durable. Best effort: some
-// filesystems refuse to fsync a directory, and the rename already happened.
-func syncDir(dir string) {
+// syncDir reports directory fsync failures; durable counters must never be
+// advertised as persisted when the directory entry did not reach storage.
+func syncDir(dir string) error {
 	d, err := os.Open(dir)
 	if err != nil {
-		return
+		return err
 	}
-	_ = d.Sync()
-	_ = d.Close()
+	defer d.Close()
+	return d.Sync()
 }
 
 // LoadSource reads source-state.json. Returns nil, nil when the file does not

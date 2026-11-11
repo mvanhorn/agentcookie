@@ -2,6 +2,8 @@ package protocol
 
 import (
 	"fmt"
+	"maps"
+	"strings"
 	"sync"
 )
 
@@ -55,6 +57,9 @@ func NewTrackerFromStore(store SequenceStore) (*SequenceTracker, error) {
 // the in-memory update is rolled back and Accept returns false to
 // avoid acknowledging a write that did not survive a restart.
 func (t *SequenceTracker) Accept(source string, seq int64) bool {
+	if !validSequenceComponent(source) {
+		return false
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	prev, hadPrev := t.seen[source]
@@ -82,4 +87,48 @@ func (t *SequenceTracker) Last(source string) int64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.seen[source]
+}
+
+// AcceptDestination checks v3 replay in its destination namespace. The shared
+// migration floor is fixed before the first v3 accept, not lazily seeded from
+// an already advanced legacy mark: two destinations can arrive out of order.
+// The v3 marker detects a legacy writer advancing the file after rollback.
+// All additional keys remain int64 so older binaries retain the same format.
+func (t *SequenceTracker) AcceptDestination(source, destination string, seq int64) bool {
+	if destination == "" {
+		return t.Accept(source, seq)
+	}
+	if !validSequenceComponent(source) || !validSequenceComponent(destination) || destination[0] == '@' {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	next := make(map[string]int64, len(t.seen)+3)
+	maps.Copy(next, t.seen)
+	floorKey, markerKey := source+"/@floor", source+"/@v3"
+	floor := next[floorKey]
+	if legacy := next[source]; legacy > next[markerKey] && legacy > floor {
+		floor = legacy
+	}
+	key := source + "/" + destination
+	last := max(floor, next[key])
+	if seq <= last {
+		return false
+	}
+	next[floorKey] = floor
+	next[key] = seq
+	if seq > next[source] {
+		next[source] = seq
+	}
+	next[markerKey] = next[source]
+	if t.store != nil {
+		if err := t.store.Save(next); err != nil {
+			return false
+		}
+	}
+	t.seen = next
+	return true
+}
+func validSequenceComponent(s string) bool {
+	return s != "" && s != "." && s != ".." && !strings.ContainsAny(s, "/\\\x00")
 }

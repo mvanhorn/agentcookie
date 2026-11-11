@@ -403,11 +403,7 @@ func TestSourcePushLocalStorageOptOut(t *testing.T) {
 	fx := newSourcePushFixture(t, []chrome.Cookie{
 		{HostKey: ".example.com", Name: "s", Value: "v", Path: "/"},
 	})
-	b, err := chrome.LookupBrowser("")
-	if err != nil {
-		t.Fatalf("LookupBrowser: %v", err)
-	}
-	lsDir := b.LocalStorageLevelDB("")
+	lsDir := filepath.Join(filepath.Dir(fx.cfg.Chrome.DBPath), "Local Storage", "leveldb")
 	if err := os.MkdirAll(lsDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -631,6 +627,9 @@ func newSourcePushFixture(t *testing.T, cookies []chrome.Cookie) *sourcePushFixt
 		return rawURL, nil
 	}))
 
+	capabilityCache.Lock()
+	capabilityCache.entries = map[string]capabilityEntry{}
+	capabilityCache.Unlock()
 	// Each test starts with no remembered deliveries.
 	prevDeliveries := sinkDeliveries
 	sinkDeliveries = newSinkDeliveryLog()
@@ -712,6 +711,9 @@ func newSourceCapture(t *testing.T, secret string) *sourceCapture {
 }
 
 func (c *sourceCapture) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodGet && req.URL.Path == "/capabilities" {
+		return &http.Response{StatusCode: 404, Body: io.NopCloser(strings.NewReader("not found")), Header: make(http.Header)}, nil
+	}
 	if req.Method != http.MethodPost {
 		return nil, fmt.Errorf("unexpected method %s", req.Method)
 	}
@@ -1307,28 +1309,22 @@ func TestSourceOnceHonorsBackoffFromPreviousRun(t *testing.T) {
 	}
 }
 
-func TestSourceOnceCorruptStateFileStartsFresh(t *testing.T) {
+func TestSourceOnceCorruptStateFileFailsClosed(t *testing.T) {
 	fx := newSourcePushFixture(t, nil)
 	fx.secret = "source-once-restart-test-secret-0123456789"
 	fx.capture.secret = fx.secret
 	passthroughResolver(t)
-
 	urlSink := "http://sink-a.test/sync"
 	statePath := sourceStatePath(true, fx.configDir, "")
 	writeCLIFile(t, statePath, "{not json")
-
-	if err := runSourceOnceCDP(t, fx, urlSink); err != nil {
-		t.Fatalf("source --once with a corrupt state file: %v", err)
+	if err := runSourceOnceCDP(t, fx, urlSink); err == nil {
+		t.Fatal("corrupt replay counter must fail closed")
 	}
-	if n := fx.capture.attemptsTo(urlSink); n != 1 {
-		t.Fatalf("sink should be dialed once, got %d", n)
+	if n := fx.capture.attemptsTo(urlSink); n != 0 {
+		t.Fatalf("sink dialed with lost sequence: %d", n)
 	}
-	saved, err := state.LoadSource(statePath)
-	if err != nil || saved == nil {
-		t.Fatalf("state file should be rewritten cleanly: %v", err)
-	}
-	if ps := sinkStateFor(saved, urlSink); ps == nil || ps.TotalPushes != 1 || ps.ConsecutiveFailures != 0 {
-		t.Fatalf("fresh per-sink record expected, got %+v", ps)
+	if data, err := os.ReadFile(statePath); err != nil || string(data) != "{not json" {
+		t.Fatalf("corrupt state was silently replaced: %s %v", data, err)
 	}
 }
 

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"os"
@@ -543,5 +544,24 @@ skip_chrome_sqlite: true
 	}
 	if n := stub.count(); n != 0 {
 		t.Errorf("Chrome Safe Storage read %d time(s) with an unreadable config dir; want 0", n)
+	}
+}
+
+func TestConfiguredCDPCookiesNeverDiscoversProfiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	previousDir := common.ConfigDir
+	common.ConfigDir = t.TempDir()
+	t.Cleanup(func() { common.ConfigDir = previousDir })
+	writeCLIFile(t, filepath.Join(common.ConfigDir, "source.yaml"), "cdp_source:\n  enabled: true\n  endpoint: http://127.0.0.1:9007\n")
+	oldRead, oldKey := readCDPSource, chromeDecryptKeyRead
+	readCDPSource = func(context.Context, string) ([]chrome.Cookie, error) {
+		return []chrome.Cookie{{HostKey: "example.com", Name: "auth", Value: "fixture", Path: "/"}}, nil
+	}
+	chromeDecryptKeyRead = func(string) ([]byte, error) { t.Fatal("CDP consumer read native credentials"); return nil, nil }
+	t.Cleanup(func() { readCDPSource = oldRead; chromeDecryptKeyRead = oldKey })
+	got, err := collectDomainCookiesUnion(filepath.Join(home, "absent-sidecar"), "example.com", nil)
+	if err != nil || len(got) != 1 || got[0].Value != "fixture" {
+		t.Fatalf("CDP cookies %#v %v", got, err)
 	}
 }

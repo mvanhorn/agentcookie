@@ -23,7 +23,7 @@ type sinkDelivery struct {
 	at   time.Time
 }
 
-// sinkDeliveryLog remembers, per sink (peer + URL), the last successful
+// sinkDeliveryLog remembers, per sink (peer + URL + destination), the last successful
 // delivery of this process. It lives in memory only: a restarted source
 // sends everything once, which is what --once and a fresh daemon want.
 type sinkDeliveryLog struct {
@@ -39,16 +39,21 @@ func newSinkDeliveryLog() *sinkDeliveryLog {
 // one test's deliveries do not suppress another's.
 var sinkDeliveries = newSinkDeliveryLog()
 
-func sinkDeliveryKey(peer, rawURL string) string {
-	return peer + "\x00" + rawURL
+func sinkDeliveryKey(peer, rawURL string, destinations ...string) string {
+	destination := ""
+	if len(destinations) > 0 {
+		destination = destinations[0]
+	}
+	key, _ := json.Marshal([]string{peer, rawURL, destination})
+	return string(key)
 }
 
 // unchanged reports whether the sink already received hash less than
 // sinkHeartbeat before now, and if so when.
-func (l *sinkDeliveryLog) unchanged(peer, rawURL string, hash [sha256.Size]byte, now time.Time) (time.Time, bool) {
+func (l *sinkDeliveryLog) unchanged(peer, rawURL string, hash [sha256.Size]byte, now time.Time, destinations ...string) (time.Time, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	d, ok := l.m[sinkDeliveryKey(peer, rawURL)]
+	d, ok := l.m[sinkDeliveryKey(peer, rawURL, destinations...)]
 	if !ok || d.hash != hash || now.Sub(d.at) >= sinkHeartbeat {
 		return time.Time{}, false
 	}
@@ -57,18 +62,18 @@ func (l *sinkDeliveryLog) unchanged(peer, rawURL string, hash [sha256.Size]byte,
 
 // record notes a successful delivery. Only a sink that accepted the POST is
 // recorded, so a failed push is always re-sent.
-func (l *sinkDeliveryLog) record(peer, rawURL string, hash [sha256.Size]byte, now time.Time) {
+func (l *sinkDeliveryLog) record(peer, rawURL string, hash [sha256.Size]byte, now time.Time, destinations ...string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.m[sinkDeliveryKey(peer, rawURL)] = sinkDelivery{hash: hash, at: now}
+	l.m[sinkDeliveryKey(peer, rawURL, destinations...)] = sinkDelivery{hash: hash, at: now}
 }
 
 // forget drops a sink's delivery, so its next push is sent whatever the
 // payload. A failed POST calls it.
-func (l *sinkDeliveryLog) forget(peer, rawURL string) {
+func (l *sinkDeliveryLog) forget(peer, rawURL string, destinations ...string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	delete(l.m, sinkDeliveryKey(peer, rawURL))
+	delete(l.m, sinkDeliveryKey(peer, rawURL, destinations...))
 }
 
 // envelopeHash identifies an envelope's content for the unchanged check.
@@ -84,6 +89,12 @@ func (l *sinkDeliveryLog) forget(peer, rawURL string) {
 // live CDP injection, and the heartbeat carries fresh ones every 10 minutes.
 func envelopeHash(env protocol.SyncEnvelope) ([sha256.Size]byte, error) {
 	env.Sequence = 0
+	if env.Snapshot != nil {
+		meta := *env.Snapshot
+		meta.Generation = 0
+		meta.Inventory.Unread = 0
+		env.Snapshot = &meta
+	}
 	cookies := make([]chrome.Cookie, len(env.Cookies))
 	for i, c := range env.Cookies {
 		c.LastAccessUTC = 0
