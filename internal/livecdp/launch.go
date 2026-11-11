@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/mvanhorn/agentcookie/internal/chromeflags"
 )
 
 // FindChrome locates the Google Chrome (or Chromium) executable. macOS app
@@ -69,6 +71,9 @@ func LaunchOwnedChrome(ctx context.Context, chromePath, userDataDir string, port
 		"--remote-debugging-address=127.0.0.1",
 		"--no-first-run",
 		"--no-default-browser-check",
+		// See chromeflags.MacAppCodeSignClone: avoids leaking a copy of the
+		// Chrome app bundle into $TMPDIR/../X on every killed launch.
+		"--disable-features=" + chromeflags.DisabledFeatures(""),
 	}
 	if headless {
 		args = append(args, "--headless=new")
