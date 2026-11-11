@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Source reader contracts and hermetic browser testing
+
+- Chromium file and live CDP sources share a reader contract, cookie policy and diagnostics. `source`, `export`, `agent-sync` and `cmux-sync` resolve `--browser`, `--profile` and `--reader` before computing paths. CDP remains cookies-only and never falls back to disk, discovery or Keychain access. Configured CDP sources also work with `cookies` and `doctor`.
+- **Behavior change:** cold CDP injection now uses the live lane's cookie shaping. Parent-domain cookies retain their leading dot instead of narrowing to an apex host; host-only and `__Host-` cookies remain host-only. Insecure SameSite=None rows follow the live lane's Lax correction. CHIPS partition keys retain both ancestor-bit values; opaque CDP partition keys fail closed instead of becoming unpartitioned.
+- Explicit `chrome.db_path` now anchors storage and watcher paths to the same profile as its cookies, rather than silently packing the default browser profile's storage.
+- Source generation and transport sequences persist privately and durably. Sequence allocation remains nanosecond-compatible with v1/v2 sinks and strictly increases across restarts or clock rollback. Corrupt counter state now fails closed; authenticated reconciliation can reseed counters after state loss.
+- Protocol v3 snapshot/completeness and storage IR types are available for subsequent changes; this change still sends v2. IndexedDB database/store/index names use tagged strings to preserve every UTF-16 code unit.
+- The fixture-only end-to-end harness injects credentials, disables discovery/adapters/secrets, and panics before any accidental host credential read. CI requires Chromium wire-to-browser cookie assertions; Linux also traces the CDP reader for forbidden opens of a running fixture profile. Native Keychain timing integration is excluded from the default test build.
+
+### Shared Chromium source-browser registry
+
+- Chrome, Atlas, Brave, Edge, Arc and Dia now share one dependency-free metadata registry between configuration and the Chromium reader. Browser family metadata prepares for separate source engines; no new browser is enabled by this refactor.
+- Browser names, defaults, profile paths, Safe Storage strings and existing OS-selection behavior are unchanged. Atlas's file-based decryption limitation is unchanged.
+
 ### New `agentcookie profile-keepalive`: Claude in Chrome stays connected on every Claude account
 
 - Claude in Chrome pairs only with the Claude account it is signed into, so a Mac with two Claude accounts uses one Chrome profile per account. Chrome unloads a profile when its last window closes, and at launch it reopens only the last one used. After that, Claude in Chrome silently stopped working for the other account.

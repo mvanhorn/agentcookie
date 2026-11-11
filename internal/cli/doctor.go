@@ -782,6 +782,25 @@ func checkSourceAdapter(
 			Detail:   "sink-only install",
 		}
 	}
+	if srcCfg.CDPSource.Enabled {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		reader, err := newSourceReader(srcCfg, nil, false, time.Now(), false)
+		if err != nil {
+			return Check{Name: "Source adapter", Severity: SeverityFail, Detail: err.Error()}
+		}
+		defer reader.Close()
+		checks := reader.Diagnose(ctx)
+		if len(checks) > 0 && checks[0].Severity == "fail" {
+			return Check{Name: "Source adapter", Severity: SeverityFail, Detail: checks[0].Detail}
+		}
+		return Check{Name: "Source adapter", Severity: SeverityOK, Detail: "adapter: Chromium - live CDP (cookies only; no filesystem or Keychain fallback)"}
+	}
+	effective, err := config.EffectiveSource(srcCfg, config.SourceOverrides{})
+	if err != nil {
+		return Check{Name: "Source adapter", Severity: SeverityFail, Detail: err.Error()}
+	}
+	srcCfg = effective
 	if cookiesExists == nil {
 		cookiesExists = func(path string) error {
 			_, err := os.Stat(path)
