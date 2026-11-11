@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mvanhorn/agentcookie/internal/protocol"
 	"net"
 	"net/http"
 	"os"
@@ -190,6 +192,30 @@ func newPullHandlerWithAuth(cache *pullCache, auth pullAuth) http.Handler {
 				d.served()
 			}
 			return
+		}
+		var envelope protocol.SyncEnvelope
+		if json.Unmarshal(payload, &envelope) == nil && envelope.Snapshot != nil {
+			if r.Header.Get("X-Agentcookie-Protocol-Version") == "3" {
+				envelope.ProtocolVersion = 3
+				envelope.LocalStorageTarball = nil
+				envelope.IndexedDBTarball = nil
+				envelope.IndexedDBSkipped = nil
+			} else {
+				envelope.ProtocolVersion = 2
+				envelope.Snapshot = nil
+				envelope.Storage = nil
+				envelope.Destination = ""
+				envelope.SourceBrowser = ""
+				envelope.ReaderMode = ""
+				if len(envelope.Cookies) == 0 && len(envelope.LocalStorageTarball) == 0 && len(envelope.IndexedDBTarball) == 0 && len(envelope.Secrets) == 0 {
+					w.WriteHeader(http.StatusNoContent)
+					if d.served != nil {
+						d.served()
+					}
+					return
+				}
+			}
+			payload, _ = json.Marshal(envelope)
 		}
 		sealed, err := transport.SealWithSecret(payload, d.secret)
 		if err != nil {

@@ -1,0 +1,16 @@
+# Experimental. The owned profile must not be a normal Chrome profile.
+listen:
+  addr: 100.64.0.2:9999 # replace with this sink's Tailscale address
+peer:
+  hostname: laptop
+destination:
+  name: live_chrome
+  kind: live_chrome
+  required: true
+  chrome:
+    user_data_dir: ~/.agentcookie/synced-chrome-live_chrome
+    port: 9224
+    headed: true
+    start: on_boot
+    relaunch: after_crash
+skip_chrome_sqlite: true

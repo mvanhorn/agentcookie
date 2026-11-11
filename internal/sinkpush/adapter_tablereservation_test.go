@@ -14,6 +14,7 @@ import (
 // dir with the binary placed so IsInstalled returns true.
 func newTRAdapter(t *testing.T) *TableReservationAdapter {
 	t.Helper()
+	stubMissingMasterKey(t)
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "table-reservation-goat-pp-cli")
 	if err := os.WriteFile(bin, []byte("#!/bin/bash\nexit 0\n"), 0o755); err != nil {

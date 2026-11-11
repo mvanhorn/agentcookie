@@ -1,6 +1,8 @@
 package cdp
 
 import (
+	"github.com/mvanhorn/agentcookie/internal/livecdp"
+	"reflect"
 	"testing"
 
 	"github.com/chromedp/cdproto/network"
@@ -95,8 +97,8 @@ func TestBuildCookieParam_HappyPath(t *testing.T) {
 	if got.URL != "https://instacart.com/api/v2" {
 		t.Errorf("URL: got %q", got.URL)
 	}
-	if got.Domain != "instacart.com" {
-		t.Errorf("Domain (leading dot must be stripped): got %q", got.Domain)
+	if got.Domain != ".instacart.com" {
+		t.Errorf("Domain (leading dot must be retained): got %q", got.Domain)
 	}
 	if got.Path != "/api/v2" {
 		t.Errorf("Path: got %q", got.Path)
@@ -115,25 +117,6 @@ func TestBuildCookieParam_HappyPath(t *testing.T) {
 	}
 	if got.Expires == nil {
 		t.Errorf("Expires: got nil, want non-nil for persistent cookie")
-	}
-}
-
-// TestNormalizeDomain covers the leading-dot strip that Chrome's CDP
-// API requires. Chrome's SQLite stores ".example.com" for parent-domain
-// scope, but Network.setCookies silently rejects that shape.
-func TestNormalizeDomain(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{".instacart.com", "instacart.com"},
-		{"instacart.com", "instacart.com"},
-		{".sub.example.com", "sub.example.com"},
-		{"", ""},
-		{".", ""},
-	}
-	for _, tc := range cases {
-		got := normalizeDomain(tc.in)
-		if got != tc.want {
-			t.Errorf("normalizeDomain(%q): got %q, want %q", tc.in, got, tc.want)
-		}
 	}
 }
 
@@ -184,11 +167,25 @@ func TestBuildCookieParam_HostPrefixRejectionGuard(t *testing.T) {
 
 // TestBuildCookieParam_DomainCookieKeepsDomain confirms a genuinely
 // domain-scoped cookie (leading dot, not __Host-) still carries its
-// dot-stripped Domain so its subdomain scope round-trips.
+// leading-dot Domain so its subdomain scope round-trips.
 func TestBuildCookieParam_DomainCookieKeepsDomain(t *testing.T) {
 	c := chrome.Cookie{HostKey: ".example.com", Name: "sess", Value: "v", Path: "/", IsSecure: 1}
 	got := buildCookieParam(c, "v")
-	if got.Domain != "example.com" {
-		t.Errorf("domain cookie must keep dot-stripped Domain, got %q", got.Domain)
+	if got.Domain != ".example.com" {
+		t.Errorf("domain cookie must keep leading-dot Domain, got %q", got.Domain)
+	}
+}
+
+func TestColdAndLiveCookieShapingMatch(t *testing.T) {
+	for _, c := range []chrome.Cookie{
+		{HostKey: ".example.com", Name: "domain", Value: "v", Path: "/", IsSecure: 1, SameSite: -1},
+		{HostKey: "example.com", Name: "host", Value: "v", Path: "/", SameSite: 0},
+		{HostKey: ".example.com", Name: "__Host-auth", Value: "v", Path: "/wrong"},
+		{HostKey: "example.com", Name: "chips", Value: "v", Path: "/", IsSecure: 1, SameSite: 0, TopFrameSiteKey: "https://top.example", HasCrossSiteAncestor: 0},
+		{HostKey: "example.com", Name: "chips", Value: "v", Path: "/", IsSecure: 1, SameSite: 0, TopFrameSiteKey: "https://top.example", HasCrossSiteAncestor: 1},
+	} {
+		if got, want := buildCookieParam(c, c.Value), livecdp.BuildCookieParam(c); !reflect.DeepEqual(got, want) {
+			t.Fatalf("cookie shaping differs: %#v %#v", got, want)
+		}
 	}
 }

@@ -124,3 +124,12 @@ variable) follows the same order: `build-linux` uploads the Linux
 tarballs, `build-darwin` waits for it, downloads them into `dist/`, and
 runs `make release-pinned TAG=<tag>`, and `publish` uploads those same
 Linux tarballs with the darwin tarball.
+
+## Experimental Gecko candidates
+
+Before promoting Zen/Firefox support, attach the exact candidate SHA and the
+[release-gate matrix](release-gates.md) with observed pass/fail/blocked results.
+Do not remove the experimental label for unit-only evidence. The pinned headed
+Zen workflow must be made required by a maintainer's branch protection setting;
+committing its YAML does not do that. Publish browser versions, archive checksums,
+restart/logout/storage/crash outcomes and old-Linux-release compatibility logs.

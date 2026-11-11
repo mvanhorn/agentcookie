@@ -1,0 +1,14 @@
+# Experimental. Start through the Gecko launcher for live storage.
+browser:
+  name: zen
+  profile: '' # install-aware default; use an explicit selector if ambiguous
+  reader: auto
+  bidi_port: 9225
+  companion_port: 9226
+  storage_read_mode: intercept # default; experimental until headed gates pass
+  containers: [] # selected container names/IDs; unresolved sites stay held
+  container_sites: {} # example: Work: [example.com]
+sink:
+  url: http://mini:9999/sync
+peer:
+  hostname: mini # paired key; never put tokens in this example

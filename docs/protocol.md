@@ -1,4 +1,85 @@
-# agentcookie protocol v1
+# agentcookie protocol v1, v2 and experimental v3
+
+## Negotiated v3 live destinations
+
+Transport remains AES-256-GCM over the paired Tailscale channel. v3 adds
+`source_browser`/family/profile metadata, destination selection, per-surface
+snapshot completeness and storage IR v1; it does not change pairing or invent a
+new unencrypted transport. Types and validators in `internal/protocol` are the
+wire authority.
+
+The source queries authenticated `/capabilities` and chooses v3 only when the
+sink advertises it. Capability and `/status?source=<hostname>` responses are
+MAC-bound to the request nonce; an unauthenticated response cannot authorize a
+counter reseed. A legacy sink receives the compatible cookie lane, never a
+Gecko storage tarball. Different sinks can negotiate different surfaces. v1/v2
+remain accepted for existing clients; the section below records historical v1.
+
+A v3 envelope carries `protocol_version: 3`, `source_hostname`, monotonic
+transport `sequence`, `destination` when selecting a named account destination,
+`cookies`, optional `storage`, and `snapshot`:
+
+- `generation`: durable source generation, distinct from transport sequence.
+- `surfaces`: `cookies`, `local_storage`, `indexed_db`, each with a `state` and
+  optional `reason`. `complete` authorizes removing absent **owned** records;
+  `incomplete` preserves absent records; `unsupported` does not touch that
+  surface. An empty array without authority is not logout.
+- `sites`: `shipped`, `held`, or `excluded`, including container identity/reason.
+  Held ambiguity is not an empty snapshot. Sink policy remains final.
+- `inventory`: `listed`, `unread`, `unreadable`; an unread origin prevents a
+  falsely complete storage snapshot. `authoritative_empty` is explicit.
+
+### Storage IR v1
+
+`storage.version` is 1. `origins` are exact scheme/host/port records with container
+identity, independent localStorage/IndexedDB statuses, and optional records.
+Values are bounded tagged structured-clone graphs, not JSON approximations.
+Strings and database/store/index names preserve UTF-16 code units, including
+lone surrogates. Ordered maps/sets, binary values, object references and cycles
+must round-trip without silently discarding types. Unsupported or over-cap
+values are incomplete/excluded with diagnostics, not deleted on the sink.
+
+Limits before allocation: graph depth 64, 100,000 nodes, 16 MiB per record,
+10 MiB per localStorage value, 64 MiB per database, 128 MiB per surface. These
+ceilings complement transport/frame limits; they do not replace validation.
+
+IndexedDB schema changes use browser transactions. Creating a fresh database at
+v1 is distinct from upgrading an existing database to V+1. Missing schema can
+require that upgrade, and callers fixed to a lower version then get
+`VersionError`. A same-version conflict, blocked upgrade or failed multi-store
+transaction cannot be reported as applied. Sink-only stores/records are not
+owned merely because a database appears in the source snapshot.
+
+### Accepted, applied and recovery
+
+A successful transport reply is structured: overall status, accepted generation,
+sequence and per-destination status. Read `accepted`, `applied`, `pending`,
+`failed`, `conflicts`, `cap_excluded`, `ready` and `repair_needed`; acceptance
+means durable desired state, not a usable browser login. `/status` supports
+polling when a destination is closed or work is pending.
+
+Each destination persists desired state, ownership hashes and write-ahead
+intents. Cookie writes are read back and value-verified. Deletes require both
+ownership and a matching last-applied value hash. Ambiguous crash outcomes are
+reconciled rather than accepted as success. Missing ownership history exposes
+`repair-needed`; explicit repair cannot identify revoked records whose ledger
+was lost. Required destinations must be ready before their first visible window.
+
+Replay tracking separates source/destination namespaces while retaining a stable
+legacy migration floor: v2→v3→v2 transitions and process restarts must not reopen
+old envelopes. Source sequence allocation is `max(now, previous+1)`. Losing
+source generation state needs authenticated sink reconciliation and reseeding,
+not deleting sequence state or retrying an old logout generation.
+
+The feature is experimental until the [release gates](release-gates.md) pass.
+Do not infer real-browser validation from mock/protocol tests.
+
+## Historical v1 format and legacy behavior
+
+The remainder describes the original protocol, including explicitly historical
+limits. Its version-equality and in-memory replay descriptions do **not** describe
+the current negotiated v3 implementation.
+
 
 This document captures the wire format between source and sink so future clients (a Linux sink, a Chrome extension on the sink, a hosted relay) can interoperate.
 

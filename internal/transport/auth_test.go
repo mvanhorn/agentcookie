@@ -31,7 +31,13 @@ func TestVerifyRequestRejectsBadMAC(t *testing.T) {
 	if err := SignRequest(req, secret, now); err != nil {
 		t.Fatalf("sign: %v", err)
 	}
-	req.Header.Set(HeaderMAC, "00"+req.Header.Get(HeaderMAC)[2:])
+	mac := req.Header.Get(HeaderMAC)
+	// Always mutate the MAC, even when its random nonce produced a 00 prefix.
+	replacement := byte('0')
+	if mac[0] == replacement {
+		replacement = '1'
+	}
+	req.Header.Set(HeaderMAC, string(replacement)+mac[1:])
 	if err := VerifyRequest(req, secret, now, 0); err == nil {
 		t.Fatal("expected error for bad HMAC, got nil")
 	}

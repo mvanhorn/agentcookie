@@ -18,6 +18,8 @@ import (
 )
 
 var (
+	cmuxSyncProfile  string
+	cmuxSyncReader   string
 	cmuxSyncOnce     bool
 	cmuxSyncWatch    bool
 	cmuxSyncVerbose  bool
@@ -60,6 +62,8 @@ launchd, set automation.socketControlMode to allowAll or password in
 }
 
 func init() {
+	cmuxSyncCmd.Flags().StringVar(&cmuxSyncProfile, "profile", "", "source profile selector")
+	cmuxSyncCmd.Flags().StringVar(&cmuxSyncReader, "reader", "", "source reader: auto or file")
 	cmuxSyncCmd.Flags().BoolVar(&cmuxSyncOnce, "once", false, "single read+inject cycle, then exit")
 	cmuxSyncCmd.Flags().BoolVar(&cmuxSyncWatch, "watch", false, "long-running fsnotify watcher; re-injects on every Chrome cookie write (debounced)")
 	cmuxSyncCmd.Flags().BoolVar(&cmuxSyncVerbose, "verbose", false, "log per-cycle counts to stderr")
@@ -72,6 +76,12 @@ func init() {
 }
 
 func runCmuxSync(cmd *cobra.Command, args []string) error {
+	ctx, closeReaders := withGeckoSession(cmd.Context())
+	defer closeReaders()
+	if cmd.Flags().Changed("profile") {
+		ctx = context.WithValue(ctx, geckoExplicitProfileKey{}, true)
+	}
+	cmd.SetContext(ctx)
 	if !cmuxSyncOnce && !cmuxSyncWatch {
 		return fmt.Errorf("pass either --once for a single pass or --watch for the long-running watcher")
 	}
@@ -82,7 +92,7 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 	// LoadSourceLocal, not LoadSource: the local loop has no push target,
 	// so it must not require sink.url or a peer/secret. A missing
 	// source.yaml is fine (defaults: default Chrome path, no blocklist).
-	cfg, err := config.LoadSourceLocal(common.ConfigDir)
+	cfg, err := config.LoadSourceLocalWithOverrides(common.ConfigDir, config.SourceOverrides{Browser: cmuxSyncBrowser, Profile: cmuxSyncProfile, Reader: cmuxSyncReader})
 	if err != nil {
 		return err
 	}
@@ -92,7 +102,7 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 	}
 
 	var key []byte
-	if !cfg.CDPSource.Enabled {
+	if !cfg.CDPSource.Enabled && !isGeckoSource(cfg) {
 		browserName := cmuxSyncBrowser
 		if browserName == "" {
 			browserName = cfg.Browser.Name
@@ -213,6 +223,9 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 	// --watch: re-inject on every debounced Chrome Cookies change. A failed
 	// cycle (cmux down) is logged and the watcher keeps running; the next
 	// change retries.
+	if isGeckoSource(cfg) {
+		return runGeckoWatch(cmd.Context(), syncOnce, cmuxSyncVerbose)
+	}
 	if cfg.CDPSource.Enabled {
 		fmt.Fprintf(os.Stderr, "agentcookie cmux-sync --watch: polling %s, injecting into cmux\n", cfg.CDPSource.Endpoint)
 		return runCDPSourceWatch(cmd.Context(), syncOnce, cfg.CDPSource.Endpoint, cmuxSyncVerbose)

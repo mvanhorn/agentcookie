@@ -1,5 +1,25 @@
 # agentcookie architecture
 
+## Experimental Gecko → owned Chrome lane
+
+Zen/Firefox → companion (cookies, identities, inventory) + broker-owned BiDi
+session → source Reader → protocol v3 origin records → encrypted peer transport
+→ durable desired state + write-ahead intents → live Chrome applier → value
+read-back → applied generation and ready → first visible window.
+
+The browser registry (`internal/browsers`) selects engine metadata. Gecko
+modules (`internal/gecko/{profiles,profilelock,bidi,broker,companion,catalog,reader}`)
+separate install-aware identity, running-profile refusal, session ownership,
+permissions and inventory from transport. `internal/source` provides the common
+reader contract. Storage codec/applier modules preserve structured-clone values
+and tagged UTF-16 names; they do not copy Gecko databases into Chrome.
+`internal/destination` persists desired generations, ownership and recovery
+intents independently of browser lifetime. `internal/onboarding` validates plans
+and sequences readiness before windows/services; its launchers ask the sink.
+
+Legacy diagrams below describe legacy Chromium/ppcli paths, not the live Gecko
+lane. See [setup](gecko-source.md) and [release evidence](release-gates.md).
+
 ## The picture
 
 ### macOS → macOS (continuous sync via Tailscale)

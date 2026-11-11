@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +15,8 @@ import (
 )
 
 var (
+	exportProfile  string
+	exportReader   string
 	exportDomains  []string
 	exportSkipDBSC bool
 	exportBrowser  string
@@ -49,16 +52,24 @@ excluded, not faked.`,
 }
 
 func init() {
+	exportCmd.Flags().StringVar(&exportProfile, "profile", "", "source profile selector")
+	exportCmd.Flags().StringVar(&exportReader, "reader", "", "source reader: auto or file")
 	exportCmd.Flags().StringSliceVar(&exportDomains, "domain", nil, "limit to these host_key LIKE patterns (repeatable), e.g. --domain %github.com")
 	exportCmd.Flags().BoolVar(&exportSkipDBSC, "skip-dbsc-suspect", false, "drop cookies that look device-bound (DBSC); also honored via AGENTCOOKIE_SKIP_DBSC_SUSPECT=1")
 	exportCmd.Flags().StringVar(&exportBrowser, "browser", "", "source browser name (default: source.yaml browser, then Chrome)")
 }
 
 func runExport(cmd *cobra.Command, args []string) error {
+	ctx, closeReaders := withGeckoSession(cmd.Context())
+	defer closeReaders()
+	if cmd.Flags().Changed("profile") {
+		ctx = context.WithValue(ctx, geckoExplicitProfileKey{}, true)
+	}
+	cmd.SetContext(ctx)
 	// LoadSourceLocal, not LoadSource: export has no push target, so it must
 	// not require sink.url or a peer/secret. A missing source.yaml is fine
 	// (defaults: default Chrome path, no blocklist).
-	cfg, err := config.LoadSourceLocal(common.ConfigDir)
+	cfg, err := config.LoadSourceLocalWithOverrides(common.ConfigDir, config.SourceOverrides{Browser: exportBrowser, Profile: exportProfile, Reader: exportReader})
 	if err != nil {
 		return err
 	}
@@ -70,7 +81,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 	}
 
 	var key []byte
-	if !cfg.CDPSource.Enabled {
+	if !cfg.CDPSource.Enabled && !isGeckoSource(cfg) {
 		browserName := exportBrowser
 		if browserName == "" {
 			browserName = cfg.Browser.Name

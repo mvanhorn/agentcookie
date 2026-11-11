@@ -3,12 +3,11 @@ package cdp
 import (
 	"context"
 	"fmt"
+	"github.com/mvanhorn/agentcookie/internal/livecdp"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
-	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 
@@ -22,8 +21,7 @@ const chromeStartTimeout = 15 * time.Second
 
 // InjectCookies spawns a headless Chrome via chromedp against the
 // agentcookie-owned profile at profileDir, calls Network.SetCookies
-// with the synced cookies (stripping the 32-byte Chrome 127+
-// App-Bound prefix from each value first), then closes. One-shot per
+// with the already-decrypted synced cookies, then closes. One-shot per
 // /sync: no persistent Chrome between calls. Chrome encrypts its own
 // SQLite with its own Safe Storage key; agentcookie never reads
 // Chrome's Keychain item on this path.
@@ -72,7 +70,9 @@ func InjectCookies(ctx context.Context, profileDir string, cookies []chrome.Cook
 	// 2026-05-21 dry-run. We pass through c.Value verbatim.
 	params := make([]*network.CookieParam, 0, len(cookies))
 	for _, c := range cookies {
-		params = append(params, buildCookieParam(c, c.Value))
+		if p := buildCookieParam(c, c.Value); p != nil {
+			params = append(params, p)
+		}
 	}
 
 	if err := chromedp.Run(chromeCtx, network.SetCookies(params)); err != nil {
@@ -95,69 +95,11 @@ func InjectCookies(ctx context.Context, profileDir string, cookies []chrome.Cook
 	return nil
 }
 
-// buildCookieParam translates a chrome.Cookie row into a CDP
-// CookieParam. Two correctness moves matter here:
-//
-//  1. Synthesize a URL for every cookie. Chrome's Network.setCookies
-//     applies stricter validation when only Domain+Path is given
-//     (SameSite defaults to Lax which rejects originally cross-site
-//     cookies, host-only vs subdomain semantics flake). With URL set,
-//     Chrome treats the cookie as if a real navigation set it.
-//
-//  2. Strip the leading "." from Domain. Chrome's encrypted cookies
-//     SQLite stores host_key as ".instacart.com" to mark parent-domain
-//     scope (valid for all subdomains). The modern CDP API does NOT
-//     accept Domain values starting with "." -- it rejects them
-//     silently. The post-dot domain ("instacart.com") with explicit
-//     Domain attribute set produces the same subdomain-wildcard scope
-//     Chrome would derive from the same Set-Cookie header sent by the
-//     server, so the semantics round-trip correctly.
+// buildCookieParam shares the live lane's shaping, including the leading dot
+// required to preserve parent-domain scope in Chrome. Values are plaintext.
 func buildCookieParam(c chrome.Cookie, value string) *network.CookieParam {
-	p := &network.CookieParam{
-		Name:     c.Name,
-		Value:    value,
-		URL:      synthesizeCookieURL(c),
-		Path:     c.Path,
-		Secure:   c.IsSecure == 1,
-		HTTPOnly: c.IsHTTPOnly == 1,
-		SameSite: chromeSameSiteToCDP(c.SameSite),
-		Expires:  cookieExpiresEpoch(c.ExpiresUTC),
-	}
-
-	// Domain attribute: only set it for cookies Chrome stored as
-	// domain-scoped (host_key WITH a leading dot, valid for subdomains).
-	// Host-only cookies must carry NO Domain -- Chrome scopes them to the
-	// exact host via the URL. Two cases are host-only:
-	//   1. host_key without a leading dot (Chrome's host-only form).
-	//   2. __Host--prefixed cookies, which Network.setCookies HARD-REJECTS
-	//      when a Domain is present. Modern host-bound session cookies
-	//      (e.g. GitHub's __Host-user_session_same_site) only land when
-	//      Domain is omitted.
-	// Setting both URL and a Domain on a host-only cookie is also what
-	// silently dropped host-bound login cookies before this fix.
-	isHostPrefixed := strings.HasPrefix(c.Name, "__Host-")
-	if strings.HasPrefix(c.HostKey, ".") && !isHostPrefixed {
-		p.Domain = normalizeDomain(c.HostKey)
-	}
-
-	// __Host- cookies have mandatory attributes (Secure, Path "/"); enforce
-	// them so a slightly-off source row is not rejected wholesale.
-	if isHostPrefixed {
-		p.Secure = true
-		p.Path = "/"
-	}
-
-	return p
-}
-
-// normalizeDomain converts Chrome's host_key form to the CDP-acceptable
-// Domain shape. Chrome's SQLite stores ".example.com" for parent-domain
-// scope; CDP requires the leading dot dropped.
-func normalizeDomain(hostKey string) string {
-	if len(hostKey) > 0 && hostKey[0] == '.' {
-		return hostKey[1:]
-	}
-	return hostKey
+	c.Value = value
+	return livecdp.BuildCookieParam(c)
 }
 
 // synthesizeCookieURL builds a request-URI for a cookie from its
@@ -208,23 +150,6 @@ func chromeSameSiteToCDP(s int) network.CookieSameSite {
 		// Chrome uses its own default behavior for unspecified.
 		return ""
 	}
-}
-
-// cookieExpiresEpoch converts Chrome's microseconds-since-1601 cookie
-// expiry to a chromedp/cdproto.TimeSinceEpoch (seconds-since-Unix
-// epoch as a float). Cookies with ExpiresUTC = 0 are session cookies
-// and we leave Expires nil so Chrome treats them as session-scoped.
-func cookieExpiresEpoch(chromeMicrosSince1601 int64) *cdp.TimeSinceEpoch {
-	if chromeMicrosSince1601 == 0 {
-		return nil
-	}
-	// Chrome epoch: 1601-01-01 UTC. Unix epoch: 1970-01-01 UTC.
-	// Offset is 11644473600 seconds. Chrome stores microseconds.
-	const chromeEpochOffsetSec = 11644473600
-	unixSec := float64(chromeMicrosSince1601)/1e6 - chromeEpochOffsetSec
-	t := time.Unix(int64(unixSec), 0)
-	te := cdp.TimeSinceEpoch(t)
-	return &te
 }
 
 // expandHome resolves a leading ~/ in a path against the current

@@ -1,5 +1,18 @@
 # agentcookie
 
+## Experimental Zen / Firefox → live Chrome
+
+Gecko sources are available for development and verification, not yet a
+full-matrix release claim. Choose the browser you actually log in with using
+`wizard install --as source --browser zen`; do not assume Chrome. New GUI Mac
+sinks can use an owned `live_chrome` destination, while Linux defaults to an
+explicit loopback `attach` destination. Review profile resolution, companion
+permissions, request-mode network traffic and held container sites before install.
+
+See the [setup guide](docs/gecko-source.md), [examples](examples/source-zen.yaml)
+and [release gates](docs/release-gates.md). Success means destination **ready and
+applied**, not merely accepted. Engine-bound sessions may still need a new login.
+
 Your agent runs on a Linux box (a Grok Bot VM, a cloud agent runtime, a homelab server) and needs to act as you on every site you're already logged into. agentcookie keeps that box's Chrome session in sync with your Mac's, continuously, encrypted over your Tailscale tailnet, with zero per-site auth ceremony.
 
 Cookie-authenticated sites show the logged-in UI after live CDP inject. Google/Workspace sessions stay logged out unless a human signed in on the box (DBSC binds those sessions to device keys). browserUse, Puppeteer, Playwright, or any Chromium automation that connects to Chrome's debug port sees your non-DBSC sessions already there.
@@ -109,7 +122,7 @@ go install github.com/mvanhorn/agentcookie/cmd/agentcookie@v1.0.0
 
 ```bash
 # 1. Run the source wizard (interactive)
-agentcookie wizard install --as source --peer <linux-tailscale-hostname>
+agentcookie wizard install --as source --browser chrome --peer <linux-tailscale-hostname>
 
 # The wizard prints a pairing code and URL. Keep this terminal open.
 # Example output:
@@ -373,7 +386,7 @@ chrome:
 A legacy single-sink `source.yaml` (top-level `sink:` + `peer:`) keeps working unchanged and behaves as a one-element list. To pair and append another sink without hand-editing:
 
 ```bash
-agentcookie wizard install --as source --add-sink \
+agentcookie wizard install --as source --browser chrome --add-sink \
   --peer <new-sink-hostname> \
   --sink-url http://<new-sink>.tailnet.ts.net:9999/sync
 ```
