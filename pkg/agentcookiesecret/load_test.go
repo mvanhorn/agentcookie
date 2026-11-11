@@ -170,6 +170,36 @@ func TestLoad_SealedFilePresentNoMasterKey(t *testing.T) {
 	}
 }
 
+func TestLoad_SealedTwinMasksMalformedPlaintext(t *testing.T) {
+	// Spec section 5.2: with a sealed twin present, the plaintext sibling
+	// is ignored, so its syntax error must not be what Load reports.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".agentcookie", "secrets", "demo-cli")
+	writeFile(t, filepath.Join(dir, "secrets.env"), "NOT_A_PAIR\n")
+	writeFile(t, filepath.Join(dir, "secrets.env.sealed"), "opaque-sealed-bytes")
+
+	_, err := Load("demo-cli")
+	if err == nil {
+		t.Fatalf("expected the sealed-file error")
+	}
+	if strings.Contains(err.Error(), "secrets.env:") || strings.Contains(err.Error(), "missing '='") {
+		t.Errorf("malformed plaintext should be ignored when a sealed twin exists, got: %v", err)
+	}
+}
+
+func TestLoad_UnterminatedContinuationNamesLine(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeFile(t, filepath.Join(home, ".agentcookie", "secrets", "demo-cli", "secrets.env"),
+		"A=1\nTOKEN=value\\\n")
+
+	_, err := Load("demo-cli")
+	if err == nil || !strings.Contains(err.Error(), "line 2") {
+		t.Errorf("expected error naming line 2, got: %v", err)
+	}
+}
+
 func TestParseEnvScanner_QuotesStripped(t *testing.T) {
 	got, err := parseEnvBytes([]byte("A=\"hello world\"\nB='also quoted'\nC=plain\n"))
 	if err != nil {

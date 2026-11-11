@@ -118,11 +118,17 @@ func LoadDetailed(cliName string, fallbackPath string) (*LoadResult, error) {
 	}
 
 	// 2. Plaintext bus file. A missing file just means no bus entry. Any
-	// other failure (a syntax error, an unreadable file) is returned: the
-	// spec forbids skipping a bad file, since the caller would then run on
-	// env values the bus was meant to override.
+	// other failure (a syntax error, an unreadable file) is returned once
+	// we know the plaintext file is the selected source: the spec forbids
+	// skipping a bad file, since the caller would then run on env values
+	// the bus was meant to override. When a sealed twin exists it is
+	// authoritative (spec section 5.2) and a bad plaintext sibling is ignored.
 	home, _ := os.UserHomeDir()
 	plainPath := filepath.Join(home, ".agentcookie", "secrets", cliName, "secrets.env")
+	sealedPath := plainPath + ".sealed"
+	_, sealedStatErr := os.Stat(sealedPath)
+	sealedPresent := sealedStatErr == nil
+
 	plain, err := readEnvFile(plainPath)
 	switch {
 	case err == nil:
@@ -130,13 +136,12 @@ func LoadDetailed(cliName string, fallbackPath string) (*LoadResult, error) {
 			res.Env[k] = v
 			res.Sources[k] = SourceBusPlain
 		}
-	case !errors.Is(err, fs.ErrNotExist):
+	case !errors.Is(err, fs.ErrNotExist) && !sealedPresent:
 		return res, fmt.Errorf("read %s: %w", plainPath, err)
 	}
 
 	// 1. Sealed bus file (highest priority).
-	sealedPath := plainPath + ".sealed"
-	if _, err := os.Stat(sealedPath); err == nil {
+	if sealedPresent {
 		masterKey, mkErr := keystore.ReadMasterKey()
 		if mkErr != nil {
 			// Sealed file present but no master key. Caller almost
@@ -192,6 +197,7 @@ func parseEnvScanner(scanner *bufio.Scanner) (map[string]string, error) {
 	lineNum := 0
 	var pending strings.Builder
 	var pendingKey string
+	var pendingLine int
 	inContinuation := false
 
 	for scanner.Scan() {
@@ -231,6 +237,7 @@ func parseEnvScanner(scanner *bufio.Scanner) (map[string]string, error) {
 		if strings.HasSuffix(value, "\\") {
 			pending.WriteString(value[:len(value)-1])
 			pendingKey = key
+			pendingLine = lineNum
 			inContinuation = true
 			continue
 		}
@@ -240,7 +247,7 @@ func parseEnvScanner(scanner *bufio.Scanner) (map[string]string, error) {
 		return nil, fmt.Errorf("scan: %w", err)
 	}
 	if inContinuation {
-		return nil, fmt.Errorf("unterminated backslash continuation for key %q", pendingKey)
+		return nil, fmt.Errorf("line %d: unterminated backslash continuation for key %q (started on line %d)", lineNum, pendingKey, pendingLine)
 	}
 	return out, nil
 }
