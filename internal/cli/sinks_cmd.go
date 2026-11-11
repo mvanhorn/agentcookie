@@ -154,7 +154,7 @@ func printSinkStatuses(w io.Writer, rows []SinkStatus, now time.Time) {
 		}
 		note := r.LastError
 		if r.Key == sinkKeyMissing {
-			note = "no paired key; pair it again with agentcookie wizard install --as source --add-sink --repair --peer " + r.Peer
+			note = "no paired key; run agentcookie pair --as source here, then on that machine agentcookie pair --as sink --local-name " + r.Peer + " (with the --peer, --pair-url and --code it prints)"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", orDash(r.Peer), r.URL, r.Key, last, note)
 	}
@@ -204,7 +204,28 @@ func runSinksRemove(out io.Writer, configDir, target string) error {
 		return fmt.Errorf("%s is the only sink in %s, and a source with no sink and no teammates does not start; pair another sink first (agentcookie wizard install --as source --add-sink --peer <host>), or stop the source with agentcookie wizard uninstall", label, path)
 	}
 
+	// A sink.yaml that does not load cannot prove it does not use the key,
+	// so refuse before changing anything rather than delete a key it needs.
+	if removed.Peer != "" && fileExists(filepath.Join(configDir, "sink.yaml")) {
+		if _, err := config.LoadSink(configDir); err != nil {
+			return fmt.Errorf("%s does not load, so it is not safe to remove a sink (fix it first): %w", filepath.Join(configDir, "sink.yaml"), err)
+		}
+	}
+
 	dropSecret := removed.Peer == "" && cfg.Security.SharedSecret != "" && !anyPeerless(remaining)
+	keyUser := ""
+	if removed.Peer != "" {
+		keyUser = peerKeyUser(configDir, removed.Peer, remaining, teammates)
+		// Delete the key before editing source.yaml: if the delete fails
+		// the sink is still listed and the command can be retried, and if
+		// the edit fails the sink is already cut off.
+		if keyUser == "" {
+			if err := keystore.Delete(configDir, removed.Peer); err != nil {
+				return fmt.Errorf("could not delete the key for %s, so %s is unchanged (fix the error and retry): %w", label, path, err)
+			}
+		}
+	}
+
 	changed, err := editYAMLFile(path, func(doc *yaml.Node) (bool, error) {
 		return removeSinkNode(doc, cfg, removed, len(remaining) == 0, dropSecret), nil
 	})
@@ -225,12 +246,9 @@ func runSinksRemove(out io.Writer, configDir, target string) error {
 	case removed.Peer == "":
 		fmt.Fprintf(out, "Removed sink %s from %s. security.shared_secret stays, because another sink without a peer still uses it.\n", label, path)
 	default:
-		if user := peerKeyUser(configDir, removed.Peer, remaining, teammates); user != "" {
-			fmt.Fprintf(out, "Removed sink %s from %s. Its key stays, because %s still uses it.\n", label, path, user)
+		if keyUser != "" {
+			fmt.Fprintf(out, "Removed sink %s from %s. Its key stays, because %s still uses it.\n", label, path, keyUser)
 			break
-		}
-		if err := keystore.Delete(configDir, removed.Peer); err != nil {
-			return fmt.Errorf("removed sink %s from %s, but could not delete its key: %w", label, path, err)
 		}
 		cutOff = true
 		fmt.Fprintf(out, "Removed sink %s from %s and deleted its key. A running source stops sealing for it at its next push, and GET /pull refuses its key now.\n", label, path)

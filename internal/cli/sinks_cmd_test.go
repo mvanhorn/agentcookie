@@ -275,6 +275,42 @@ func TestSinksRemoveRefusesWhenTeammatesDoNotLoad(t *testing.T) {
 	}
 }
 
+func TestSinksRemoveRefusesWhenSinkYAMLDoesNotLoad(t *testing.T) {
+	dir := t.TempDir()
+	writeSourceFile(t, dir, multiSinkSource)
+	writeCLIFile(t, filepath.Join(dir, "sink.yaml"), "listen: [unclosed\n")
+	savePeerKey(t, dir, "mac-mini")
+	savePeerKey(t, dir, "grok-bot")
+
+	if err := runSinksRemove(&bytes.Buffer{}, dir, "grok-bot"); err == nil {
+		t.Fatal("must refuse while sink.yaml does not load: it cannot tell whether this machine's sink uses the key")
+	}
+	if readSourceFile(t, dir) != multiSinkSource || !hasPeerKey(dir, "grok-bot") {
+		t.Fatal("a refused remove changed source.yaml or the key")
+	}
+}
+
+func TestSinksRemoveKeyDeleteFailureLeavesSinkListed(t *testing.T) {
+	dir := t.TempDir()
+	writeSourceFile(t, dir, multiSinkSource)
+	savePeerKey(t, dir, "mac-mini")
+	// A non-empty directory where the key file belongs makes the delete fail.
+	keyPath, err := keystore.Path(dir, "grok-bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(keyPath, "stuck"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runSinksRemove(&bytes.Buffer{}, dir, "grok-bot"); err == nil {
+		t.Fatal("expected the key delete failure to be reported")
+	}
+	if readSourceFile(t, dir) != multiSinkSource {
+		t.Fatal("source.yaml changed even though the key could not be deleted, so a retry could not find the sink")
+	}
+}
+
 func TestSinksRemoveWithoutSourceConfig(t *testing.T) {
 	err := runSinksRemove(&bytes.Buffer{}, t.TempDir(), "mac-mini")
 	if err == nil || !strings.Contains(err.Error(), "not set up as a source") {
@@ -313,7 +349,7 @@ func TestSinkStatusesReportKeysAndLastPush(t *testing.T) {
 
 	var out bytes.Buffer
 	printSinkStatuses(&out, rows, time.Now())
-	for _, want := range []string{"mac-mini", "5m ago", "never", "--add-sink --repair --peer grok-bot"} {
+	for _, want := range []string{"mac-mini", "5m ago", "never", "agentcookie pair --as sink --local-name grok-bot"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("list output missing %q:\n%s", want, out.String())
 		}
