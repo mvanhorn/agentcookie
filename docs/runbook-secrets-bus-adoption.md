@@ -73,25 +73,22 @@ eval "$(agentcookie secret env my-pp-cli 2>/dev/null)"
 your-existing-logic
 ```
 
-For long-running Python processes, do the equivalent once at startup:
+For Python code, use the reader in `clients/python` (`pip install "git+https://github.com/mvanhorn/agentcookie#subdirectory=clients/python"`). It has no dependencies, reads the bus files itself, and runs `agentcookie` only to unseal a sealed file:
 
 ```python
-import subprocess, os
+import os
+from agentcookie_secret import AgentcookieSecretError, load
 
 try:
-    out = subprocess.run(
-        ["agentcookie", "secret", "env", "my-pp-cli"],
-        capture_output=True, text=True, check=True,
-    ).stdout
-    for line in out.splitlines():
-        if "=" in line:
-            k, v = line.split("=", 1)
-            os.environ.setdefault(k, v)
-except Exception:
-    pass  # bus not installed or no entry; keep existing env-var behavior
+    bus_env = load("my-pp-cli")  # bus first, then process env
+except AgentcookieSecretError as exc:
+    print(f"agentcookie_secret: {exc}; falling back")
+    bus_env = dict(os.environ)
+
+token = bus_env.get("MY_OAUTH_BEARER")
 ```
 
-`os.environ.setdefault` rather than direct assignment preserves any explicit env var the user set when invoking your CLI.
+It follows the same priority as the Go reader, so bus values win over env vars. A CLI with no bus entry gets its env vars back unchanged. It does not apply `secret alias` mappings, so read the stored key names, or use `agentcookie secret env` when you need the aliased names.
 
 ### Pattern C: CLI that uses its own dotdir (`~/.toolname/`) outside `~/.config/`
 
@@ -180,4 +177,5 @@ The smoothest migration is:
 - Format spec: `docs/spec-agentcookie-secrets-bus-v1.md`
 - Audit of how PP CLIs store auth today: `docs/audits/2026-05-22-pp-cli-auth-inventory.md`
 - Go reader package: `github.com/mvanhorn/agentcookie/pkg/agentcookiesecret`
+- Python reader package: `agentcookie_secret` in `clients/python` (see its README)
 - Worked example for non-PP CLIs (gh): `docs/runbook-secrets-bus-gh-example.md`

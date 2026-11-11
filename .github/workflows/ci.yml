@@ -51,5 +51,9 @@ jobs:
             sudo apt-get install -y jq
           fi
           bash scripts/release_asset_test.sh
+      # The Python secrets reader has no dependencies, so the runner's
+      # system python3 is enough.
+      - name: python reader tests
+        run: python3 -m unittest discover -s clients/python -v
       - name: go build
         run: go build ./...

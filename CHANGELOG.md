@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Python reader for the secrets bus
+
+- New `agentcookie_secret` package in `clients/python`, the Python twin of the Go reader `pkg/agentcookiesecret`. `load("my-pp-cli")` returns a dict with the same priority: sealed bus file, plaintext bus file, an optional `fallback_path`, then process env. `load_detailed` also says where each key came from. It has no dependencies. Install with `pip install "git+https://github.com/mvanhorn/agentcookie#subdirectory=clients/python"`.
+- It parses `secrets.env` itself with the spec's strict grammar. A syntax error or an unreadable file raises `AgentcookieSecretError` naming the file and the line, and is never skipped (spec section 11.4). An invalid CLI name raises `InvalidCLINameError` before any file is read.
+- A sealed file is unsealed by running `agentcookie secret env --no-aliases <cli>`, so the master key never leaves agentcookie's Keychain item. If the binary is not on `PATH`, or unsealing fails, it raises with the sealed file's path instead of falling back to the plaintext file.
+- New `agentcookie secret env --no-aliases` prints only the stored keys, without the alias names `secret env` adds. Without the flag nothing changes.
+- CI runs the Python tests in the Linux job.
+
 ### New `agentcookie profile-keepalive`: Claude in Chrome stays connected on every Claude account
 
 - Claude in Chrome pairs only with the Claude account it is signed into, so a Mac with two Claude accounts uses one Chrome profile per account. Chrome unloads a profile when its last window closes, and at launch it reopens only the last one used. After that, Claude in Chrome silently stopped working for the other account.

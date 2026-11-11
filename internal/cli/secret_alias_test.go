@@ -175,3 +175,32 @@ func TestSecretAlias_InvalidName(t *testing.T) {
 		t.Error("expected error for invalid declared env var name")
 	}
 }
+
+func TestSecretEnv_NoAliasesFlagSkipsAliases(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSecrets(t, home, "tesla-pp-cli", "OAUTH_BEARER=tok-bearer\n")
+	writeManifest(t, home, "tesla-pp-cli", `
+schema_version = 2
+name = "tesla-pp-cli"
+display_name = "Tesla"
+
+[secrets.file]
+path = "~/.config/tesla-pp-cli/config.toml"
+
+[aliases]
+TESLA_AUTH_TOKEN = "OAUTH_BEARER"
+`)
+	aliasCmd := secretAliasCmd
+	aliasCmd.SetOut(&bytes.Buffer{})
+	if err := runSecretAlias(aliasCmd, []string{"tesla-pp-cli", "TESLA_TOKEN", "OAUTH_BEARER"}); err != nil {
+		t.Fatalf("set alias: %v", err)
+	}
+
+	secretEnvNoAliases = true
+	t.Cleanup(func() { secretEnvNoAliases = false })
+	out := envLines(t, "tesla-pp-cli")
+	if out != "OAUTH_BEARER=tok-bearer\n" {
+		t.Errorf("--no-aliases should print only the stored keys, got:\n%q", out)
+	}
+}
