@@ -378,9 +378,17 @@ agentcookie wizard install --as source --add-sink \
   --sink-url http://<new-sink>.tailnet.ts.net:9999/sync
 ```
 
-`agentcookie status` and `agentcookie doctor` report each sink's last push and failures. See [examples/source-multi-sink.yaml](examples/source-multi-sink.yaml).
+`agentcookie status` and `agentcookie doctor` report each sink's last push and failures. `agentcookie sinks list` shows each configured sink with its key and last push. See [examples/source-multi-sink.yaml](examples/source-multi-sink.yaml).
 
-**Trust note:** every sink receives the same full cookie and secret set, so a compromise of the least-trusted sink exposes everything. Only list sinks you trust with the whole payload. To stop feeding a sink, remove its entry from `sinks:` and delete its `keys/<peer>.json`. The device-bound (DBSC) caveat below is per-sink and unchanged: each sink still needs its own Chrome signed into the same Google account.
+To stop feeding a sink (retired, or one you no longer trust):
+
+```bash
+agentcookie sinks remove grok-bot   # by peer, or by URL for a sink without one
+```
+
+It takes the sink out of `source.yaml`, keeping your comments, and deletes its `keys/<peer>.json`. A running source reads each key on every push, so the sink gets nothing from its next push on, and `GET /pull` refuses its key at once. Restart the source to drop the sink from its push list and from `status`. The key stays when a teammate or this machine's `sink.yaml` still uses that name, and then the running source keeps pushing to the sink until you restart it. The only sink cannot be removed unless `teammates.yaml` lists a teammate; pair another sink first, or run `agentcookie wizard uninstall`. Cookies and secrets the sink already received stay valid there until they expire or you sign out of those sites.
+
+**Trust note:** every sink receives the same full cookie and secret set, so a compromise of the least-trusted sink exposes everything. Only list sinks you trust with the whole payload, and remove one with `agentcookie sinks remove` as soon as you stop trusting it. The device-bound (DBSC) caveat below is per-sink and unchanged: each sink still needs its own Chrome signed into the same Google account.
 
 ## Client-only sinks (inbound blocked)
 

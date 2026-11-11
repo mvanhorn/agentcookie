@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### New `agentcookie sinks`: list the sinks a source feeds, and remove one
+
+- `agentcookie sinks list` shows each sink in `source.yaml` with its peer, URL, whether its paired key is present, and its last push. `--json` prints the same rows. A sink whose key is missing says how to pair it again.
+- `agentcookie sinks remove <peer|url>` stops feeding a sink: it removes the entry from `source.yaml` (comments and other keys are kept, and the file keeps its mode) and deletes `keys/<peer>.json`. Until now this was a hand edit plus a manual key delete.
+- Deleting the key is what cuts a paired sink off: a running source reads it on every push and on every `GET /pull`, so the sink receives nothing more without a restart. The running source keeps reporting it as failing until it restarts.
+- The key is kept when another sink, a teammate in `teammates.yaml`, or this machine's `sink.yaml` still uses that name. Removing a sink without a peer also removes `security.shared_secret` when no other sink uses it. In these cases the running source still holds the credential and keeps pushing to the sink until it restarts, and the command says so.
+- Removing the last entry of a `sinks:` list also removes a legacy `sink:`/`peer:` it was shadowing, so that sink does not come back. The only sink cannot be removed unless `teammates.yaml` lists a teammate, since a source with nothing to deliver to does not start.
+- Cookies and secrets a removed sink already received stay valid there until they expire or you sign out of those sites.
+
 ### New `agentcookie profile-keepalive`: Claude in Chrome stays connected on every Claude account
 
 - Claude in Chrome pairs only with the Claude account it is signed into, so a Mac with two Claude accounts uses one Chrome profile per account. Chrome unloads a profile when its last window closes, and at launch it reopens only the last one used. After that, Claude in Chrome silently stopped working for the other account.
