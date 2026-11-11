@@ -2,10 +2,13 @@ package secretsbus
 
 import (
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mvanhorn/agentcookie/internal/keystore"
 )
 
 func TestWritePayload_HappyPath(t *testing.T) {
@@ -185,6 +188,13 @@ func TestWritePayload_AtomicTmpCleanup(t *testing.T) {
 }
 
 func TestWritePayload_SealingRequested_MasterKeyMissing(t *testing.T) {
+	original := readMasterKey
+	calls := 0
+	readMasterKey = func() ([]byte, error) {
+		calls++
+		return nil, keystore.ErrMasterKeyMissing
+	}
+	t.Cleanup(func() { readMasterKey = original })
 	home := t.TempDir()
 	payload := map[string]map[string]string{
 		"demo-cli": {"K": "V"},
@@ -198,8 +208,11 @@ func TestWritePayload_SealingRequested_MasterKeyMissing(t *testing.T) {
 	if result.SealedWritten != 0 {
 		t.Errorf("sealed should be 0 when master key missing, got %d", result.SealedWritten)
 	}
-	if len(errs) == 0 {
-		t.Errorf("expected a non-fatal error about missing master key")
+	if len(errs) != 1 || !errors.Is(errs[0], keystore.ErrMasterKeyMissing) {
+		t.Errorf("expected missing master key error, got %v", errs)
+	}
+	if calls != 1 {
+		t.Errorf("master key reads = %d, want 1", calls)
 	}
 }
 

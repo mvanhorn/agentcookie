@@ -86,6 +86,11 @@ func (s *fileSequenceStore) Save(state map[string]int64) error {
 		os.Remove(tmpName)
 		return fmt.Errorf("encode sequence state: %w", err)
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
 		return fmt.Errorf("close tmp sequence file: %w", err)
@@ -94,7 +99,12 @@ func (s *fileSequenceStore) Save(state map[string]int64) error {
 		os.Remove(tmpName)
 		return fmt.Errorf("rename sequence file into place: %w", err)
 	}
-	return nil
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
 }
 
 // MemorySequenceStore is an in-memory SequenceStore for tests. Captures

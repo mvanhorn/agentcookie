@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/mvanhorn/agentcookie/internal/credentialguard"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,6 +54,7 @@ var ErrMasterKeyMissing = errors.New("keystore: agentcookie-master Keychain item
 // a descriptive message on any other failure (locked keychain, ACL
 // rejection, decode error). Callers should treat all errors as fatal.
 func ReadMasterKey() ([]byte, error) {
+	credentialguard.Check("keystore.ReadMasterKey")
 	out, err := runSecurity("find-generic-password",
 		"-s", MasterKeychainService,
 		"-a", MasterKeychainAccount,

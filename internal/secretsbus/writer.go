@@ -11,6 +11,9 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 )
 
+// readMasterKey is a test seam; production uses the native keystore reader.
+var readMasterKey = keystore.ReadMasterKey
+
 // WriteResult is the per-write outcome the sink uses for logging and
 // sink-state reporting.
 type WriteResult struct {
@@ -63,7 +66,7 @@ func WritePayload(homeDir string, payload map[string]map[string]string, sealingE
 
 	var masterKey []byte
 	if sealingEnabled {
-		mk, err := keystore.ReadMasterKey()
+		mk, err := readMasterKey()
 		if err != nil {
 			errs = append(errs, fmt.Errorf("sealing requested but master key unavailable: %w; writing plaintext only", err))
 		} else {

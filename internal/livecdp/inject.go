@@ -52,7 +52,7 @@ func Inject(ctx context.Context, cookies []chrome.Cookie) error {
 // BuildCookieParams shapes decrypted chrome.Cookie rows into CDP
 // CookieParams for live injection. The shaping is the corrected,
 // verified-working form -- it differs from internal/cdp.buildCookieParam
-// in two load-bearing ways the cold path got wrong:
+// and is shared by the cold path:
 //
 //   - __Host--prefixed cookies carry NO Domain. Chrome hard-rejects a
 //     __Host- cookie that has a Domain attribute, which silently dropped
@@ -116,7 +116,11 @@ func HasAccessTimes(cookies []chrome.Cookie) bool {
 // user actually uses and lets Chrome evict its own stale cookies instead.
 const MaxInjectCookies = 3000
 
-func buildParam(c chrome.Cookie) *network.CookieParam {
+func buildParam(c chrome.Cookie) *network.CookieParam { return BuildCookieParam(c) }
+
+// BuildCookieParam is the single cookie shaping contract shared by cold and
+// live injection. It preserves domain scope and both CHIPS ancestor values.
+func BuildCookieParam(c chrome.Cookie) *network.CookieParam {
 	if c.Name == "" || c.HostKey == "" {
 		return nil
 	}
@@ -160,6 +164,12 @@ func buildParam(c chrome.Cookie) *network.CookieParam {
 		ss = network.CookieSameSiteLax
 	}
 	p.SameSite = ss
+	if c.TopFrameSiteKey != "" {
+		if !p.Secure || (c.HasCrossSiteAncestor != 0 && c.HasCrossSiteAncestor != 1) {
+			return nil
+		}
+		p.PartitionKey = &network.CookiePartitionKey{TopLevelSite: c.TopFrameSiteKey, HasCrossSiteAncestor: c.HasCrossSiteAncestor == 1}
+	}
 	return p
 }
 

@@ -73,8 +73,15 @@ func Read(ctx context.Context, endpoint string) ([]chrome.Cookie, error) {
 	})); err != nil {
 		return nil, fmt.Errorf("read cookies via cdp: %w", err)
 	}
+	return convertCookies(cookies)
+}
+
+func convertCookies(cookies []*network.Cookie) ([]chrome.Cookie, error) {
 	out := make([]chrome.Cookie, 0, len(cookies))
 	for _, cookie := range cookies {
+		if cookie == nil || cookie.PartitionKeyOpaque || (cookie.PartitionKey != nil && cookie.PartitionKey.TopLevelSite == "") {
+			return nil, fmt.Errorf("CDP cookie has an unrepresentable partition key; refusing to widen its scope")
+		}
 		out = append(out, convertCookie(cookie))
 	}
 	return out, nil
@@ -92,6 +99,10 @@ func convertCookie(in *network.Cookie) chrome.Cookie {
 		SameSite:     sameSite(in.SameSite),
 		SourceScheme: sourceScheme(in.SourceScheme),
 		SourcePort:   int(in.SourcePort),
+	}
+	if in.PartitionKey != nil {
+		out.TopFrameSiteKey = in.PartitionKey.TopLevelSite
+		out.HasCrossSiteAncestor = boolInt(in.PartitionKey.HasCrossSiteAncestor)
 	}
 	if !in.Session && in.Expires >= 0 {
 		out.ExpiresUTC = int64((in.Expires + chromeEpochOffsetSec) * 1e6)

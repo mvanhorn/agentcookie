@@ -1016,6 +1016,9 @@ func TestSourceConfigYAMLKeysUnchangedForOlderBinaries(t *testing.T) {
 	want := []string{"browser", "cdp_source", "chrome", "cmux", "peer", "security", "sink", "sinks"}
 	var got []string
 	for f := range reflect.TypeFor[SourceConfig]().Fields() {
+		if !f.IsExported() {
+			continue
+		}
 		tag := f.Tag.Get("yaml")
 		name, _, _ := strings.Cut(tag, ",")
 		got = append(got, name)

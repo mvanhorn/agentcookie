@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "description": "Hermetic unit fixtures for the shared browser storage codec",
+  "scripts": {
+    "test": "node --test codec_test.cjs browser_process_test.cjs companion_test.cjs idb_test.cjs ../gecko/companion/chunks_test.cjs",
+    "test:browser": "AGENTCOOKIE_BROWSER_TEST=1 node --test browser_test.cjs"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "6.2.5",
+    "prettier": "3.6.2"
+  }
+}
