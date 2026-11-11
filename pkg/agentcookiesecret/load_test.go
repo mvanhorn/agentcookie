@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mvanhorn/agentcookie/internal/keystore"
 )
 
 // writeFile is a t.Helper for tests; mkdir parents, write 0600.
@@ -108,8 +110,15 @@ func TestLoad_NoBusEntryFallsThroughToEnv(t *testing.T) {
 }
 
 func TestLoad_SealedFilePresentNoMasterKey(t *testing.T) {
+	original := readMasterKey
+	calls := 0
+	readMasterKey = func() ([]byte, error) {
+		calls++
+		return nil, keystore.ErrMasterKeyMissing
+	}
+	t.Cleanup(func() { readMasterKey = original })
 	// Place a sealed file (with arbitrary bytes; this test doesn't need
-	// real ciphertext, since ReadMasterKey will return ErrMasterKeyMissing
+	// real ciphertext, since the stub returns ErrMasterKeyMissing
 	// first). We exercise the error path where sealed exists but master
 	// key is unavailable.
 	home := t.TempDir()
@@ -118,8 +127,11 @@ func TestLoad_SealedFilePresentNoMasterKey(t *testing.T) {
 		"opaque-sealed-bytes")
 
 	_, err := Load("demo-cli")
-	if err == nil {
-		t.Errorf("expected error when sealed file present but master key missing")
+	if !errors.Is(err, keystore.ErrMasterKeyMissing) {
+		t.Fatalf("expected ErrMasterKeyMissing, got: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("master key reads = %d, want 1", calls)
 	}
 	if !strings.Contains(err.Error(), "master key") {
 		t.Errorf("error should mention master key, got: %v", err)
