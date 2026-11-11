@@ -1,0 +1,82 @@
+name: e2e-zen
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  pinned-zen:
+    # Maintainers must configure this check in branch protection. YAML alone
+    # does not make it required. Fixed archive URLs/checksums live in the script.
+    # Zen 1.24.1b DMG SHA-256:
+    # 00194b221ae87c76d82a8b4af5bdd89d49100bed78c6aa0df754a75de7733f8a
+    # Chrome 157.0.8103.50 mac-arm64 SHA-256:
+    # aceb0578a1cc3631358b164dbbef04bf8936f96c690fb78c3ac25b7655e795e8
+    # Chrome 157.0.8103.50 mac-x64 SHA-256:
+    # 7b1c12bee8024f1193b28754aa0d46b7eaa08394de51bef84fd65a6cf08d61dc
+    name: pinned headed Zen lifecycle
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      AGENTCOOKIE_E2E_REQUIRED: '1'
+      AGENTCOOKIE_GECKO_REQUIRED: '1'
+      AGENTCOOKIE_GECKO_HEADED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Download checksum-pinned Zen and Chrome for Testing
+        run: bash scripts/install-e2e-browsers.sh macos "$RUNNER_TEMP/agentcookie-browsers"
+      - name: Build this PR head and print browser versions
+        run: |
+          go build -o "$RUNNER_TEMP/agentcookie" ./cmd/agentcookie
+          echo "AGENTCOOKIE_BINARY=$RUNNER_TEMP/agentcookie" >> "$GITHUB_ENV"
+          "$AGENTCOOKIE_GECKO_BINARY" --version
+          "$AGENTCOOKIE_CHROME_BINARY" --version
+          git rev-parse HEAD
+      - name: Require and run actual lifecycle gates
+        run: |
+          go test ./internal/e2e -list . | grep -Fx TestGeckoLiveLifecycle
+          go test ./internal/e2e -list . | grep -Fx TestGeckoDaemonCrash
+          go test ./internal/e2e -list . | grep -Fx TestGeckoStartsAfterSource
+          go test ./internal/e2e -list . | grep -Fx TestGeckoCompanionRemovalRequiresBrowserRestart
+          go test ./internal/e2e -list . | grep -Fx TestGeckoBrokerCrashKeepsCookiesWithoutRetryStorm
+          go test ./internal/e2e -list . | grep -Fx TestGeckoReaderDoesNotOpenLiveDatabases
+          go test -count=1 -timeout=20m -v ./internal/e2e
+      - name: Remove fixture downloads
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/agentcookie-browsers" "$RUNNER_TEMP/agentcookie"
+  latest-zen:
+    name: latest headed Zen (advisory)
+    runs-on: macos-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    env:
+      AGENTCOOKIE_E2E_REQUIRED: '1'
+      AGENTCOOKIE_GECKO_REQUIRED: '1'
+      AGENTCOOKIE_GECKO_HEADED: '1'
+      AGENTCOOKIE_GECKO_BINARY: /Applications/Zen.app/Contents/MacOS/zen
+      AGENTCOOKIE_CHROME_BINARY: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Latest Zen and runner Chrome
+        run: |
+          brew install --cask zen
+          "$AGENTCOOKIE_GECKO_BINARY" --version
+          "$AGENTCOOKIE_CHROME_BINARY" --version
+          go build -o "$RUNNER_TEMP/agentcookie" ./cmd/agentcookie
+          echo "AGENTCOOKIE_BINARY=$RUNNER_TEMP/agentcookie" >> "$GITHUB_ENV"
+      - run: go test -count=1 -timeout=20m -v ./internal/e2e
+      - name: Remove fixture binary
+        if: always()
+        run: rm -f "$RUNNER_TEMP/agentcookie"

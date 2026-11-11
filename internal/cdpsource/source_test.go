@@ -112,3 +112,22 @@ func TestConvertCookieKeepsSessionCookieNonPersistent(t *testing.T) {
 		t.Fatalf("session cookie fields = %#v", got)
 	}
 }
+
+func TestPartitionCookieRoundTripProvenance(t *testing.T) {
+	for _, ancestor := range []bool{false, true} {
+		in := &network.Cookie{Domain: "example.com", Name: "chips", Value: "v", Path: "/", Secure: true, Session: true, PartitionKey: &network.CookiePartitionKey{TopLevelSite: "https://top.example", HasCrossSiteAncestor: ancestor}}
+		got := convertCookie(in)
+		param := livecdp.BuildCookieParam(got)
+		if param == nil || param.PartitionKey == nil || param.PartitionKey.TopLevelSite != in.PartitionKey.TopLevelSite || param.PartitionKey.HasCrossSiteAncestor != ancestor {
+			t.Fatalf("partition provenance lost: %#v", param)
+		}
+	}
+}
+
+func TestOpaquePartitionRefusedRatherThanWidened(t *testing.T) {
+	for _, in := range []*network.Cookie{{Name: "auth", Domain: "example.com", PartitionKeyOpaque: true}, {Name: "auth", Domain: "example.com", PartitionKey: &network.CookiePartitionKey{}}} {
+		if got, err := convertCookies([]*network.Cookie{in}); err == nil || got != nil {
+			t.Fatalf("opaque partition widened: %#v %v", got, err)
+		}
+	}
+}

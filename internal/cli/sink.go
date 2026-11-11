@@ -697,13 +697,19 @@ func SetCDPInjectorForTesting(f func(ctx context.Context, profileDir string, coo
 // when present. Shared between the legacy path (applyEnvelopeToSink)
 // and the v0.12.0-beta.3 skip_chrome_sqlite path (applySidecarOnlyToSink).
 func writeCookiesSidecar(cookies []chrome.Cookie) (int, error) {
+	return chrome.WriteCookiesSidecar(chromepaths.SidecarCookiesDB(), cookies, sinkSidecarMasterKey())
+}
+
+// sinkSidecarMasterKey is injectable so hermetic in-process sinks cannot read
+// the host Keychain even if a test accidentally creates a master-key marker.
+var sinkSidecarMasterKey = func() []byte {
 	var sidecarMaster []byte
 	if keystore.MasterKeyExists() {
 		if mk, err := keystore.ReadMasterKey(); err == nil {
 			sidecarMaster = mk
 		}
 	}
-	return chrome.WriteCookiesSidecar(chromepaths.SidecarCookiesDB(), cookies, sidecarMaster)
+	return sidecarMaster
 }
 
 // applySidecarOnlyToSink is the v0.12.0-beta.3 headless-sink write path.

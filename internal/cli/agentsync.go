@@ -20,6 +20,8 @@ import (
 )
 
 var (
+	agentSyncProfile     string
+	agentSyncReader      string
 	agentSyncPort        int
 	agentSyncHeaded      bool
 	agentSyncChromePath  string
@@ -59,6 +61,8 @@ transfer to another browser and are reported, not faked. Non-DBSC sites
 }
 
 func init() {
+	agentSyncCmd.Flags().StringVar(&agentSyncProfile, "profile", "", "source profile selector")
+	agentSyncCmd.Flags().StringVar(&agentSyncReader, "reader", "", "source reader: auto or file")
 	agentSyncCmd.Flags().IntVar(&agentSyncPort, "port", 9400, "loopback Chrome remote-debugging port for the owned browser")
 	agentSyncCmd.Flags().BoolVar(&agentSyncHeaded, "headed", false, "show the owned browser window (default: headless)")
 	agentSyncCmd.Flags().StringVar(&agentSyncChromePath, "chrome-path", "", "override the Chrome executable (default: auto-detect)")
@@ -70,10 +74,16 @@ func init() {
 }
 
 func runAgentSync(cmd *cobra.Command, args []string) error {
+	ctx, closeReaders := withGeckoSession(cmd.Context())
+	defer closeReaders()
+	if cmd.Flags().Changed("profile") {
+		ctx = context.WithValue(ctx, geckoExplicitProfileKey{}, true)
+	}
+	cmd.SetContext(ctx)
 	// LoadSourceLocal: the agent-sync loop has no push target, so it must not
 	// require sink.url or a peer/secret. Missing source.yaml is fine (default
 	// Chrome path, no blocklist).
-	cfg, err := config.LoadSourceLocal(common.ConfigDir)
+	cfg, err := config.LoadSourceLocalWithOverrides(common.ConfigDir, config.SourceOverrides{Browser: agentSyncBrowser, Profile: agentSyncProfile, Reader: agentSyncReader})
 	if err != nil {
 		return err
 	}
@@ -82,7 +92,7 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	}
 
 	var key []byte
-	if !cfg.CDPSource.Enabled {
+	if !cfg.CDPSource.Enabled && !isGeckoSource(cfg) {
 		browserName := agentSyncBrowser
 		if browserName == "" {
 			browserName = cfg.Browser.Name
@@ -177,6 +187,9 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	// current cookies into every live context so a site the user just logged
 	// into in their real Chrome becomes logged-in in the agent browser too.
 	// A failed cycle is logged and the watcher keeps running.
+	if isGeckoSource(cfg) {
+		return runGeckoWatch(ctx, func(context.Context) (int, error) { return syncer.ReinjectAll() }, agentSyncVerbose)
+	}
 	if cfg.CDPSource.Enabled {
 		if err := runCDPSourceWatch(ctx, func(ctx context.Context) (int, error) {
 			return syncer.ReinjectAll()

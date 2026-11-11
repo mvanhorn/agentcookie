@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  AGENTCOOKIE_E2E_REQUIRED: "1"
+
 jobs:
   test-macos:
     name: vet + test (macOS)
@@ -18,6 +21,8 @@ jobs:
           cache: true
       - name: go vet
         run: go vet ./...
+      - name: Download checksum-pinned fixture Chrome
+        run: bash scripts/install-e2e-browsers.sh macos-chrome "$RUNNER_TEMP/agentcookie-browsers"
       - name: go test
         run: go test -race ./...
       - name: release asset shell tests
@@ -28,6 +33,9 @@ jobs:
           bash scripts/release_asset_test.sh
       - name: go build
         run: go build ./...
+      - name: Remove fixture downloads
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/agentcookie-browsers"
 
   test-linux:
     name: vet + test (Linux)
@@ -40,6 +48,25 @@ jobs:
           cache: true
       - name: go vet
         run: go vet ./...
+      - name: install filesystem tracing tool
+        run: sudo apt-get update && sudo apt-get install -y strace
+      - name: Download checksum-pinned fixture browsers and previous Linux release
+        run: bash scripts/install-e2e-browsers.sh linux "$RUNNER_TEMP/agentcookie-browsers"
+      - name: Build fixture CLI and require Gecko and compatibility gates
+        run: |
+          go build -o "$RUNNER_TEMP/agentcookie" ./cmd/agentcookie
+          echo "AGENTCOOKIE_BINARY=$RUNNER_TEMP/agentcookie" >> "$GITHUB_ENV"
+          echo "AGENTCOOKIE_GECKO_REQUIRED=1" >> "$GITHUB_ENV"
+          test -x "$AGENTCOOKIE_OLD_BINARY"
+          "$AGENTCOOKIE_GECKO_BINARY" --version
+          "$AGENTCOOKIE_CHROME_BINARY" --version
+          go test ./internal/e2e -list . | grep -Fx TestGeckoLiveLifecycle
+          go test ./internal/e2e -list . | grep -Fx TestGeckoDaemonCrash
+          go test ./internal/e2e -list . | grep -Fx TestGeckoStartsAfterSource
+          go test ./internal/e2e -list . | grep -Fx TestGeckoCompanionRemovalRequiresBrowserRestart
+          go test ./internal/e2e -list . | grep -Fx TestGeckoBrokerCrashKeepsCookiesWithoutRetryStorm
+          go test ./internal/e2e -list . | grep -Fx TestPreviousV2SinkAcceptsCurrentSource
+          go test ./internal/e2e -list . | grep -Fx TestPreviousCDPSourceSendsToCurrentSink
       # Linux tests run without -race to avoid CGO requirements for some
       # macOS-specific code paths that are stubbed but still compiled.
       - name: go test
@@ -53,3 +80,6 @@ jobs:
           bash scripts/release_asset_test.sh
       - name: go build
         run: go build ./...
+      - name: Remove fixture downloads
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/agentcookie-browsers" "$RUNNER_TEMP/agentcookie"

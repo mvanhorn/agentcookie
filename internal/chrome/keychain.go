@@ -9,6 +9,7 @@ import (
 	"crypto/sha1"
 	"errors"
 	"fmt"
+	"github.com/mvanhorn/agentcookie/internal/credentialguard"
 	"os"
 	"os/exec"
 	"strings"
@@ -96,6 +97,7 @@ var (
 // exec.ExitError.Stderr) so the locked-vs-missing-grant decision has a clean,
 // stubbable signal.
 var securityCLIRead = func(ctx context.Context, account, service string) (stdout, stderr []byte, err error) {
+	credentialguard.Check("/usr/bin/security")
 	cmd := exec.CommandContext(ctx, "security",
 		"find-generic-password",
 		"-a", account,
@@ -119,6 +121,7 @@ func keychainLockedSignal(s string) bool {
 // SafeStoragePasswordFor returns b's Safe Storage password from the macOS
 // Keychain using b's account/service pair.
 func SafeStoragePasswordFor(b Browser) (string, error) {
+	credentialguard.Check("chrome.SafeStoragePasswordFor")
 	// Signed binary: try the no-prompt SecItem fast path first. It never opens a
 	// dialog (interaction is disabled), so a miss just falls through cheaply.
 	// Unsigned (go install) binaries skip it -- they are never in the per-app
