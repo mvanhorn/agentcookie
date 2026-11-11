@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Go secrets reader reports a bad secrets.env instead of skipping it
+
+- `agentcookiesecret.Load` (and `LoadWithFallback`, `LoadDetailed`) silently skipped a `~/.agentcookie/secrets/<cli>/secrets.env` that did not parse or could not be read, so the CLI ran on process env or its fallback file, which the bus is meant to override. It now returns an error naming the file and, for a syntax error, the line, as spec section 11.4 requires. A missing file is still not an error, and the fallback file is unchanged.
+
 ### New `agentcookie profile-keepalive`: Claude in Chrome stays connected on every Claude account
 
 - Claude in Chrome pairs only with the Claude account it is signed into, so a Mac with two Claude accounts uses one Chrome profile per account. Chrome unloads a profile when its last window closes, and at launch it reopens only the last one used. After that, Claude in Chrome silently stopped working for the other account.

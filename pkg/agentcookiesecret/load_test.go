@@ -2,6 +2,7 @@ package agentcookiesecret
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,6 +105,49 @@ func TestLoad_NoBusEntryFallsThroughToEnv(t *testing.T) {
 	}
 	if res.Sources["STANDALONE_VAR"] != SourceEnv {
 		t.Errorf("source should be SourceEnv")
+	}
+}
+
+func TestLoad_MalformedPlaintextBusIsAnError(t *testing.T) {
+	// Spec section 11.4: a syntax error in secrets.env must be returned,
+	// naming the file and the line, never skipped. Skipping it would hand
+	// the caller the stale env value the bus was meant to override.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("OAUTH_BEARER", "from-env-stale")
+	plainPath := filepath.Join(home, ".agentcookie", "secrets", "demo-cli", "secrets.env")
+	writeFile(t, plainPath, "# comment\nOAUTH_BEARER=from-bus-fresh\nNOT_A_PAIR\n")
+
+	env, err := Load("demo-cli")
+	if err == nil {
+		t.Fatalf("expected error for malformed secrets.env, got env: %v", env)
+	}
+	if !strings.Contains(err.Error(), plainPath) {
+		t.Errorf("error should name the file %s, got: %v", plainPath, err)
+	}
+	if !strings.Contains(err.Error(), "line 3") {
+		t.Errorf("error should name the offending line, got: %v", err)
+	}
+	if env != nil {
+		t.Errorf("Load should return no map on error, got: %v", env)
+	}
+}
+
+func TestLoad_UnreadablePlaintextBusIsAnError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads files regardless of mode")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	plainPath := filepath.Join(home, ".agentcookie", "secrets", "demo-cli", "secrets.env")
+	writeFile(t, plainPath, "FOO=bar\n")
+	if err := os.Chmod(plainPath, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	_, err := Load("demo-cli")
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("expected a permission error for unreadable secrets.env, got: %v", err)
 	}
 }
 

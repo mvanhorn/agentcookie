@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,11 +42,12 @@ var ErrInvalidCLIName = errors.New("agentcookiesecret: cli name violates v1 nami
 // Load resolves secrets for the given CLI from the agentcookie bus and
 // returns them as a flat map. Equivalent to LoadWithFallback(cliName, "").
 //
-// Errors are returned for invalid cli-name and for unreadable sealed
-// files when the master key is required. Missing bus files are NOT
-// errors: Load falls through to process env and returns whatever env
-// variables match. Callers can distinguish "no bus entry, env-only" by
-// inspecting the result's Sources field.
+// Errors are returned for invalid cli-name, for a secrets.env that does
+// not parse or cannot be read (the error names the file and line), and
+// for unreadable sealed files when the master key is required. Missing
+// bus files are NOT errors: Load falls through to process env and
+// returns whatever env variables match. Callers can distinguish "no bus
+// entry, env-only" by inspecting the result's Sources field.
 func Load(cliName string) (map[string]string, error) {
 	res, err := LoadDetailed(cliName, "")
 	if err != nil {
@@ -115,14 +117,21 @@ func LoadDetailed(cliName string, fallbackPath string) (*LoadResult, error) {
 		}
 	}
 
-	// 2. Plaintext bus file.
+	// 2. Plaintext bus file. A missing file just means no bus entry. Any
+	// other failure (a syntax error, an unreadable file) is returned: the
+	// spec forbids skipping a bad file, since the caller would then run on
+	// env values the bus was meant to override.
 	home, _ := os.UserHomeDir()
 	plainPath := filepath.Join(home, ".agentcookie", "secrets", cliName, "secrets.env")
-	if plain, err := readEnvFile(plainPath); err == nil {
+	plain, err := readEnvFile(plainPath)
+	switch {
+	case err == nil:
 		for k, v := range plain {
 			res.Env[k] = v
 			res.Sources[k] = SourceBusPlain
 		}
+	case !errors.Is(err, fs.ErrNotExist):
+		return res, fmt.Errorf("read %s: %w", plainPath, err)
 	}
 
 	// 1. Sealed bus file (highest priority).
