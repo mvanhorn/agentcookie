@@ -320,7 +320,7 @@ func RenderShellLine(key, v string) (string, error) {
 // parsing, prompts and startup.
 var shellReserved = func() map[string]bool {
 	m := map[string]bool{}
-	for _, k := range strings.Fields(`
+	for k := range strings.FieldsSeq(`
 		ARGC BASHOPTS BASHPID BASH_ARGC BASH_ARGV BASH_COMMAND BASH_ENV
 		BASH_LINENO BASH_SUBSHELL COLUMNS EGID ENV EPOCHREALTIME EPOCHSECONDS
 		EUID FUNCNEST GID HISTCMD HISTFILESIZE HISTSIZE IFS KEYTIMEOUT LINENO
