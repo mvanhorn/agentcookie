@@ -1,4 +1,4 @@
-"""Tests for agentcookie_secret. Run with: python -m unittest discover -s clients/python"""
+"""Tests for agentcookie_secret. Run with: python -m unittest discover -s clients/python/tests -t clients/python"""
 
 import os
 import stat
@@ -252,7 +252,11 @@ class ParseEnvTest(unittest.TestCase):
             with self.subTest(text=text):
                 with self.assertRaisesRegex(AgentcookieSecretError, "unterminated"):
                     _parse_env(text)
-        with self.assertRaisesRegex(AgentcookieSecretError, "line 3: unterminated"):
+        # Same line numbers as the Go reader: the last line read, then the
+        # line the continuation started on, and never the key.
+        with self.assertRaisesRegex(
+            AgentcookieSecretError, r"^line 4: unterminated backslash continuation \(started on line 3\)$"
+        ):
             _parse_env("A=1\n# c\nLONG=part1\\\nmore\\\n")
 
     def test_crlf_line_endings(self):
@@ -275,6 +279,58 @@ class ParseEnvTest(unittest.TestCase):
 
     def test_value_keeps_inner_equals_and_spaces(self):
         self.assertEqual(_parse_env("URL=a=b c\n_K1= lead\n"), {"URL": "a=b c", "_K1": " lead"})
+
+
+class GoParityTest(_BusTestCase):
+    """Behavior that must match the Go reader in pkg/agentcookiesecret."""
+
+    def test_sealed_file_wins_over_malformed_plaintext(self):
+        self.write(self.bus_path("demo-cli"), "NOT_A_PAIR\n")
+        self.write(self.bus_path("demo-cli", "secrets.env.sealed"), "opaque")
+        self.fake_agentcookie(stdout="A=1\n")
+        res = load_detailed("demo-cli")
+        self.assertEqual((res.env["A"], res.sources["A"]), ("1", Source.BUS_SEALED))
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root ignores file modes")
+    def test_sealed_file_wins_over_unreadable_plaintext(self):
+        path = self.bus_path("demo-cli")
+        self.write(path, "FOO=bar\n")
+        os.chmod(path, 0)
+        self.addCleanup(os.chmod, path, stat.S_IRUSR | stat.S_IWUSR)
+        self.write(self.bus_path("demo-cli", "secrets.env.sealed"), "opaque")
+        self.fake_agentcookie(stdout="A=1\n")
+        self.assertEqual(load("demo-cli")["A"], "1")
+
+    def test_malformed_plaintext_without_sealed_file_raises(self):
+        path = self.bus_path("demo-cli")
+        self.write(path, "NOT_A_PAIR\n")
+        with self.assertRaises(AgentcookieSecretError) as cm:
+            load("demo-cli")
+        self.assertIn(path, str(cm.exception))
+        self.assertIn("line 1", str(cm.exception))
+
+    def test_invalid_key_error_does_not_echo_the_line(self):
+        self.write(self.bus_path("demo-cli"), "A=1\nsk-live+SECRET/abc=x\n")
+        with self.assertRaises(AgentcookieSecretError) as cm:
+            load("demo-cli")
+        self.assertIn("line 2", str(cm.exception))
+        self.assertNotIn("SECRET", str(cm.exception))
+        self.assertNotIn("sk-live", str(cm.exception))
+
+    def test_unterminated_continuation_does_not_echo_the_key(self):
+        self.write(self.bus_path("demo-cli"), "A=1\nTOKEN=value\\\n")
+        with self.assertRaises(AgentcookieSecretError) as cm:
+            load("demo-cli")
+        self.assertIn("line 2", str(cm.exception))
+        self.assertNotIn("TOKEN", str(cm.exception))
+
+    def test_leading_bom_is_ignored(self):
+        path = self.bus_path("demo-cli")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(b"\xef\xbb\xbfA=1\nB=2\n")
+        env = load("demo-cli")
+        self.assertEqual((env["A"], env["B"]), ("1", "2"))
 
 
 class ValidCLINameTest(unittest.TestCase):

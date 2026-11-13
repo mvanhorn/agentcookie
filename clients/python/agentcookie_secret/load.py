@@ -112,16 +112,33 @@ def load_detailed(cli_name: str, fallback_path: Optional[str] = None) -> LoadRes
     plain_path = os.path.join(
         os.path.expanduser("~"), ".agentcookie", "secrets", cli_name, "secrets.env"
     )
+    sealed_path = plain_path + ".sealed"
+    # A sealed file is authoritative (spec section 5.2): when it exists, a
+    # bad plaintext sibling is ignored rather than raised, as in the Go
+    # reader.
+    sealed_present = os.path.exists(sealed_path)
+
+    plain: Dict[str, str] = {}
+    plain_error: Optional[AgentcookieSecretError] = None
     try:
         plain = _read_env_file(plain_path)
     except FileNotFoundError:
-        plain = {}
+        pass
     except OSError as exc:
-        raise AgentcookieSecretError(f"read {plain_path}: {exc}") from exc
+        plain_error = AgentcookieSecretError(f"read {plain_path}: {exc}")
+        plain_error.__cause__ = exc  # as `raise ... from exc` would set
+    except AgentcookieSecretError as exc:
+        plain_error = exc
+    if not sealed_present:
+        # A writer seals by creating the sealed file and then removing the
+        # plaintext one. Check again so a seal that lands between the first
+        # check and the plaintext read is still found.
+        sealed_present = os.path.exists(sealed_path)
+    if plain_error is not None and not sealed_present:
+        raise plain_error
     result._merge(plain, Source.BUS_PLAIN)
 
-    sealed_path = plain_path + ".sealed"
-    if os.path.exists(sealed_path):
+    if sealed_present:
         result._merge(_unseal(cli_name, sealed_path), Source.BUS_SEALED)
 
     return result
@@ -177,7 +194,7 @@ def _read_env_file(path: str) -> Dict[str, str]:
         # utf-8-sig drops one leading BOM, which spec section 3.1 permits.
         return _parse_env(data.decode("utf-8-sig", errors="surrogateescape"))
     except AgentcookieSecretError as exc:
-        raise AgentcookieSecretError(f"{path}: {exc}") from None
+        raise AgentcookieSecretError(f"read {path}: {exc}") from None
 
 
 def _split_lines(text: str) -> List[str]:
@@ -197,6 +214,7 @@ def _parse_env(text: str) -> Dict[str, str]:
     pending_line = 0
     in_continuation = False
 
+    line_num = 0
     for line_num, line in enumerate(_split_lines(text), start=1):
         if in_continuation:
             if line.endswith("\\"):
@@ -222,7 +240,9 @@ def _parse_env(text: str) -> Dict[str, str]:
                 f"line {line_num}: whitespace around '=' is not allowed"
             )
         if not _valid_key_name(key):
-            raise AgentcookieSecretError(f"line {line_num}: invalid key name {key!r}")
+            # Never echo the key: a bare secret pasted on its own line
+            # lands here.
+            raise AgentcookieSecretError(f"line {line_num}: invalid key name")
 
         if value.endswith("\\"):
             pending.append(value[:-1])
@@ -233,9 +253,11 @@ def _parse_env(text: str) -> Dict[str, str]:
         out[key] = _strip_quotes(value)
 
     if in_continuation:
+        # Same text and line numbers as the Go reader: the last line read,
+        # then the line the continuation started on. Never the key.
         raise AgentcookieSecretError(
-            f"line {pending_line}: unterminated backslash continuation "
-            f"for key {pending_key!r}"
+            f"line {line_num}: unterminated backslash continuation "
+            f"(started on line {pending_line})"
         )
     return out
 

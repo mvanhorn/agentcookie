@@ -77,12 +77,13 @@ For Python code, use the reader in `clients/python` (`pip install "git+https://g
 
 ```python
 import os
+import sys
 from agentcookie_secret import AgentcookieSecretError, load
 
 try:
     bus_env = load("my-pp-cli")  # bus first, then process env
 except AgentcookieSecretError as exc:
-    print(f"agentcookie_secret: {exc}; falling back")
+    print(f"agentcookie_secret: {exc}; falling back", file=sys.stderr)
     bus_env = dict(os.environ)
 
 token = bus_env.get("MY_OAUTH_BEARER")

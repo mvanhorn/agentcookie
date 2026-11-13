@@ -23,12 +23,16 @@ pip install "git+https://github.com/mvanhorn/agentcookie#subdirectory=clients/py
 ## Use
 
 ```python
+import os
+import sys
+
 from agentcookie_secret import AgentcookieSecretError, load
 
 try:
     env = load("my-pp-cli")
-except AgentcookieSecretError:
-    env = {}  # fall back to your existing config loading
+except AgentcookieSecretError as exc:
+    print(f"agentcookie_secret: {exc}; using the environment", file=sys.stderr)
+    env = dict(os.environ)  # or your existing config loading
 
 token = env.get("MY_OAUTH_BEARER")
 ```
@@ -39,7 +43,8 @@ it wins:
 1. `~/.agentcookie/secrets/<cli>/secrets.env.sealed`, when sealing is on.
    The reader runs `agentcookie secret env --no-aliases <cli>` to unseal
    it, so the master key stays in agentcookie's Keychain item and the
-   `agentcookie` binary must be on `PATH`.
+   `agentcookie` binary must be on `PATH`. When a sealed file exists, a bad
+   or unreadable `secrets.env` next to it is ignored, as in the Go reader.
 2. `~/.agentcookie/secrets/<cli>/secrets.env`
 3. An optional fallback file in the same `KEY=VALUE` format, such as
    `load("my-pp-cli", fallback_path=os.path.expanduser("~/.config/my-pp-cli/auth.env"))`.
@@ -66,10 +71,16 @@ if res.sources.get("MY_OAUTH_BEARER") is Source.ENV:
 - `AgentcookieSecretError`: `secrets.env` has a syntax error or cannot be
   read, or a sealed file is present but cannot be unsealed (for example,
   `agentcookie` is not on `PATH`). The message names the file, and a syntax
-  error also names the line.
+  error also names the line. It never includes text from the offending
+  line, since that text can be a secret.
 
 A CLI with no bus entry is not an error; you get the fallback file and the
 environment.
+
+A sealed file is parsed by `agentcookie secret env`, not by this package.
+That parser does not join backslash continuations, so a sealed file that
+uses them fails to load or loads different values here, while the Go
+reader reads it.
 
 The reader never writes. Aliases (`agentcookie secret alias`) are not
 applied; use `agentcookie secret env <cli>` when you want them.
@@ -77,5 +88,5 @@ applied; use `agentcookie secret env <cli>` when you want them.
 ## Test
 
 ```bash
-python -m unittest discover -s clients/python
+python -m unittest discover -s clients/python/tests -t clients/python
 ```

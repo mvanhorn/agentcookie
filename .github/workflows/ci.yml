@@ -54,6 +54,6 @@ jobs:
       # The Python secrets reader has no dependencies, so the runner's
       # system python3 is enough.
       - name: python reader tests
-        run: python3 -m unittest discover -s clients/python -v
+        run: python3 -m unittest discover -s clients/python/tests -t clients/python -v
       - name: go build
         run: go build ./...
