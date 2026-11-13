@@ -192,3 +192,22 @@ func TestParseErrorsNameLines(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderShellLineRefusesEvaluatingKeysAndNUL(t *testing.T) {
+	// bash 5 runs the command substitution in RANDOM='a[$(cmd)]' because
+	// RANDOM is an integer variable that evaluates its value as arithmetic.
+	for _, k := range []string{"RANDOM", "SECONDS", "LINENO", "SRANDOM", "IFS", "PS4", "PROMPT_COMMAND", "status"} {
+		if line, err := RenderShellLine(k, "a[$(id)]"); !errors.Is(err, ErrShellReserved) {
+			t.Errorf("RenderShellLine(%s) = %q, %v; want ErrShellReserved", k, line, err)
+		}
+	}
+	if line, err := RenderShellLine("TOKEN", "a[$(id)]"); err != nil || line != "TOKEN='a[$(id)]'" {
+		t.Errorf("ordinary key: %q, %v", line, err)
+	}
+	if line, err := RenderShellLine("K", "a\x00b"); !errors.Is(err, ErrShellUnsafe) {
+		t.Errorf("NUL: %q, %v; want ErrShellUnsafe", line, err)
+	}
+	if v, err := RenderValue("a\x00b"); err != nil || v != "a\x00b" {
+		t.Errorf("RenderValue must keep NUL lossless: %q, %v", v, err)
+	}
+}

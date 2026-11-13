@@ -66,8 +66,12 @@ eval "$(agentcookie secret env tesla-pp-cli)"
 Each value is quoted for the shell (sh, bash or zsh), so a synced value
 containing spaces, `$(...)` or `;` is assigned as text and never runs. A value
 that no quoting can carry safely (one with both a `'` and one of `"`, `\`,
-`$` or a backtick) is left out with a note on stderr naming the key, and the
-command exits non-zero. Read such a value with `agentcookie secret get`.
+`$` or a backtick, or a NUL byte) is left out with a note on stderr naming
+the key, and the command exits non-zero. So is a key that names a shell
+variable the shell acts on when assigned, such as `RANDOM`, `SECONDS`, `IFS`
+or `PS1`: bash evaluates an integer variable's value as arithmetic, which runs
+`$(...)` even inside single quotes. Read such a value with
+`agentcookie secret get`.
 `secret env --no-aliases` prints values verbatim for the reader libraries and
 is not meant for `eval`.
 

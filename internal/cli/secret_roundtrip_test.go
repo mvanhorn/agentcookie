@@ -281,6 +281,27 @@ func TestSecretEnv_LeavesOutValueNoQuotingServesAndFails(t *testing.T) {
 	}
 }
 
+func TestSecretEnv_LeavesOutShellEvaluatedKeys(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSecrets(t, home, "c", "OK=1\nRANDOM='a[$(id)]'\n")
+	buf, errBuf := &bytes.Buffer{}, &bytes.Buffer{}
+	cmd := secretEnvCmd
+	cmd.SetOut(buf)
+	cmd.SetErr(errBuf)
+	t.Cleanup(func() { cmd.SetErr(nil) })
+	err := runSecretEnv(cmd, []string{"c"})
+	if err == nil || !strings.Contains(err.Error(), "RANDOM") {
+		t.Fatalf("an evaluated shell variable must be left out and named, got %v", err)
+	}
+	if strings.Contains(err.Error()+errBuf.String(), "id)") {
+		t.Fatalf("value leaked: %v / %q", err, errBuf.String())
+	}
+	if buf.String() != "OK=1\n" {
+		t.Fatalf("stdout %q", buf.String())
+	}
+}
+
 func TestSecretEnv_NoAliasesPrintsValuesVerbatim(t *testing.T) {
 	// The released Python reader parses this output and keeps each value
 	// as printed, so it must not gain shell quoting.

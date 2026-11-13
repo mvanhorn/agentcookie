@@ -178,12 +178,13 @@ func ValidKey(k string) bool {
 
 // Refusal reasons. A refusal never carries the value.
 var (
-	ErrNewline     = errors.New("value contains a newline")
-	ErrTrailingCR  = errors.New("value ends in a carriage return")
-	ErrUnquotable  = errors.New("value needs quoting but contains both quote characters it could be quoted with")
-	ErrLineTooLong = errors.New("value is too long for one secrets.env line (limit 256 KiB)")
-	ErrShellUnsafe = errors.New("value cannot be printed so that both a shell and the readers get it unchanged")
-	ErrInvalidKey  = errors.New("invalid key name")
+	ErrNewline       = errors.New("value contains a newline")
+	ErrTrailingCR    = errors.New("value ends in a carriage return")
+	ErrUnquotable    = errors.New("value needs quoting but contains both quote characters it could be quoted with")
+	ErrLineTooLong   = errors.New("value is too long for one secrets.env line (limit 256 KiB)")
+	ErrShellUnsafe   = errors.New("value cannot be printed so that both a shell and the readers get it unchanged")
+	ErrInvalidKey    = errors.New("invalid key name")
+	ErrShellReserved = errors.New("key names a shell variable that the shell evaluates on assignment")
 )
 
 // RenderValue returns v in the form a secrets.env line carries, so the
@@ -248,6 +249,10 @@ func RenderShellValue(v string) (string, error) {
 	if strings.Contains(v, "\n") {
 		return "", ErrNewline
 	}
+	// Command substitution drops NUL bytes before eval sees them.
+	if strings.ContainsRune(v, 0) {
+		return "", ErrShellUnsafe
+	}
 	if shellBare(v) {
 		return v, nil
 	}
@@ -289,3 +294,41 @@ func shellBare(v string) bool {
 	}
 	return true
 }
+
+// RenderShellLine returns the KEY=VALUE line for eval, without the newline.
+// Besides refusing what RenderShellValue refuses, it refuses a key that bash
+// or zsh treats specially on assignment: integer variables such as RANDOM
+// evaluate the assigned text as arithmetic, which runs command substitutions
+// even inside single quotes, and others change how the shell parses or
+// prompts.
+func RenderShellLine(key, v string) (string, error) {
+	if !ValidKey(key) {
+		return "", ErrInvalidKey
+	}
+	if shellReserved[key] {
+		return "", ErrShellReserved
+	}
+	rv, err := RenderShellValue(v)
+	if err != nil {
+		return "", err
+	}
+	return key + "=" + rv, nil
+}
+
+// shellReserved holds the variables bash (3.2 through 5) and zsh evaluate or
+// act on when assigned: their integer specials, plus the ones that steer
+// parsing, prompts and startup.
+var shellReserved = func() map[string]bool {
+	m := map[string]bool{}
+	for _, k := range strings.Fields(`
+		ARGC BASHOPTS BASHPID BASH_ARGC BASH_ARGV BASH_COMMAND BASH_ENV
+		BASH_LINENO BASH_SUBSHELL COLUMNS EGID ENV EPOCHREALTIME EPOCHSECONDS
+		EUID FUNCNEST GID HISTCMD HISTFILESIZE HISTSIZE IFS KEYTIMEOUT LINENO
+		LINES LISTMAX MAILCHECK OPTERR OPTIND PPID PROMPT PROMPT2 PROMPT3
+		PROMPT4 PROMPT_COMMAND PS1 PS2 PS3 PS4 RANDOM RPROMPT RPS1 RPS2
+		SAVEHIST SECONDS SHELLOPTS SHLVL SRANDOM TMOUT TRY_BLOCK_ERROR
+		TRY_BLOCK_INTERRUPT TTYIDLE UID ZSH_SUBSHELL status`) {
+		m[k] = true
+	}
+	return m
+}()

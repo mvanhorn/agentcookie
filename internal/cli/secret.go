@@ -719,13 +719,13 @@ func runSecretEnv(cmd *cobra.Command, args []string) error {
 	// command fails after printing the rest so the omission is not silent.
 	var leftOut []string
 	for _, k := range slices.Sorted(maps.Keys(kv)) {
-		v, err := envfile.RenderShellValue(kv[k])
+		line, err := envfile.RenderShellLine(k, kv[k])
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "agentcookie secret env: left out %s: %v\n", k, err)
 			leftOut = append(leftOut, k)
 			continue
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s=%s\n", k, v)
+		fmt.Fprintln(cmd.OutOrStdout(), line)
 	}
 	if len(leftOut) > 0 {
 		return fmt.Errorf("left out %d key(s) that cannot be printed safely for eval: %s; read them with `agentcookie secret get`", len(leftOut), strings.Join(leftOut, ", "))
