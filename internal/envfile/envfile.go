@@ -12,7 +12,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -220,6 +222,20 @@ func RenderLine(key, v string) (string, error) {
 		return "", ErrLineTooLong
 	}
 	return line, nil
+}
+
+// RenderSorted renders each pair with RenderLine, sorted by key. Keys whose
+// pair RenderLine refuses are left out of lines and returned in refused.
+func RenderSorted(kv map[string]string) (lines, refused []string) {
+	for _, k := range slices.Sorted(maps.Keys(kv)) {
+		line, err := RenderLine(k, kv[k])
+		if err != nil {
+			refused = append(refused, k)
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines, refused
 }
 
 // RenderShellValue returns v in a form that a POSIX shell (`eval`) and the

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/agentcookie/internal/envfile"
 	"github.com/mvanhorn/agentcookie/pkg/agentcookiesecret"
 )
 
@@ -205,14 +206,14 @@ func TestWritePayload_SealingRequested_MasterKeyMissing(t *testing.T) {
 	}
 }
 
-func TestRenderEnvLines_SortedDeterministic(t *testing.T) {
-	lines, dropped := renderEnvLines(map[string]string{
+func TestRenderEnvFile_SortedDeterministic(t *testing.T) {
+	lines, refused := envfile.RenderSorted(map[string]string{
 		"Z": "1",
 		"A": "2",
 		"M": "3",
 	})
-	if dropped != 0 || len(lines) != 3 || lines[0] != "A=2" || lines[1] != "M=3" || lines[2] != "Z=1" {
-		t.Errorf("expected sorted A,M,Z, got: %v (dropped %d)", lines, dropped)
+	if len(refused) != 0 || len(lines) != 3 || lines[0] != "A=2" || lines[1] != "M=3" || lines[2] != "Z=1" {
+		t.Errorf("expected sorted A,M,Z, got: %v (refused %v)", lines, refused)
 	}
 }
 

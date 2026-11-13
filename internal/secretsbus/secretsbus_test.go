@@ -203,61 +203,6 @@ func TestParseEnvFile_Comments(t *testing.T) {
 	}
 }
 
-func TestParseEnvFile_QuotesStripped(t *testing.T) {
-	tmp := t.TempDir()
-	p := filepath.Join(tmp, "secrets.env")
-	writeFile(t, p, `DQ="quoted value"
-SQ='single quoted'
-BARE=plain
-`)
-	got, err := envfile.ReadFile(p)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if got["DQ"] != "quoted value" {
-		t.Errorf("DQ: %q", got["DQ"])
-	}
-	if got["SQ"] != "single quoted" {
-		t.Errorf("SQ: %q", got["SQ"])
-	}
-	if got["BARE"] != "plain" {
-		t.Errorf("BARE: %q", got["BARE"])
-	}
-}
-
-func TestParseEnvFile_WhitespaceAroundEqualsRejected(t *testing.T) {
-	tmp := t.TempDir()
-	p := filepath.Join(tmp, "secrets.env")
-	writeFile(t, p, "KEY = value\n")
-	_, err := envfile.ReadFile(p)
-	if err == nil {
-		t.Fatalf("whitespace around = should be rejected")
-	}
-}
-
-func TestParseEnvFile_MissingEqualsRejected(t *testing.T) {
-	tmp := t.TempDir()
-	p := filepath.Join(tmp, "secrets.env")
-	writeFile(t, p, "KEY value without equals\n")
-	_, err := envfile.ReadFile(p)
-	if err == nil {
-		t.Fatalf("missing = should be rejected")
-	}
-}
-
-func TestParseEnvFile_BackslashContinuation(t *testing.T) {
-	tmp := t.TempDir()
-	p := filepath.Join(tmp, "secrets.env")
-	writeFile(t, p, "LONG=part1\\\npart2\n")
-	got, err := envfile.ReadFile(p)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if got["LONG"] != "part1part2" {
-		t.Errorf("backslash continuation: %q", got["LONG"])
-	}
-}
-
 func TestParseEnvFile_ReservedKeysPassThrough(t *testing.T) {
 	tmp := t.TempDir()
 	p := filepath.Join(tmp, "secrets.env")

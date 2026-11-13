@@ -624,13 +624,13 @@ func writeEnvAtomic(path string, kv map[string]string) error {
 // would not read back unchanged bare. Callers check values before they get
 // here, so a refusal names only the key.
 func renderEnvForCmd(kv map[string]string) ([]byte, error) {
+	lines, refused := envfile.RenderSorted(kv)
+	if len(refused) > 0 {
+		return nil, fmt.Errorf("%s: value cannot be stored in secrets.env", refused[0])
+	}
 	var b strings.Builder
 	b.WriteString("# Written by agentcookie secret. See docs/spec-agentcookie-secrets-bus-v1.md.\n")
-	for _, k := range slices.Sorted(maps.Keys(kv)) {
-		line, err := envfile.RenderLine(k, kv[k])
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", k, err)
-		}
+	for _, line := range lines {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}

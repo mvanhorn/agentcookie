@@ -5,7 +5,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/mvanhorn/agentcookie/internal/envfile"
@@ -108,8 +107,8 @@ func WritePayload(homeDir string, payload map[string]map[string]string, sealingE
 		// `secret env` surfaces it (e.g. TESLA_CONFIG, TESLA_FLEET_KEY_FILE).
 		maps.Copy(safe, matRes.EnvAdditions)
 
-		lines, dropped := renderEnvLines(safe)
-		if dropped > 0 {
+		lines, refused := envfile.RenderSorted(safe)
+		if dropped := len(refused); dropped > 0 {
 			// Neither the keys nor the values are named: both came off the wire.
 			errs = append(errs, fmt.Errorf("%s: dropped %d key(s) whose values secrets.env cannot store unchanged (a newline, a trailing carriage return, both quote characters plus a backslash, or a line over 256 KiB)", cliName, dropped))
 		}
@@ -159,27 +158,6 @@ func WritePayload(homeDir string, payload map[string]map[string]string, sealingE
 		result.KeysWritten += len(lines)
 	}
 	return result, errs
-}
-
-// renderEnvLines renders each pair as a secrets.env line, sorted by key for
-// deterministic output. A value is quoted when it would not read back
-// unchanged bare, and a pair whose value cannot be stored is left out and
-// counted in dropped.
-func renderEnvLines(kv map[string]string) (lines []string, dropped int) {
-	keys := make([]string, 0, len(kv))
-	for k := range kv {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		line, err := envfile.RenderLine(k, kv[k])
-		if err != nil {
-			dropped++
-			continue
-		}
-		lines = append(lines, line)
-	}
-	return lines, dropped
 }
 
 // renderEnvFile produces the canonical secrets.env content from rendered

@@ -140,6 +140,9 @@ func TestSecretSet_RefusesToRewriteFilesItCannotReproduce(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.line) || !strings.Contains(err.Error(), "secret rm c") {
 				t.Fatalf("want a refusal naming %s and secret rm, got %v", tc.line, err)
 			}
+			if strings.Contains(err.Error(), "sk-live") || strings.Contains(err.Error(), `C:\x`) {
+				t.Fatalf("refusal echoes file text: %v", err)
+			}
 			if got := readFileString(t, busPath(home, "c")); got != tc.content {
 				t.Fatalf("file changed: %q", got)
 			}
