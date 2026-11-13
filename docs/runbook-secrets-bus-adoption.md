@@ -34,8 +34,10 @@ func loadAuth() *Config {
         filepath.Join(os.Getenv("HOME"), ".config", "my-pp-cli", "config.toml"),
     )
     if err != nil && !errors.Is(err, agentcookiesecret.ErrInvalidCLIName) {
-        // sealed file present but master key missing, or similar -
-        // fall through to your existing loader
+        // secrets.env malformed, sealed file present but master key
+        // missing, or similar. Load returns no map on error, so busEnv
+        // is nil here: your existing loader must re-apply its own
+        // fallback, including process env, for every key.
         log.Printf("agentcookiesecret: %v; falling back", err)
     }
 

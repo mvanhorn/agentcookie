@@ -2,6 +2,7 @@ package agentcookiesecret
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,6 +108,49 @@ func TestLoad_NoBusEntryFallsThroughToEnv(t *testing.T) {
 	}
 }
 
+func TestLoad_MalformedPlaintextBusIsAnError(t *testing.T) {
+	// Spec section 11.4: a syntax error in secrets.env must be returned,
+	// naming the file and the line, never skipped. Skipping it would hand
+	// the caller the stale env value the bus was meant to override.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("OAUTH_BEARER", "from-env-stale")
+	plainPath := filepath.Join(home, ".agentcookie", "secrets", "demo-cli", "secrets.env")
+	writeFile(t, plainPath, "# comment\nOAUTH_BEARER=from-bus-fresh\nNOT_A_PAIR\n")
+
+	env, err := Load("demo-cli")
+	if err == nil {
+		t.Fatalf("expected error for malformed secrets.env, got env: %v", env)
+	}
+	if !strings.Contains(err.Error(), plainPath) {
+		t.Errorf("error should name the file %s, got: %v", plainPath, err)
+	}
+	if !strings.Contains(err.Error(), "line 3") {
+		t.Errorf("error should name the offending line, got: %v", err)
+	}
+	if env != nil {
+		t.Errorf("Load should return no map on error, got: %v", env)
+	}
+}
+
+func TestLoad_UnreadablePlaintextBusIsAnError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads files regardless of mode")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	plainPath := filepath.Join(home, ".agentcookie", "secrets", "demo-cli", "secrets.env")
+	writeFile(t, plainPath, "FOO=bar\n")
+	if err := os.Chmod(plainPath, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	_, err := Load("demo-cli")
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("expected a permission error for unreadable secrets.env, got: %v", err)
+	}
+}
+
 func TestLoad_SealedFilePresentNoMasterKey(t *testing.T) {
 	// Place a sealed file (with arbitrary bytes; this test doesn't need
 	// real ciphertext, since ReadMasterKey will return ErrMasterKeyMissing
@@ -123,6 +167,56 @@ func TestLoad_SealedFilePresentNoMasterKey(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "master key") {
 		t.Errorf("error should mention master key, got: %v", err)
+	}
+}
+
+func TestLoad_SealedTwinMasksMalformedPlaintext(t *testing.T) {
+	// Spec section 5.2: with a sealed twin present, the plaintext sibling
+	// is ignored, so its syntax error must not be what Load reports.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".agentcookie", "secrets", "demo-cli")
+	writeFile(t, filepath.Join(dir, "secrets.env"), "NOT_A_PAIR\n")
+	writeFile(t, filepath.Join(dir, "secrets.env.sealed"), "opaque-sealed-bytes")
+
+	_, err := Load("demo-cli")
+	if err == nil {
+		t.Fatalf("expected the sealed-file error")
+	}
+	if strings.Contains(err.Error(), "secrets.env:") || strings.Contains(err.Error(), "missing '='") {
+		t.Errorf("malformed plaintext should be ignored when a sealed twin exists, got: %v", err)
+	}
+}
+
+func TestLoad_UnterminatedContinuationNamesLine(t *testing.T) {
+	// The continuation starts on line 2 and is still open at end of file
+	// on line 3. The error names both lines and never the key.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeFile(t, filepath.Join(home, ".agentcookie", "secrets", "demo-cli", "secrets.env"),
+		"A=1\nTOKEN=value\\\nmore\\\n")
+
+	_, err := Load("demo-cli")
+	if err == nil || !strings.Contains(err.Error(), "line 3") || !strings.Contains(err.Error(), "started on line 2") {
+		t.Errorf("expected error naming line 3 and start line 2, got: %v", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "TOKEN") {
+		t.Errorf("error leaks the key name: %v", err)
+	}
+}
+
+func TestLoad_OversizedLineNamesLine(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeFile(t, filepath.Join(home, ".agentcookie", "secrets", "demo-cli", "secrets.env"),
+		"A=1\nBIG="+strings.Repeat("x", 300*1024)+"\n")
+
+	_, err := Load("demo-cli")
+	if err == nil || !strings.Contains(err.Error(), "line 2") {
+		t.Errorf("expected error naming line 2, got: %v", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "xxxx") {
+		t.Errorf("error leaks line text: %v", err)
 	}
 }
 
@@ -171,5 +265,35 @@ func TestValidCLIName(t *testing.T) {
 		if got := validCLIName(tc.in); got != tc.want {
 			t.Errorf("validCLIName(%q): got %v, want %v", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestLoad_InvalidKeyErrorDoesNotEchoLine(t *testing.T) {
+	// A bare secret pasted on its own line parses as an invalid key name.
+	// The error must name the path and line but carry no text from the line.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	plainPath := filepath.Join(home, ".agentcookie", "secrets", "demo-cli", "secrets.env")
+	writeFile(t, plainPath, "A=1\nsk-live+SECRET/abc==\n")
+
+	env, err := Load("demo-cli")
+	if err == nil {
+		t.Fatalf("expected error, got env: %v", env)
+	}
+	if !strings.Contains(err.Error(), plainPath) || !strings.Contains(err.Error(), "line 2") {
+		t.Errorf("error should name the path and line 2, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), "sk-live") {
+		t.Errorf("error leaks text from the line: %v", err)
+	}
+}
+
+func TestParseEnvScanner_StripsLeadingBOM(t *testing.T) {
+	got, err := parseEnvBytes([]byte("\xef\xbb\xbfA=1\nB=2\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got["A"] != "1" || got["B"] != "2" || len(got) != 2 {
+		t.Errorf("BOM-prefixed file should load A=1,B=2, got: %v", got)
 	}
 }

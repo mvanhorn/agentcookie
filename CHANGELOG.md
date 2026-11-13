@@ -10,6 +10,14 @@
 - New `agentcookie secret env --no-aliases` prints only the stored keys, without the alias names `secret env` adds. Without the flag nothing changes.
 - CI runs the Python tests in the Linux job. The tests live in `clients/python/tests`, outside the installed package.
 
+### Go secrets reader reports a bad secrets.env instead of skipping it (#171, by @officialasishkumar)
+
+- `agentcookiesecret.Load` (and `LoadWithFallback`, `LoadDetailed`) silently skipped a `~/.agentcookie/secrets/<cli>/secrets.env` that did not parse or could not be read, so the CLI ran on process env or its fallback file, which the bus is meant to override. It now returns an error naming the file and, for a syntax error, the line, as spec section 11.4 requires. The error never includes text from the offending line, since that text can be a secret. A leading UTF-8 BOM is now ignored. A missing file is still not an error, and the fallback file is unchanged. On error `Load` returns no map, so a consumer that wants to keep running must re-apply its own fallback, including process env.
+
+### Built with Go 1.26.11
+
+- Go 1.26.11 fixes a net/http vulnerability (GO-2026-6859) that govulncheck reports as reachable from agentcookie's HTTP server and client paths.
+
 ### New `agentcookie profile-keepalive`: Claude in Chrome stays connected on every Claude account
 
 - Claude in Chrome pairs only with the Claude account it is signed into, so a Mac with two Claude accounts uses one Chrome profile per account. Chrome unloads a profile when its last window closes, and at launch it reopens only the last one used. After that, Claude in Chrome silently stopped working for the other account.
