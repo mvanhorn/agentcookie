@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -230,6 +231,19 @@ func runSinksRemove(out io.Writer, configDir, target string) error {
 		}
 	}
 
+	// Deleting a node that holds a YAML anchor would leave its aliases
+	// dangling and source.yaml unloadable, so refuse before changing
+	// anything when the file uses anchors or aliases.
+	if usesAnchors, err := yamlFileUsesAnchors(path); err != nil {
+		return err
+	} else if usesAnchors {
+		return fmt.Errorf("%s uses YAML anchors or aliases, so it is not safe to edit automatically; remove %s by hand", path, label)
+	}
+
+	// While teammates.yaml lists anyone, GET /pull refuses the legacy
+	// shared secret (authorizePull), whatever this command does with it.
+	teamActive := teammates != nil && len(teammates.Teammates) > 0
+
 	secret := cfg.Security.SharedSecret
 	secretUser := ""
 	if secret != "" {
@@ -240,24 +254,32 @@ func runSinksRemove(out io.Writer, configDir, target string) error {
 	// Delete keys before editing source.yaml: if a delete fails the sink
 	// is still listed and the command can be retried, and if the edit
 	// fails the sink is already cut off.
-	keyUser, keyDeleted := "", false
+	var deleted []string // key files deleted so far, for error messages
+	deletedNote := func() string {
+		if len(deleted) == 0 {
+			return ""
+		}
+		return " (already deleted: " + strings.Join(deleted, ", ") + ")"
+	}
+	keyUser, keyForTeammate := "", false
 	if removed.Peer != "" {
-		keyUser = peerKeyUser(configDir, removed.Peer, remaining, teammates)
+		keyUser, keyForTeammate = peerKeyUser(configDir, removed.Peer, remaining, teammates)
 		if keyUser == "" {
 			if err := keystore.Delete(configDir, removed.Peer); err != nil {
 				return fmt.Errorf("could not delete the key for %s, so %s is unchanged (fix the error and retry): %w", label, path, err)
 			}
-			keyDeleted = true
+			deleted = append(deleted, keyFileName(removed.Peer))
 		}
 	}
 	legacyKeyUser, legacyKeyDeleted := "", false
 	if legacyPeer != "" {
-		legacyKeyUser = peerKeyUser(configDir, legacyPeer, remaining, teammates)
+		legacyKeyUser, _ = peerKeyUser(configDir, legacyPeer, remaining, teammates)
 		if legacyKeyUser == "" && hasPeerKeyFile(configDir, legacyPeer) {
 			if err := keystore.Delete(configDir, legacyPeer); err != nil {
-				return fmt.Errorf("could not delete the key for legacy peer %s, so %s is unchanged (fix the error and retry): %w", legacyPeer, path, err)
+				return fmt.Errorf("could not delete the key for legacy peer %s, so %s is unchanged%s (fix the error and retry): %w", legacyPeer, path, deletedNote(), err)
 			}
 			legacyKeyDeleted = true
+			deleted = append(deleted, keyFileName(legacyPeer))
 		}
 	}
 
@@ -265,14 +287,14 @@ func runSinksRemove(out io.Writer, configDir, target string) error {
 		return removeSinkNode(doc, cfg, removed, len(remaining) == 0, dropSecret), nil
 	})
 	if err != nil {
-		if keyDeleted {
-			return fmt.Errorf("deleted the key for %s, but could not update %s (remove its entry by hand): %w", label, path, err)
+		if len(deleted) > 0 {
+			return fmt.Errorf("could not update %s, so remove %s from it by hand%s: %w", path, label, deletedNote(), err)
 		}
 		return err
 	}
 	if !changed {
-		if keyDeleted {
-			return fmt.Errorf("deleted the key for %s, but could not find it in %s to remove it (remove its entry by hand)", label, path)
+		if len(deleted) > 0 {
+			return fmt.Errorf("could not find %s in %s to remove it, so remove it by hand%s", label, path, deletedNote())
 		}
 		return fmt.Errorf("could not find %s in %s to remove it", label, path)
 	}
@@ -281,8 +303,13 @@ func runSinksRemove(out io.Writer, configDir, target string) error {
 	// the removed sink, so it keeps pushing to it until it restarts.
 	// pullContinues: the removed machine may still pass GET /pull with a
 	// credential this command kept, and a restart does not change that.
-	pushContinues := removed.Peer == "" || keyUser != ""
-	pullContinues := keyUser != "" || (secret != "" && !dropSecret)
+	// A teammate's key is kept, but a running source already skips legacy
+	// pushes to any peer teammates.yaml lists (SuppressPush).
+	pushContinues := removed.Peer == "" || (keyUser != "" && !keyForTeammate)
+	pullContinues := keyUser != "" || legacyKeyUser != "" || (secret != "" && !dropSecret && !teamActive)
+	// secretLive: the running source still accepts the dropped shared
+	// secret on GET /pull until it restarts.
+	secretLive := dropSecret && !teamActive
 
 	switch {
 	case removed.Peer == "":
@@ -293,8 +320,12 @@ func runSinksRemove(out io.Writer, configDir, target string) error {
 		fmt.Fprintf(out, "Removed sink %s from %s and deleted its key. A running source stops sealing for it at its next push, and GET /pull refuses that key now.\n", label, path)
 	}
 	switch {
-	case dropSecret:
+	case secretLive:
 		fmt.Fprintf(out, "Also removed security.shared_secret, which no remaining sink needs. A running source still accepts it on GET /pull until it restarts, so the restart is what cuts off a machine that holds it.\n")
+	case dropSecret:
+		fmt.Fprintf(out, "Also removed security.shared_secret, which no remaining sink needs. GET /pull already refuses it while %s lists teammates.\n", config.TeammatesFile)
+	case secret != "" && teamActive:
+		fmt.Fprintf(out, "security.shared_secret stays, because %s. GET /pull refuses it while %s lists teammates; rotate it if the removed machine has it, in case the teammates are removed later.\n", secretUser, config.TeammatesFile)
 	case secret != "":
 		fmt.Fprintf(out, "security.shared_secret stays, because %s. The removed machine can keep pulling with it, if it has it, until the secret is rotated.\n", secretUser)
 	}
@@ -303,7 +334,7 @@ func runSinksRemove(out io.Writer, configDir, target string) error {
 		case legacyKeyDeleted:
 			fmt.Fprintf(out, "Also removed the legacy sink:/peer: %s that the sinks: list was shadowing, and deleted keys/%s.json, so GET /pull refuses that key now.\n", legacyPeer, legacyPeer)
 		case legacyKeyUser != "":
-			fmt.Fprintf(out, "Also removed the legacy sink:/peer: %s that the sinks: list was shadowing. keys/%s.json stays, because %s still uses it.\n", legacyPeer, legacyPeer, legacyKeyUser)
+			fmt.Fprintf(out, "Also removed the legacy sink:/peer: %s that the sinks: list was shadowing. keys/%s.json stays, because %s still uses it, so %s can keep pulling with that key until it is rotated.\n", legacyPeer, legacyPeer, legacyKeyUser, legacyPeer)
 		default:
 			fmt.Fprintf(out, "Also removed the legacy sink:/peer: %s that the sinks: list was shadowing.\n", legacyPeer)
 		}
@@ -311,10 +342,14 @@ func runSinksRemove(out io.Writer, configDir, target string) error {
 	switch {
 	case pushContinues && pullContinues:
 		fmt.Fprintf(out, "A running source keeps pushing to it until you restart the source (%s). That stops the pushes only, not pulls with the kept credential.\n", sourceRestartHint)
-	case dropSecret && pushContinues:
+	case secretLive && pushContinues:
 		fmt.Fprintf(out, "Restart the source now (%s): until it restarts it keeps pushing to the sink and accepting the shared secret on GET /pull.\n", sourceRestartHint)
-	case dropSecret:
+	case secretLive:
 		fmt.Fprintf(out, "Restart the source now (%s): until it restarts it accepts the shared secret on GET /pull and lists the sink in its push list, status and doctor.\n", sourceRestartHint)
+	case pushContinues:
+		fmt.Fprintf(out, "A running source keeps pushing to it until it restarts, so restart the source now (%s).\n", sourceRestartHint)
+	case keyForTeammate:
+		fmt.Fprintf(out, "A running source already skips pushes to a listed teammate. Restart the source so it drops the sink from its push list, status and doctor (%s).\n", sourceRestartHint)
 	default:
 		fmt.Fprintf(out, "Restart the source so it drops the sink from its push list, status and doctor (%s).\n", sourceRestartHint)
 	}
@@ -369,22 +404,92 @@ func hasPeerKeyFile(configDir, peer string) bool {
 }
 
 // peerKeyUser names what else still seals or authenticates with peer's key,
-// or returns "" when nothing does and the key can be deleted.
-func peerKeyUser(configDir, peer string, remaining []config.SinkTarget, teammates *config.TeammatesConfig) string {
+// or returns "" when nothing does and the key can be deleted. Names are
+// compared by key file, case-insensitively, because keystore.Path
+// sanitizes them and macOS disks ignore case: "a/b" and "a_b" share a
+// file. teammate reports whether the user is a teammate in teammates.yaml.
+func peerKeyUser(configDir, peer string, remaining []config.SinkTarget, teammates *config.TeammatesConfig) (user string, teammate bool) {
 	for _, s := range remaining {
-		if s.Peer == peer {
-			return "sink " + sinkLabel(s)
+		if s.Peer != "" && sameKeyFile(s.Peer, peer) {
+			return "sink " + sinkLabel(s), false
 		}
 	}
-	if teammates != nil && teammates.Has(peer) {
-		return "teammate " + peer + " in " + config.TeammatesFile
+	if teammates != nil {
+		for _, tm := range teammates.Teammates {
+			if sameKeyFile(tm.Name, peer) {
+				return "teammate " + tm.Name + " in " + config.TeammatesFile, true
+			}
+		}
 	}
 	if fileExists(filepath.Join(configDir, "sink.yaml")) {
-		if sink, err := config.LoadSink(configDir); err == nil && sink.Peer.Hostname == peer {
-			return "this machine's sink.yaml"
+		if sink, err := config.LoadSink(configDir); err == nil && sink.Peer.Hostname != "" && sameKeyFile(sink.Peer.Hostname, peer) {
+			return "this machine's sink.yaml", false
+		}
+	}
+	// GET /pull accepts every key file, so another file holding the same
+	// key bytes keeps the credential valid after this one is deleted.
+	if other := duplicateKeyFile(configDir, peer); other != "" {
+		return other + ", which holds the same key,", false
+	}
+	return "", false
+}
+
+// sameKeyFile reports whether two peer names map to the same key file.
+func sameKeyFile(a, b string) bool {
+	return strings.EqualFold(keyFileName(a), keyFileName(b))
+}
+
+// keyFileName is the keys/ path, relative to the config dir, that peer's
+// key is stored at.
+func keyFileName(peer string) string {
+	p, err := keystore.Path("", peer)
+	if err != nil {
+		return ""
+	}
+	return p
+}
+
+// duplicateKeyFile returns another key file (keys/<name>.json) holding
+// the same key bytes as peer's, or "".
+func duplicateKeyFile(configDir, peer string) string {
+	k, err := keystore.Load(configDir, peer)
+	if err != nil {
+		return ""
+	}
+	names, err := keystore.List(configDir)
+	if err != nil {
+		return ""
+	}
+	for _, name := range names {
+		if sameKeyFile(name, peer) {
+			continue
+		}
+		if o, err := keystore.Load(configDir, name); err == nil && bytes.Equal(o.Key, k.Key) {
+			return keyFileName(name)
 		}
 	}
 	return ""
+}
+
+// yamlFileUsesAnchors reports whether the YAML file at path defines an
+// anchor or uses an alias anywhere.
+func yamlFileUsesAnchors(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return false, fmt.Errorf("parse %s: %w", path, err)
+	}
+	var walk func(n *yaml.Node) bool
+	walk = func(n *yaml.Node) bool {
+		if n.Anchor != "" || n.Kind == yaml.AliasNode {
+			return true
+		}
+		return slices.ContainsFunc(n.Content, walk)
+	}
+	return walk(&doc), nil
 }
 
 // removeSinkNode removes removed from source.yaml's node tree, keeping
