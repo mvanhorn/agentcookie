@@ -763,3 +763,28 @@ func TestSinksRemoveDuplicateKeyCheckIsCaseExactOnCaseSensitiveDisk(t *testing.T
 		t.Fatalf("keys/bot.json holds the same key, so GET /pull still accepts it; output must say so:\n%s", out.String())
 	}
 }
+
+func TestSinkStatusesReadLegacyTopLevelHistory(t *testing.T) {
+	// A single legacy sink, or a state file from before multi-sink, keeps
+	// its push history only in the top-level fields.
+	dir, home := t.TempDir(), t.TempDir()
+	writeSourceFile(t, dir, "sink:\n  url: http://legacy.test:9999/sync\nsecurity:\n  shared_secret: "+testSharedSecret+"\n")
+	pushed := time.Now().Add(-5 * time.Minute).UTC().Truncate(time.Second)
+	if err := state.NewWriter(state.SourcePath(home)).Save(&state.SourceState{
+		Role: "source", SinkURL: "http://legacy.test:9999/sync",
+		LastPush: pushed, TotalPushes: 4, TotalFailures: 1, LastError: "boom",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := SinkStatuses(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if r := rows[0]; !r.LastPush.Equal(pushed) || r.TotalPushes != 4 || r.TotalFailures != 1 || r.LastError != "boom" {
+		t.Fatalf("legacy row lost its top-level history: %+v", r)
+	}
+}

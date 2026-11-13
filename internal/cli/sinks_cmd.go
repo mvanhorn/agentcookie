@@ -142,6 +142,11 @@ func SinkStatuses(configDir, home string) ([]SinkStatus, error) {
 					break
 				}
 			}
+			// A single legacy sink, or a state file from before multi-sink,
+			// keeps its history only in the top-level fields.
+			if len(st.Sinks) == 0 && st.SinkURL != "" && st.SinkURL == s.URL {
+				row.LastPush, row.TotalPushes, row.TotalFailures, row.LastError = st.LastPush, st.TotalPushes, st.TotalFailures, st.LastError
+			}
 		}
 		rows = append(rows, row)
 	}
