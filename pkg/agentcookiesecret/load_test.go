@@ -247,3 +247,45 @@ func TestValidCLIName(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_InvalidKeyErrorDoesNotEchoLine(t *testing.T) {
+	// A bare secret pasted on its own line parses as an invalid key name.
+	// The error must name the path and line but carry no text from the line.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	plainPath := filepath.Join(home, ".agentcookie", "secrets", "demo-cli", "secrets.env")
+	writeFile(t, plainPath, "A=1\nsk-live+SECRET/abc==\n")
+
+	env, err := Load("demo-cli")
+	if err == nil {
+		t.Fatalf("expected error, got env: %v", env)
+	}
+	if !strings.Contains(err.Error(), plainPath) || !strings.Contains(err.Error(), "line 2") {
+		t.Errorf("error should name the path and line 2, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), "sk-live") {
+		t.Errorf("error leaks text from the line: %v", err)
+	}
+}
+
+func TestParseEnvScanner_StripsLeadingBOM(t *testing.T) {
+	got, err := parseEnvBytes([]byte("\xef\xbb\xbfA=1\nB=2\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got["A"] != "1" || got["B"] != "2" || len(got) != 2 {
+		t.Errorf("BOM-prefixed file should load A=1,B=2, got: %v", got)
+	}
+}
+
+func TestLoad_UnterminatedContinuationDoesNotEchoKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeFile(t, filepath.Join(home, ".agentcookie", "secrets", "demo-cli", "secrets.env"),
+		"A=1\nTOKEN=value\\\n")
+
+	_, err := Load("demo-cli")
+	if err == nil || !strings.Contains(err.Error(), "line 2") || strings.Contains(err.Error(), "TOKEN") {
+		t.Errorf("expected error naming line 2 without the key, got: %v", err)
+	}
+}

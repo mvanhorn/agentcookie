@@ -203,6 +203,10 @@ func parseEnvScanner(scanner *bufio.Scanner) (map[string]string, error) {
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Text()
+		if lineNum == 1 {
+			// Spec section 3.1: a leading UTF-8 BOM is permitted and ignored.
+			line = strings.TrimPrefix(line, "\ufeff")
+		}
 
 		if inContinuation {
 			if strings.HasSuffix(line, "\\") {
@@ -230,7 +234,7 @@ func parseEnvScanner(scanner *bufio.Scanner) (map[string]string, error) {
 			return nil, fmt.Errorf("line %d: whitespace around '=' is not allowed", lineNum)
 		}
 		if !validKeyName(key) {
-			return nil, fmt.Errorf("line %d: invalid key name %q", lineNum, key)
+			return nil, fmt.Errorf("line %d: invalid key name", lineNum)
 		}
 		value := after
 
@@ -247,7 +251,7 @@ func parseEnvScanner(scanner *bufio.Scanner) (map[string]string, error) {
 		return nil, fmt.Errorf("scan: %w", err)
 	}
 	if inContinuation {
-		return nil, fmt.Errorf("line %d: unterminated backslash continuation for key %q (started on line %d)", lineNum, pendingKey, pendingLine)
+		return nil, fmt.Errorf("line %d: unterminated backslash continuation (started on line %d)", lineNum, pendingLine)
 	}
 	return out, nil
 }
