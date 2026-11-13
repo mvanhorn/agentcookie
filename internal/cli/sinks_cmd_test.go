@@ -2,8 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +16,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/state"
+	"github.com/mvanhorn/agentcookie/internal/transport"
 )
 
 const testSharedSecret = "0123456789abcdef0123456789abcdef"
@@ -29,9 +35,12 @@ func readSourceFile(t *testing.T, configDir string) string {
 	return string(data)
 }
 
+// savePeerKey saves a key for peer that differs from every other peer's,
+// so a GET /pull signed with one peer's key cannot pass as another's.
 func savePeerKey(t *testing.T, configDir, peer string) {
 	t.Helper()
-	if err := keystore.Save(configDir, &keystore.PeerKey{Peer: peer, Key: bytes.Repeat([]byte{3}, 32), PairedAt: time.Now()}); err != nil {
+	key := sha256.Sum256([]byte(peer))
+	if err := keystore.Save(configDir, &keystore.PeerKey{Peer: peer, Key: key[:], PairedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -193,7 +202,7 @@ func TestSinksRemoveKeepsKeyStillInUse(t *testing.T) {
 	if !hasPeerKey(dir, "grokbot") {
 		t.Fatal("deleted a key a listed teammate still uses")
 	}
-	for _, want := range []string{"teammate grokbot", "keeps pushing to it until it restarts"} {
+	for _, want := range []string{"teammate grokbot", "can keep pulling with that key", "keeps pushing to it until you restart the source"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output missing %q:\n%s", want, out.String())
 		}
@@ -223,7 +232,7 @@ func TestSinksRemovePeerlessSinkDropsSharedSecret(t *testing.T) {
 	if err := runSinksRemove(&out, dir, "http://legacy.test:9999/sync"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "keeps pushing to it until it restarts") {
+	if !strings.Contains(out.String(), "still accepts it on GET /pull until it restarts") {
 		t.Fatalf("a running source still holds the shared secret; output must say to restart:\n%s", out.String())
 	}
 	cfg, err := config.LoadSource(dir)
@@ -356,5 +365,234 @@ func TestSinkStatusesReportKeysAndLastPush(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "retired") {
 		t.Fatalf("a sink no longer in source.yaml must not be listed:\n%s", out.String())
+	}
+}
+
+func pullPeerNames(configDir, legacy string) []string {
+	var names []string
+	for _, p := range pullAuthPeers(configDir, legacy) {
+		if !p.legacy {
+			names = append(names, p.name)
+		}
+	}
+	return names
+}
+
+// pullStatus sends one signed GET /pull to h and returns the status code.
+func pullStatus(t *testing.T, h http.Handler, secret string) int {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/pull", nil)
+	if err := transport.SignRequest(req, secret, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec.Code
+}
+
+func TestSinksRemoveRevokesPullForRemovedPeer(t *testing.T) {
+	dir := t.TempDir()
+	writeSourceFile(t, dir, multiSinkSource)
+	savePeerKey(t, dir, "mac-mini")
+	savePeerKey(t, dir, "grok-bot")
+
+	if err := runSinksRemove(&bytes.Buffer{}, dir, "grok-bot"); err != nil {
+		t.Fatal(err)
+	}
+	names := pullPeerNames(dir, "")
+	if slices.Contains(names, "grok-bot") {
+		t.Fatalf("GET /pull still accepts the removed sink's key: %v", names)
+	}
+	if !slices.Contains(names, "mac-mini") {
+		t.Fatalf("GET /pull lost the remaining sink's key: %v", names)
+	}
+}
+
+const pairedSinksWithSecret = "sinks:\n  - url: http://a.test:9999/sync\n    peer: a\n  - url: http://b.test:9999/sync\n    peer: b\nsecurity:\n  shared_secret: " + testSharedSecret + "\n"
+
+func TestSinksRemovePeeredSinkDropsUnusedSharedSecret(t *testing.T) {
+	dir := t.TempDir()
+	writeSourceFile(t, dir, pairedSinksWithSecret)
+	savePeerKey(t, dir, "a")
+	savePeerKey(t, dir, "b")
+	bKey, err := keystore.Load(dir, "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The handler a running `source --watch` built at startup, holding the
+	// shared secret it read then.
+	cache := newPullCache()
+	cache.Store([]byte(`{"protocol_version":2}`))
+	running := newPullMux(dir, testSharedSecret, cache, nil)
+
+	var out bytes.Buffer
+	if err := runSinksRemove(&out, dir, "b"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadSource(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Security.SharedSecret != "" {
+		t.Fatalf("shared secret kept although no remaining sink needs it:\n%s", readSourceFile(t, dir))
+	}
+	if !strings.Contains(out.String(), "still accepts it on GET /pull until it restarts") {
+		t.Fatalf("output must say a running source accepts the dropped secret until it restarts:\n%s", out.String())
+	}
+	for _, wrong := range []string{"receives nothing more", "is cut off now"} {
+		if strings.Contains(out.String(), wrong) {
+			t.Fatalf("output claims pull access already ended (%q):\n%s", wrong, out.String())
+		}
+	}
+
+	// The running source still serves the old shared secret: only a
+	// restart drops it. The removed sink's own key is refused at once.
+	if code := pullStatus(t, running, testSharedSecret); code != http.StatusOK {
+		t.Fatalf("running source refused the old shared secret (status %d); the restart-required note would be wrong", code)
+	}
+	if code := pullStatus(t, running, string(bKey.Key)); code != http.StatusUnauthorized {
+		t.Fatalf("running source accepted the removed sink's key: status %d", code)
+	}
+	if code := pullStatus(t, newPullMux(dir, cfg.Security.SharedSecret, cache, nil), testSharedSecret); code != http.StatusUnauthorized {
+		t.Fatalf("a restarted source still accepts the dropped shared secret: status %d", code)
+	}
+}
+
+func TestSinksRemoveKeepsSharedSecretWhenRemainingPeerKeyMissing(t *testing.T) {
+	dir := t.TempDir()
+	writeSourceFile(t, dir, pairedSinksWithSecret)
+	savePeerKey(t, dir, "b")
+
+	var out bytes.Buffer
+	if err := runSinksRemove(&out, dir, "b"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadSource(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Security.SharedSecret != testSharedSecret {
+		t.Fatal("shared secret dropped while sink a has no key here and may still fall back to it")
+	}
+	if !strings.Contains(out.String(), "until the secret is rotated") {
+		t.Fatalf("output must say the removed machine can still pull with the kept secret:\n%s", out.String())
+	}
+}
+
+func TestSinksRemovePeeredSinkKeepsSharedSecretForPeerlessSink(t *testing.T) {
+	dir := t.TempDir()
+	writeSourceFile(t, dir, "sinks:\n  - url: http://legacy.test:9999/sync\n  - url: http://a.test:9999/sync\n    peer: a\n  - url: http://b.test:9999/sync\n    peer: b\nsecurity:\n  shared_secret: "+testSharedSecret+"\n")
+	savePeerKey(t, dir, "a")
+	savePeerKey(t, dir, "b")
+
+	var out bytes.Buffer
+	if err := runSinksRemove(&out, dir, "b"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadSource(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Security.SharedSecret != testSharedSecret {
+		t.Fatal("shared secret dropped while a peerless sink still uses it")
+	}
+	for _, want := range []string{"http://legacy.test:9999/sync", "can keep pulling with it", "until the secret is rotated"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	if hasPeerKey(dir, "b") {
+		t.Fatal("removed sink's key not deleted")
+	}
+}
+
+func TestSinksRemoveKeyKeptForSinkYAMLSaysPullContinues(t *testing.T) {
+	dir := t.TempDir()
+	writeSourceFile(t, dir, "sinks:\n  - url: http://a.test:9999/sync\n    peer: a\n  - url: http://b.test:9999/sync\n    peer: b\n")
+	writeCLIFile(t, filepath.Join(dir, "sink.yaml"), "listen:\n  addr: 127.0.0.1:9999\npeer:\n  hostname: b\n")
+	savePeerKey(t, dir, "a")
+	savePeerKey(t, dir, "b")
+
+	var out bytes.Buffer
+	if err := runSinksRemove(&out, dir, "b"); err != nil {
+		t.Fatal(err)
+	}
+	if !hasPeerKey(dir, "b") {
+		t.Fatal("deleted the key this machine's sink.yaml uses")
+	}
+	if !slices.Contains(pullPeerNames(dir, ""), "b") {
+		t.Fatal("GET /pull no longer accepts b's key, but the test expects it kept")
+	}
+	for _, want := range []string{"can keep pulling", "rotated", "re-pair"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	// A restart does not take the kept key away, so the output must not
+	// suggest one ends access.
+	for _, wrong := range []string{"until it restarts", "restart the source now"} {
+		if strings.Contains(out.String(), wrong) {
+			t.Fatalf("output implies a restart revokes the kept key (%q):\n%s", wrong, out.String())
+		}
+	}
+}
+
+func TestSinksRemoveLastListedSinkDeletesShadowedLegacyPeerKey(t *testing.T) {
+	dir := t.TempDir()
+	writeSourceFile(t, dir, "sinks:\n  - url: http://new.test:9999/sync\n    peer: new\nsink:\n  url: http://c.test:9999/sync\npeer:\n  hostname: c\n")
+	writeTeammatesFile(t, dir, "teammates:\n  - name: grokbot\n")
+	savePeerKey(t, dir, "new")
+	savePeerKey(t, dir, "c")
+
+	var out bytes.Buffer
+	if err := runSinksRemove(&out, dir, "new"); err != nil {
+		t.Fatal(err)
+	}
+	if hasPeerKey(dir, "c") {
+		t.Fatal("keys/c.json left behind after its legacy peer: was removed; GET /pull would still accept it")
+	}
+	if slices.Contains(pullPeerNames(dir, ""), "c") {
+		t.Fatal("GET /pull still accepts the shadowed legacy peer's key")
+	}
+	if !strings.Contains(out.String(), "keys/c.json") {
+		t.Fatalf("output must mention the legacy peer key it deleted:\n%s", out.String())
+	}
+}
+
+func TestSinkStatusesJSONIsArrayWhenEmpty(t *testing.T) {
+	dir, home := t.TempDir(), t.TempDir()
+	writeSourceFile(t, dir, "chrome:\n  db_path: /tmp/Cookies\n")
+	writeTeammatesFile(t, dir, "teammates:\n  - name: grokbot\n")
+
+	rows, err := SinkStatuses(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "[]" {
+		t.Fatalf("sinks list --json = %s, want []", data)
+	}
+}
+
+func TestSinksRemoveKeepsLeadingComments(t *testing.T) {
+	dir := t.TempDir()
+	writeSourceFile(t, dir, "# top of the file\n# about these sinks\nsinks:\n  - url: http://new.test:9999/sync\n    peer: new\nchrome:\n  db_path: /tmp/Cookies\n")
+	writeTeammatesFile(t, dir, "teammates:\n  - name: grokbot\n")
+	savePeerKey(t, dir, "new")
+
+	if err := runSinksRemove(&bytes.Buffer{}, dir, "new"); err != nil {
+		t.Fatal(err)
+	}
+	body := readSourceFile(t, dir)
+	for _, want := range []string{"# top of the file", "# about these sinks", "db_path: /tmp/Cookies"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("lost %q:\n%s", want, body)
+		}
+	}
+	if _, err := config.LoadSource(dir); err != nil {
+		t.Fatalf("source.yaml no longer loads: %v\n%s", err, body)
 	}
 }

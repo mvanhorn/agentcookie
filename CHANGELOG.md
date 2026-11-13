@@ -2,13 +2,14 @@
 
 ## [Unreleased]
 
-### New `agentcookie sinks`: list the sinks a source feeds, and remove one
+### New `agentcookie sinks`: list the sinks a source feeds, and remove one (#169, by @officialasishkumar)
 
-- `agentcookie sinks list` shows each sink in `source.yaml` with its peer, URL, whether its paired key is present, and its last push. `--json` prints the same rows. A sink whose key is missing says how to pair it again.
-- `agentcookie sinks remove <peer|url>` stops feeding a sink: it removes the entry from `source.yaml` (comments and other keys are kept, and the file keeps its mode) and deletes `keys/<peer>.json`. Until now this was a hand edit plus a manual key delete.
-- Deleting the key is what cuts a paired sink off: a running source reads it on every push and on every `GET /pull`, so the sink receives nothing more without a restart. The running source keeps reporting it as failing until it restarts.
-- The key is kept when another sink, a teammate in `teammates.yaml`, or this machine's `sink.yaml` still uses that name. Removing a sink without a peer also removes `security.shared_secret` when no other sink uses it. In these cases the running source still holds the credential and keeps pushing to the sink until it restarts, and the command says so.
-- Removing the last entry of a `sinks:` list also removes a legacy `sink:`/`peer:` it was shadowing, so that sink does not come back. The only sink cannot be removed unless `teammates.yaml` lists a teammate, since a source with nothing to deliver to does not start.
+- `agentcookie sinks list` shows each sink in `source.yaml` with its peer, URL, whether its paired key is present, and its last push. `--json` prints the same rows, and an empty array on a source that delivers to teammates only. A sink whose key is missing says how to pair it again.
+- `agentcookie sinks remove <peer|url>` stops feeding a sink: it removes the entry from `source.yaml` (comments, including the file's leading ones, and other keys are kept, and the file keeps its mode) and deletes `keys/<peer>.json`. Until now this was a hand edit plus a manual key delete.
+- Deleting the key cuts a paired sink off that key: a running source reads it on every push and on every `GET /pull`, so it stops sealing for the sink at its next push and refuses that key on `GET /pull` at once. The running source keeps reporting the sink as failing until it restarts.
+- The key is kept when another sink, a teammate in `teammates.yaml`, or this machine's `sink.yaml` still uses that name. Then the removed sink can keep pulling with it, even after a restart, until the key is rotated and every legitimate user of it is re-paired, and the command says so.
+- `security.shared_secret` is removed only when no remaining sink lacks a peer and every remaining paired sink still has its key. A running source still accepts it on `GET /pull` until it restarts, so the restart is what cuts off a machine that holds it. When it is kept, the command says a removed machine that has it can keep pulling with it until it is rotated.
+- Removing the last entry of a `sinks:` list also removes a legacy `sink:`/`peer:` it was shadowing, so that sink does not come back, and deletes that peer's key unless something else uses it. The only sink cannot be removed unless `teammates.yaml` lists a teammate, since a source with nothing to deliver to does not start.
 - Cookies and secrets a removed sink already received stay valid there until they expire or you sign out of those sites.
 
 ### New `agentcookie profile-keepalive`: Claude in Chrome stays connected on every Claude account
