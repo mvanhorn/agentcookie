@@ -28,7 +28,7 @@ func TestValidate_RejectsBadSchemaVersion(t *testing.T) {
 }
 
 func TestValidate_RejectsBadSlug(t *testing.T) {
-	tests := []string{"Foo", "foo_bar", "-leading", "trailing-", "foo..bar"}
+	tests := []string{"Foo", "foo_bar", "-leading", "trailing-", "foo..bar", "a--b"}
 	for _, name := range tests {
 		t.Run(name, func(t *testing.T) {
 			m := &Manifest{SchemaVersion: 2, Name: name, DisplayName: "X", Secrets: Secrets{File: &SecretsFile{Path: "~/x"}}}
