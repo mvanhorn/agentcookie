@@ -260,7 +260,7 @@ func TestSecretEnv_QuotesForShellAndReaders(t *testing.T) {
 	}
 }
 
-func TestSecretEnv_LeavesOutValueNoQuotingServes(t *testing.T) {
+func TestSecretEnv_LeavesOutValueNoQuotingServesAndFails(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	writeSecrets(t, home, "c", "OK=1\nBAD=\"it's $HOME\"\n")
@@ -269,11 +269,52 @@ func TestSecretEnv_LeavesOutValueNoQuotingServes(t *testing.T) {
 	cmd.SetOut(buf)
 	cmd.SetErr(errBuf)
 	t.Cleanup(func() { cmd.SetErr(nil) })
-	if err := runSecretEnv(cmd, []string{"c"}); err != nil {
+	err := runSecretEnv(cmd, []string{"c"})
+	if err == nil || !strings.Contains(err.Error(), "BAD") {
+		t.Fatalf("leaving a key out must fail and name it, got %v", err)
+	}
+	if strings.Contains(err.Error()+errBuf.String(), "HOME") {
+		t.Fatalf("value leaked: %v / %q", err, errBuf.String())
+	}
+	if buf.String() != "OK=1\n" || !strings.Contains(errBuf.String(), "BAD") {
+		t.Fatalf("stdout %q, stderr %q", buf.String(), errBuf.String())
+	}
+}
+
+func TestSecretEnv_NoAliasesPrintsValuesVerbatim(t *testing.T) {
+	// The released Python reader parses this output and keeps each value
+	// as printed, so it must not gain shell quoting.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSecrets(t, home, "c", "Q='\"tok\"'\nSP='a b'\nBAD=\"it's $HOME\"\n")
+	secretEnvNoAliases = true
+	t.Cleanup(func() { secretEnvNoAliases = false })
+	want := "BAD=it's $HOME\nQ=\"tok\"\nSP=a b\n"
+	if got := envLines(t, "c"); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestSecretAlias_RefusesUnreproducibleAliasesFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSecrets(t, home, "c", "K=v\n")
+	path := aliasesPath("c")
+	const content = "A=B\nNOT_A_PAIR\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if buf.String() != "OK=1\n" || !strings.Contains(errBuf.String(), "BAD") || strings.Contains(errBuf.String(), "HOME") {
-		t.Fatalf("stdout %q, stderr %q", buf.String(), errBuf.String())
+	alias := secretAliasCmd
+	alias.SetOut(&bytes.Buffer{})
+	err := runSecretAlias(alias, []string{"c", "X", "K"})
+	if err == nil || !strings.Contains(err.Error(), "line 2") || !strings.Contains(err.Error(), "delete that file") {
+		t.Fatalf("want a refusal naming line 2 and the alias file, got %v", err)
+	}
+	if strings.Contains(err.Error(), "secret rm") {
+		t.Fatalf("recovery for aliases.env must not suggest removing every secret: %v", err)
+	}
+	if got := readFileString(t, path); got != content {
+		t.Fatalf("aliases.env changed: %q", got)
 	}
 }
 

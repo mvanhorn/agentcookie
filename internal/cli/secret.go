@@ -283,7 +283,7 @@ func runSecretSet(cmd *cobra.Command, args []string) error {
 	}
 
 	envPath := filepath.Join(secretsRoot(), cliName, "secrets.env")
-	existing, err := readEnvForRewrite(envPath, cliName)
+	existing, err := readEnvForRewrite(envPath, busRecovery(cliName))
 	if err != nil {
 		return err
 	}
@@ -315,7 +315,7 @@ func runSecretRm(cmd *cobra.Command, args []string) error {
 	}
 	key := args[1]
 	envPath := filepath.Join(cliDir, "secrets.env")
-	existing, err := readEnvForRewrite(envPath, cliName)
+	existing, err := readEnvForRewrite(envPath, busRecovery(cliName))
 	if err != nil {
 		return err
 	}
@@ -374,7 +374,7 @@ func runSecretImportFrom(cmd *cobra.Command, args []string) error {
 	}
 
 	envPath := filepath.Join(secretsRoot(), secretImportAs, "secrets.env")
-	existing, err := readEnvForRewrite(envPath, secretImportAs)
+	existing, err := readEnvForRewrite(envPath, busRecovery(secretImportAs))
 	if err != nil {
 		return err
 	}
@@ -576,8 +576,9 @@ func readEnvKeysOnly(path string) ([]string, error) {
 // readEnvForRewrite reads a file that a command is about to rewrite. A
 // missing file starts empty. A file the rewrite could not reproduce is
 // refused rather than silently changed: one that does not parse, uses a
-// backslash continuation, or holds a value the writer would refuse.
-func readEnvForRewrite(path, cliName string) (map[string]string, error) {
+// backslash continuation, or holds a value the writer would refuse. The
+// refusal ends with recovery, the way out for this particular file.
+func readEnvForRewrite(path, recovery string) (map[string]string, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return map[string]string{}, nil
@@ -588,21 +589,26 @@ func readEnvForRewrite(path, cliName string) (map[string]string, error) {
 	defer f.Close()
 	entries, err := envfile.Parse(f, envfile.Options{})
 	if err != nil {
-		return nil, refuseRewrite(path, cliName, err.Error())
+		return nil, refuseRewrite(path, recovery, err.Error())
 	}
 	for _, e := range entries {
 		if e.Continued {
-			return nil, refuseRewrite(path, cliName, fmt.Sprintf("line %d: uses a backslash continuation", e.Line))
+			return nil, refuseRewrite(path, recovery, fmt.Sprintf("line %d: uses a backslash continuation", e.Line))
 		}
 		if _, err := envfile.RenderLine(e.Key, e.Value); err != nil {
-			return nil, refuseRewrite(path, cliName, fmt.Sprintf("line %d: %v", e.Line, err))
+			return nil, refuseRewrite(path, recovery, fmt.Sprintf("line %d: %v", e.Line, err))
 		}
 	}
 	return envfile.ToMap(entries), nil
 }
 
-func refuseRewrite(path, cliName, detail string) error {
-	return fmt.Errorf("%s %s; not rewriting it, since its contents would not survive. Edit that line, or run `agentcookie secret rm %s` and set the keys again", path, detail, cliName)
+func refuseRewrite(path, recovery, detail string) error {
+	return fmt.Errorf("%s %s; not rewriting it, since its contents would not survive. Edit that line, %s", path, detail, recovery)
+}
+
+// busRecovery is the refusal's way out for a CLI's secrets.env.
+func busRecovery(cliName string) string {
+	return fmt.Sprintf("or run `agentcookie secret rm %s` and set the keys again", cliName)
 }
 
 // writeEnvAtomic mirrors secretsbus.atomicWrite via a tiny helper. The
@@ -697,15 +703,32 @@ func runSecretEnv(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Each value is quoted so that eval and the reader libraries both get
-	// it unchanged. A value no quoting serves for both is left out.
+	// --no-aliases is the reader libraries' format: each value verbatim
+	// after the first '=', which is lossless because no stored value holds
+	// a newline. Released Python readers parse it that way, so it must not
+	// change.
+	if secretEnvNoAliases {
+		for _, k := range slices.Sorted(maps.Keys(kv)) {
+			fmt.Fprintf(cmd.OutOrStdout(), "%s=%s\n", k, kv[k])
+		}
+		return nil
+	}
+
+	// Otherwise the output is for eval: each value is quoted so the shell
+	// assigns it as text. A value no quoting can carry is left out, and the
+	// command fails after printing the rest so the omission is not silent.
+	var leftOut []string
 	for _, k := range slices.Sorted(maps.Keys(kv)) {
 		v, err := envfile.RenderShellValue(kv[k])
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "agentcookie secret env: left out %s: %v\n", k, err)
+			leftOut = append(leftOut, k)
 			continue
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "%s=%s\n", k, v)
+	}
+	if len(leftOut) > 0 {
+		return fmt.Errorf("left out %d key(s) that cannot be printed safely for eval: %s; read them with `agentcookie secret get`", len(leftOut), strings.Join(leftOut, ", "))
 	}
 	return nil
 }
@@ -810,7 +833,7 @@ func runSecretAlias(cmd *cobra.Command, args []string) error {
 	if !envfile.ValidKey(declared) || !envfile.ValidKey(stored) {
 		return fmt.Errorf("env var names must be valid identifiers (A-Z, 0-9, underscore)")
 	}
-	aliases, err := readEnvForRewrite(aliasesPath(cliName), cliName)
+	aliases, err := readEnvForRewrite(aliasesPath(cliName), "or delete that file and set the aliases again")
 	if err != nil {
 		return err
 	}

@@ -177,11 +177,11 @@ def _unseal(cli_name: str, sealed_path: str) -> Dict[str, str]:
             detail += " (upgrade agentcookie to a release with `secret env --no-aliases`)"
         raise AgentcookieSecretError(f"unseal {sealed_path}: {detail}")
 
-    # `secret env` prints one KEY=VALUE line per key. A value is either bare
-    # or wrapped in one pair of quotes that a shell and this reader both
-    # remove (agentcookie quotes it so `eval` is safe), so split on the
-    # first '=' and strip that one pair. Output is decoded by hand because
-    # text mode would turn a '\r' inside a value into a line break.
+    # `secret env` prints each parsed value verbatim as KEY=VALUE, one line
+    # per key, so split on the first '=' and leave quotes alone: they were
+    # already stripped when agentcookie parsed the file. Output is decoded
+    # by hand because text mode would turn a '\r' inside a value into a
+    # line break.
     out: Dict[str, str] = {}
     lines = proc.stdout.decode("utf-8", errors="surrogateescape").split("\n")
     if lines[-1] == "":
@@ -194,7 +194,7 @@ def _unseal(cli_name: str, sealed_path: str) -> Dict[str, str]:
                 f"unseal {sealed_path}: line {line_num} of `{binary} secret env` "
                 "output is not KEY=VALUE"
             )
-        out[key] = _strip_quotes(value)
+        out[key] = value
     return out
 
 

@@ -103,19 +103,26 @@ func TestRenderShellValue(t *testing.T) {
 	if err != nil {
 		t.Skip("no sh on PATH")
 	}
+	// zsh, the macOS login shell, expands more than sh in assignments.
+	shells := []string{sh}
+	if zsh, err := exec.LookPath("zsh"); err == nil {
+		shells = append(shells, zsh)
+	}
 	for _, v := range []string{
-		"abc", "a b", `$(id)`, "x;y", `"tok"`, `'it'`, `C:\x\`, "a=b", "~", "x\ry", "`id`", "", "it's",
+		"abc", "a b", `$(id)`, "x;y", `"tok"`, `'it'`, `C:\x\`, "a=b", "~", "x\ry", "`id`", "", "it's", "=ls", "==x",
 	} {
 		rv, err := RenderShellValue(v)
 		if err != nil {
 			t.Fatalf("RenderShellValue(%q): %v", v, err)
 		}
-		out, err := exec.Command(sh, "-c", `eval "$1"; printf %s "$K"`, "sh", "K="+rv).Output()
-		if err != nil {
-			t.Fatalf("eval K=%s: %v", rv, err)
-		}
-		if string(out) != v {
-			t.Errorf("shell read K=%s as %q, want %q", rv, out, v)
+		for _, shell := range shells {
+			out, err := exec.Command(shell, "-c", `eval "$1"; printf %s "$K"`, "sh", "K="+rv).Output()
+			if err != nil {
+				t.Fatalf("%s eval K=%s: %v", shell, rv, err)
+			}
+			if string(out) != v {
+				t.Errorf("%s read K=%s as %q, want %q", shell, rv, out, v)
+			}
 		}
 		got, err := ParseBytes([]byte("K=" + rv + "\n"))
 		if err != nil || got["K"] != v {

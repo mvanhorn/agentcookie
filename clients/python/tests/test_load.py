@@ -210,18 +210,13 @@ class SealedTest(_BusTestCase):
             (res.env["PLAIN_ONLY"], res.sources["PLAIN_ONLY"]), ("p", Source.BUS_PLAIN)
         )
 
-    def test_sealed_output_quotes_are_stripped_once(self):
-        # agentcookie quotes a value for the shell; one pair of quotes comes
-        # off, so a stored value that itself has quotes, '=' or a '\r'
-        # comes back as stored.
+    def test_sealed_output_is_taken_verbatim(self):
+        # agentcookie already stripped quotes when it parsed the file, so a
+        # value that still has quotes, '=' or a '\r' must come back as is.
         self.write(self.bus_path("demo-cli", "secrets.env.sealed"), "opaque")
-        self.fake_agentcookie(
-            stdout="QUOTED='\"kept\"'\nSPACED='a b'\nAPOS=\"it's\"\nEQ=a=b\nCR='x\ry'\nEMPTY=\n"
-        )
+        self.fake_agentcookie(stdout="QUOTED=\"kept\"\nEQ=a=b\nCR=x\ry\nEMPTY=\n")
         env = load("demo-cli")
         self.assertEqual(env["QUOTED"], '"kept"')
-        self.assertEqual(env["SPACED"], "a b")
-        self.assertEqual(env["APOS"], "it's")
         self.assertEqual(env["EQ"], "a=b")
         self.assertEqual(env["CR"], "x\ry")
         self.assertEqual(env["EMPTY"], "")

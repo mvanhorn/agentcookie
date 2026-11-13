@@ -63,10 +63,13 @@ shell-assignable lines:
 eval "$(agentcookie secret env tesla-pp-cli)"
 ```
 
-Each value is quoted for the shell, so a synced value containing spaces,
-`$(...)` or `;` is assigned as text and never runs. A value that no quoting
-can carry safely (one with both a `'` and one of `"`, `\`, `$` or a backtick)
-is left out, with a note on stderr naming the key.
+Each value is quoted for the shell (sh, bash or zsh), so a synced value
+containing spaces, `$(...)` or `;` is assigned as text and never runs. A value
+that no quoting can carry safely (one with both a `'` and one of `"`, `\`,
+`$` or a backtick) is left out with a note on stderr naming the key, and the
+command exits non-zero. Read such a value with `agentcookie secret get`.
+`secret env --no-aliases` prints values verbatim for the reader libraries and
+is not meant for `eval`.
 
 Code can read the same files with a reader library instead of a shell:
 `pkg/agentcookiesecret` for Go, and `agentcookie_secret` in `clients/python`

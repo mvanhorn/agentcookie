@@ -238,9 +238,9 @@ func RenderSorted(kv map[string]string) (lines, refused []string) {
 	return lines, refused
 }
 
-// RenderShellValue returns v in a form that a POSIX shell (`eval`) and the
-// v1 readers both read back as v. A value made only of characters the shell
-// treats literally is left bare. Otherwise it is single-quoted when it has no
+// RenderShellValue returns v in a form that a POSIX shell or zsh (`eval`)
+// and the v1 readers both read back as v. A value made only of characters
+// the shell treats literally, and not starting with '=', is left bare. Otherwise it is single-quoted when it has no
 // single quote, and double-quoted when it has none of `"`, `\`, `$` or a
 // backtick, the characters a shell interprets inside double quotes. Anything
 // else is refused.
@@ -274,6 +274,10 @@ func bareSafe(v string) bool {
 }
 
 func shellBare(v string) bool {
+	// zsh expands a leading '=' in an assignment to a command path.
+	if strings.HasPrefix(v, "=") {
+		return false
+	}
 	for i := 0; i < len(v); i++ {
 		c := v[i]
 		switch {
