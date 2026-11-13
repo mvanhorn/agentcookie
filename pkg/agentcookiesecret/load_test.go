@@ -189,14 +189,34 @@ func TestLoad_SealedTwinMasksMalformedPlaintext(t *testing.T) {
 }
 
 func TestLoad_UnterminatedContinuationNamesLine(t *testing.T) {
+	// The continuation starts on line 2 and is still open at end of file
+	// on line 3. The error names both lines and never the key.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	writeFile(t, filepath.Join(home, ".agentcookie", "secrets", "demo-cli", "secrets.env"),
-		"A=1\nTOKEN=value\\\n")
+		"A=1\nTOKEN=value\\\nmore\\\n")
+
+	_, err := Load("demo-cli")
+	if err == nil || !strings.Contains(err.Error(), "line 3") || !strings.Contains(err.Error(), "started on line 2") {
+		t.Errorf("expected error naming line 3 and start line 2, got: %v", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "TOKEN") {
+		t.Errorf("error leaks the key name: %v", err)
+	}
+}
+
+func TestLoad_OversizedLineNamesLine(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeFile(t, filepath.Join(home, ".agentcookie", "secrets", "demo-cli", "secrets.env"),
+		"A=1\nBIG="+strings.Repeat("x", 300*1024)+"\n")
 
 	_, err := Load("demo-cli")
 	if err == nil || !strings.Contains(err.Error(), "line 2") {
 		t.Errorf("expected error naming line 2, got: %v", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "xxxx") {
+		t.Errorf("error leaks line text: %v", err)
 	}
 }
 
@@ -275,17 +295,5 @@ func TestParseEnvScanner_StripsLeadingBOM(t *testing.T) {
 	}
 	if got["A"] != "1" || got["B"] != "2" || len(got) != 2 {
 		t.Errorf("BOM-prefixed file should load A=1,B=2, got: %v", got)
-	}
-}
-
-func TestLoad_UnterminatedContinuationDoesNotEchoKey(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeFile(t, filepath.Join(home, ".agentcookie", "secrets", "demo-cli", "secrets.env"),
-		"A=1\nTOKEN=value\\\n")
-
-	_, err := Load("demo-cli")
-	if err == nil || !strings.Contains(err.Error(), "line 2") || strings.Contains(err.Error(), "TOKEN") {
-		t.Errorf("expected error naming line 2 without the key, got: %v", err)
 	}
 }

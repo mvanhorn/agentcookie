@@ -130,6 +130,13 @@ func LoadDetailed(cliName string, fallbackPath string) (*LoadResult, error) {
 	sealedPresent := sealedStatErr == nil
 
 	plain, err := readEnvFile(plainPath)
+	if !sealedPresent {
+		// A writer seals by creating the sealed file and then removing the
+		// plaintext one. Check again so a seal that lands between the first
+		// stat and the plaintext read is still found.
+		_, sealedStatErr = os.Stat(sealedPath)
+		sealedPresent = sealedStatErr == nil
+	}
 	switch {
 	case err == nil:
 		for k, v := range plain {
@@ -248,7 +255,8 @@ func parseEnvScanner(scanner *bufio.Scanner) (map[string]string, error) {
 		out[key] = stripQuotes(value)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan: %w", err)
+		// The scanner stops on the line after the last one it returned.
+		return nil, fmt.Errorf("line %d: scan: %w", lineNum+1, err)
 	}
 	if inContinuation {
 		return nil, fmt.Errorf("line %d: unterminated backslash continuation (started on line %d)", lineNum, pendingLine)
