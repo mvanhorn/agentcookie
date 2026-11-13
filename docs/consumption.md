@@ -63,6 +63,12 @@ shell-assignable lines:
 eval "$(agentcookie secret env tesla-pp-cli)"
 ```
 
+Code can read the same files with a reader library instead of a shell:
+`pkg/agentcookiesecret` for Go, and `agentcookie_secret` in `clients/python`
+for Python (`from agentcookie_secret import load; env = load("tesla-pp-cli")`).
+Both put bus values ahead of process env and return the stored key names;
+aliases below are applied only by `secret env`.
+
 ### Key-name mapping
 
 A CLI reads its token from a specific env var (for example tesla-pp-cli reads

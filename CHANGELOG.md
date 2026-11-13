@@ -13,6 +13,14 @@
 - A `source.yaml` that uses YAML anchors or aliases is refused before anything changes, since removing an anchored entry would leave it unloadable. While `teammates.yaml` lists teammates, `GET /pull` already refuses `security.shared_secret`, and the output says so.
 - Cookies and secrets a removed sink already received stay valid there until they expire or you sign out of those sites.
 
+### Python reader for the secrets bus (#170, by @officialasishkumar)
+
+- New `agentcookie_secret` package in `clients/python`, the Python twin of the Go reader `pkg/agentcookiesecret`. `load("my-pp-cli")` returns a dict with the same priority: sealed bus file, plaintext bus file, an optional `fallback_path`, then process env. `load_detailed` also says where each key came from. It has no dependencies. Install with `pip install "git+https://github.com/mvanhorn/agentcookie#subdirectory=clients/python"`.
+- It parses `secrets.env` itself with the spec's strict grammar. A syntax error or an unreadable file raises `AgentcookieSecretError` naming the file and the line, and is never skipped (spec section 11.4), unless a sealed file exists, which wins as in the Go reader. Errors never include text from the offending line. An invalid CLI name raises `InvalidCLINameError` before any file is read.
+- A sealed file is unsealed by running `agentcookie secret env --no-aliases <cli>`, so the master key never leaves agentcookie's Keychain item. If the binary is not on `PATH`, or unsealing fails, it raises with the sealed file's path instead of falling back to the plaintext file.
+- New `agentcookie secret env --no-aliases` prints only the stored keys, without the alias names `secret env` adds. Without the flag nothing changes. `secret env` now ignores a leading BOM and drops the `\r` of CRLF lines, as the readers do.
+- CI runs the Python tests in the Linux job. The tests live in `clients/python/tests`, outside the installed package.
+
 ### Go secrets reader reports a bad secrets.env instead of skipping it (#171, by @officialasishkumar)
 
 - `agentcookiesecret.Load` (and `LoadWithFallback`, `LoadDetailed`) silently skipped a `~/.agentcookie/secrets/<cli>/secrets.env` that did not parse or could not be read, so the CLI ran on process env or its fallback file, which the bus is meant to override. It now returns an error naming the file and, for a syntax error, the line, as spec section 11.4 requires. The error never includes text from the offending line, since that text can be a secret. A leading UTF-8 BOM is now ignored. A missing file is still not an error, and the fallback file is unchanged. On error `Load` returns no map, so a consumer that wants to keep running must re-apply its own fallback, including process env.
