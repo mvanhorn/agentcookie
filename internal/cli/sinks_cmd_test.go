@@ -788,3 +788,24 @@ func TestSinkStatusesReadLegacyTopLevelHistory(t *testing.T) {
 		t.Fatalf("legacy row lost its top-level history: %+v", r)
 	}
 }
+
+func TestSinksRemoveKeyAliasOfTeammateStillSaysPushContinues(t *testing.T) {
+	// "mini box" shares keys/mini_box.json with teammate mini_box, but the
+	// source skips pushes only to an exact teammate name.
+	dir := t.TempDir()
+	writeSourceFile(t, dir, "sinks:\n  - url: http://a.test:9999/sync\n    peer: a\n  - url: http://box.test:9999/sync\n    peer: mini box\n")
+	writeTeammatesFile(t, dir, "teammates:\n  - name: mini_box\n")
+	savePeerKey(t, dir, "a")
+	savePeerKey(t, dir, "mini_box")
+
+	var out bytes.Buffer
+	if err := runSinksRemove(&out, dir, "mini box"); err != nil {
+		t.Fatal(err)
+	}
+	if !hasPeerKey(dir, "mini_box") {
+		t.Fatal("deleted the key file teammate mini_box uses")
+	}
+	if strings.Contains(out.String(), "already skips pushes") || !strings.Contains(out.String(), "keeps pushing") {
+		t.Fatalf("a running source still pushes to %q; output must say so:\n%s", "mini box", out.String())
+	}
+}

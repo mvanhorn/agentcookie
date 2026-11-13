@@ -438,7 +438,9 @@ func hasPeerKeyFile(configDir, peer string) bool {
 // peerKeyUser names what else still seals or authenticates with peer's key,
 // or returns "" when nothing does and the key can be deleted. Names are
 // compared by key file (sameKeyFile), because keystore.Path sanitizes
-// them, so "a/b" and "a_b" share a file. teammate reports whether the user is a teammate in teammates.yaml.
+// them, so "a/b" and "a_b" share a file. teammate reports whether a
+// teammate in teammates.yaml has exactly peer's name, so a running source
+// already skips pushes to it.
 func peerKeyUser(configDir, peer string, remaining []config.SinkTarget, teammates *config.TeammatesConfig) (user string, teammate bool) {
 	for _, s := range remaining {
 		if s.Peer != "" && sameKeyFile(configDir, s.Peer, peer) {
@@ -448,7 +450,10 @@ func peerKeyUser(configDir, peer string, remaining []config.SinkTarget, teammate
 	if teammates != nil {
 		for _, tm := range teammates.Teammates {
 			if sameKeyFile(configDir, tm.Name, peer) {
-				return "teammate " + tm.Name + " in " + config.TeammatesFile, true
+				// The source skips pushes only to a peer whose name a
+				// teammate matches exactly (SuppressPush), not to one
+				// that merely shares the key file.
+				return "teammate " + tm.Name + " in " + config.TeammatesFile, tm.Name == peer
 			}
 		}
 	}
