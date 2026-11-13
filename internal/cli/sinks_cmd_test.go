@@ -234,7 +234,7 @@ func TestSinksRemovePeerlessSinkDropsSharedSecret(t *testing.T) {
 	savePeerKey(t, dir, "mac-mini")
 
 	var out bytes.Buffer
-	if err := runSinksRemove(&out, dir, "http://legacy.test:9999/sync"); err != nil {
+	if err := runSinksRemoveWith(&out, dir, "http://legacy.test:9999/sync", sinksRemoveOptions{RevokeSharedSecret: true}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "still accepts it on GET /pull until it restarts") {
@@ -431,7 +431,7 @@ func TestSinksRemovePeeredSinkDropsUnusedSharedSecret(t *testing.T) {
 	running := newPullMux(dir, testSharedSecret, cache, nil)
 
 	var out bytes.Buffer
-	if err := runSinksRemove(&out, dir, "b"); err != nil {
+	if err := runSinksRemoveWith(&out, dir, "b", sinksRemoveOptions{RevokeSharedSecret: true}); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.LoadSource(dir)
@@ -667,7 +667,7 @@ func TestSinksRemoveSharedSecretWithTeammatesSaysPullRefusesIt(t *testing.T) {
 	writeTeammatesFile(t, dir, "teammates:\n  - name: grokbot\n")
 
 	var out bytes.Buffer
-	if err := runSinksRemove(&out, dir, "http://legacy.test:9999/sync"); err != nil {
+	if err := runSinksRemoveWith(&out, dir, "http://legacy.test:9999/sync", sinksRemoveOptions{RevokeSharedSecret: true}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "already refuses it while") {
@@ -695,5 +695,71 @@ func TestSinksRemoveKeptLegacyPeerKeySaysPullContinues(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "so c can keep pulling with that key") {
 		t.Fatalf("output must warn the kept legacy key still pulls:\n%s", out.String())
+	}
+}
+
+func TestSinksRemoveKeepsSharedSecretWithoutRevokeFlag(t *testing.T) {
+	// A pull-only sink not listed in source.yaml may use the secret, so it
+	// is never removed without --revoke-shared-secret.
+	dir := t.TempDir()
+	writeSourceFile(t, dir, "sinks:\n  - url: http://a.test:9999/sync\n    peer: a\n  - url: http://b.test:9999/sync\n    peer: b\nsecurity:\n  shared_secret: "+testSharedSecret+"\n")
+	savePeerKey(t, dir, "a")
+	savePeerKey(t, dir, "b")
+
+	var out bytes.Buffer
+	if err := runSinksRemove(&out, dir, "b"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadSource(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Security.SharedSecret != testSharedSecret {
+		t.Fatal("shared secret removed without --revoke-shared-secret")
+	}
+	for _, want := range []string{"security.shared_secret stays", "until the secret is rotated", "--revoke-shared-secret"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestSinksRemoveRevokeRefusesWhenRemainingSinkNeedsSecret(t *testing.T) {
+	dir := t.TempDir()
+	body := "sinks:\n  - url: http://a.test:9999/sync\n  - url: http://b.test:9999/sync\n    peer: b\nsecurity:\n  shared_secret: " + testSharedSecret + "\n"
+	writeSourceFile(t, dir, body)
+	savePeerKey(t, dir, "b")
+
+	err := runSinksRemoveWith(&bytes.Buffer{}, dir, "b", sinksRemoveOptions{RevokeSharedSecret: true})
+	if err == nil || !strings.Contains(err.Error(), "no peer") {
+		t.Fatalf("want a refusal naming the peerless sink, got %v", err)
+	}
+	if !hasPeerKey(dir, "b") || readSourceFile(t, dir) != body {
+		t.Fatal("refusal must leave the key and source.yaml untouched")
+	}
+}
+
+func TestSinksRemoveDuplicateKeyCheckIsCaseExactOnCaseSensitiveDisk(t *testing.T) {
+	dir := t.TempDir()
+	writeSourceFile(t, dir, "sinks:\n  - url: http://a.test:9999/sync\n    peer: a\n  - url: http://bot.test:9999/sync\n    peer: Bot\n")
+	savePeerKey(t, dir, "a")
+	savePeerKey(t, dir, "Bot")
+	k, err := keystore.Load(dir, "Bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := keystore.Save(dir, &keystore.PeerKey{Peer: "bot", Key: k.Key, PairedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if names, _ := keystore.List(dir); len(names) != 3 {
+		t.Skip("case-insensitive filesystem: keys/Bot.json and keys/bot.json are one file")
+	}
+
+	var out bytes.Buffer
+	if err := runSinksRemove(&out, dir, "Bot"); err != nil {
+		t.Fatal(err)
+	}
+	if !hasPeerKey(dir, "bot") || !strings.Contains(out.String(), "holds the same key") {
+		t.Fatalf("keys/bot.json holds the same key, so GET /pull still accepts it; output must say so:\n%s", out.String())
 	}
 }

@@ -48,6 +48,7 @@ func init() {
 			return nil
 		},
 	}
+	var removeOpts sinksRemoveOptions
 	removeCmd := &cobra.Command{
 		Use:   "remove <peer|url>",
 		Short: "Stop pushing to a sink: remove it from source.yaml and delete its key",
@@ -66,11 +67,14 @@ machine's sink.yaml still uses that peer name. Then the removed sink can
 keep pulling with that key, even after a restart, until the key is rotated
 and every legitimate user of it is re-paired.
 
-security.shared_secret is removed only when no remaining sink lacks a peer
-and every remaining paired sink still has its key here. A running source
-still accepts it on GET /pull until it restarts, so the restart is what
-cuts off a machine that holds it. When it stays, a removed machine that
-has it can keep pulling with it until you rotate it.
+security.shared_secret stays unless you pass --revoke-shared-secret,
+because pull-only sinks that are not listed in source.yaml may use it too.
+While it stays, a removed machine that has it can keep pulling with it
+until you rotate it. --revoke-shared-secret removes it, for every machine
+that uses it, and refuses when a remaining sink still needs it (a sink
+without a peer, or a paired sink whose key is missing here). A running
+source still accepts it on GET /pull until it restarts, so the restart is
+what cuts those machines off.
 
 Removing the last entry of a sinks: list also removes a legacy sink:/peer:
 it was shadowing, and that peer's key unless something else uses it.
@@ -83,9 +87,11 @@ Cookies and secrets the sink already received stay valid on that machine
 until they expire or you sign out of those sites.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSinksRemove(cmd.OutOrStdout(), common.ConfigDir, args[0])
+			return runSinksRemoveWith(cmd.OutOrStdout(), common.ConfigDir, args[0], removeOpts)
 		},
 	}
+	removeCmd.Flags().BoolVar(&removeOpts.RevokeSharedSecret, "revoke-shared-secret", false,
+		"also remove security.shared_secret, cutting off every machine that pulls with it")
 	sinksCmd.AddCommand(listCmd, removeCmd)
 }
 
@@ -187,7 +193,19 @@ func loadSourceForSinks(configDir string) (*config.SourceConfig, error) {
 	return cfg, nil
 }
 
+// sinksRemoveOptions are the flags of `sinks remove`.
+type sinksRemoveOptions struct {
+	// RevokeSharedSecret also removes security.shared_secret. It is never
+	// removed otherwise: pull-only sinks not listed in source.yaml may use
+	// it, and this command cannot see them.
+	RevokeSharedSecret bool
+}
+
 func runSinksRemove(out io.Writer, configDir, target string) error {
+	return runSinksRemoveWith(out, configDir, target, sinksRemoveOptions{})
+}
+
+func runSinksRemoveWith(out io.Writer, configDir, target string, opts sinksRemoveOptions) error {
 	cfg, err := loadSourceForSinks(configDir)
 	if err != nil {
 		return err
@@ -249,7 +267,10 @@ func runSinksRemove(out io.Writer, configDir, target string) error {
 	if secret != "" {
 		secretUser = sharedSecretUser(configDir, remaining)
 	}
-	dropSecret := secret != "" && secretUser == ""
+	dropSecret := opts.RevokeSharedSecret && secret != ""
+	if dropSecret && secretUser != "" {
+		return fmt.Errorf("not removing %s: --revoke-shared-secret would break it, because %s; pair that sink first, or remove without the flag", label, secretUser)
+	}
 
 	// Delete keys before editing source.yaml: if a delete fails the sink
 	// is still listed and the command can be retried, and if the edit
@@ -319,15 +340,21 @@ func runSinksRemove(out io.Writer, configDir, target string) error {
 	default:
 		fmt.Fprintf(out, "Removed sink %s from %s and deleted its key. A running source stops sealing for it at its next push, and GET /pull refuses that key now.\n", label, path)
 	}
+	secretWhy := ""
+	if secretUser != "" {
+		secretWhy = ", because " + secretUser
+	}
 	switch {
+	case opts.RevokeSharedSecret && secret == "":
+		fmt.Fprintf(out, "%s has no security.shared_secret, so there was none to revoke.\n", path)
 	case secretLive:
-		fmt.Fprintf(out, "Also removed security.shared_secret, which no remaining sink needs. A running source still accepts it on GET /pull until it restarts, so the restart is what cuts off a machine that holds it.\n")
+		fmt.Fprintf(out, "Also removed security.shared_secret. A running source still accepts it on GET /pull until it restarts, so the restart is what cuts off every machine that pulls with it, including pull-only sinks not listed in %s.\n", path)
 	case dropSecret:
-		fmt.Fprintf(out, "Also removed security.shared_secret, which no remaining sink needs. GET /pull already refuses it while %s lists teammates.\n", config.TeammatesFile)
+		fmt.Fprintf(out, "Also removed security.shared_secret. GET /pull already refuses it while %s lists teammates.\n", config.TeammatesFile)
 	case secret != "" && teamActive:
-		fmt.Fprintf(out, "security.shared_secret stays, because %s. GET /pull refuses it while %s lists teammates; rotate it if the removed machine has it, in case the teammates are removed later.\n", secretUser, config.TeammatesFile)
+		fmt.Fprintf(out, "security.shared_secret stays%s. GET /pull refuses it while %s lists teammates; rotate it if the removed machine has it, in case the teammates are removed later.\n", secretWhy, config.TeammatesFile)
 	case secret != "":
-		fmt.Fprintf(out, "security.shared_secret stays, because %s. The removed machine can keep pulling with it, if it has it, until the secret is rotated.\n", secretUser)
+		fmt.Fprintf(out, "security.shared_secret stays%s. The removed machine can keep pulling with it, if it has it, until the secret is rotated. Pull-only sinks not listed in %s may use it too, so it is removed only with --revoke-shared-secret.\n", secretWhy, path)
 	}
 	if legacyPeer != "" {
 		switch {
@@ -405,24 +432,23 @@ func hasPeerKeyFile(configDir, peer string) bool {
 
 // peerKeyUser names what else still seals or authenticates with peer's key,
 // or returns "" when nothing does and the key can be deleted. Names are
-// compared by key file, case-insensitively, because keystore.Path
-// sanitizes them and macOS disks ignore case: "a/b" and "a_b" share a
-// file. teammate reports whether the user is a teammate in teammates.yaml.
+// compared by key file (sameKeyFile), because keystore.Path sanitizes
+// them, so "a/b" and "a_b" share a file. teammate reports whether the user is a teammate in teammates.yaml.
 func peerKeyUser(configDir, peer string, remaining []config.SinkTarget, teammates *config.TeammatesConfig) (user string, teammate bool) {
 	for _, s := range remaining {
-		if s.Peer != "" && sameKeyFile(s.Peer, peer) {
+		if s.Peer != "" && sameKeyFile(configDir, s.Peer, peer) {
 			return "sink " + sinkLabel(s), false
 		}
 	}
 	if teammates != nil {
 		for _, tm := range teammates.Teammates {
-			if sameKeyFile(tm.Name, peer) {
+			if sameKeyFile(configDir, tm.Name, peer) {
 				return "teammate " + tm.Name + " in " + config.TeammatesFile, true
 			}
 		}
 	}
 	if fileExists(filepath.Join(configDir, "sink.yaml")) {
-		if sink, err := config.LoadSink(configDir); err == nil && sink.Peer.Hostname != "" && sameKeyFile(sink.Peer.Hostname, peer) {
+		if sink, err := config.LoadSink(configDir); err == nil && sink.Peer.Hostname != "" && sameKeyFile(configDir, sink.Peer.Hostname, peer) {
 			return "this machine's sink.yaml", false
 		}
 	}
@@ -434,9 +460,22 @@ func peerKeyUser(configDir, peer string, remaining []config.SinkTarget, teammate
 	return "", false
 }
 
-// sameKeyFile reports whether two peer names map to the same key file.
-func sameKeyFile(a, b string) bool {
-	return strings.EqualFold(keyFileName(a), keyFileName(b))
+// sameKeyFile reports whether two peer names map to the same key file on
+// disk: the same sanitized path, or two paths the filesystem resolves to
+// one file (a case-insensitive disk treats keys/Bot.json and keys/bot.json
+// as one file; a case-sensitive one does not).
+func sameKeyFile(configDir, a, b string) bool {
+	pa, errA := keystore.Path(configDir, a)
+	pb, errB := keystore.Path(configDir, b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	if pa == pb {
+		return true
+	}
+	fa, errA := os.Stat(pa)
+	fb, errB := os.Stat(pb)
+	return errA == nil && errB == nil && os.SameFile(fa, fb)
 }
 
 // keyFileName is the keys/ path, relative to the config dir, that peer's
@@ -461,7 +500,7 @@ func duplicateKeyFile(configDir, peer string) string {
 		return ""
 	}
 	for _, name := range names {
-		if sameKeyFile(name, peer) {
+		if sameKeyFile(configDir, name, peer) {
 			continue
 		}
 		if o, err := keystore.Load(configDir, name); err == nil && bytes.Equal(o.Key, k.Key) {
