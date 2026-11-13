@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -596,8 +597,13 @@ func parseEnvBytesShim(data []byte) (map[string]string, error) {
 	// rather than exporting from secretsbus to keep that package's public
 	// surface minimal.
 	out := map[string]string{}
+	// Like the reader in pkg/agentcookiesecret: a leading BOM is ignored
+	// (spec section 3.1) and a CRLF line loses its '\r', so a sealed CRLF
+	// file prints the same values every reader gets.
+	data = bytes.TrimPrefix(data, []byte("\ufeff"))
 	for lineNum, line := range strings.Split(string(data), "\n") {
 		ln := lineNum + 1
+		line = strings.TrimSuffix(line, "\r")
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue

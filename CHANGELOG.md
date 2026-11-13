@@ -7,7 +7,7 @@
 - New `agentcookie_secret` package in `clients/python`, the Python twin of the Go reader `pkg/agentcookiesecret`. `load("my-pp-cli")` returns a dict with the same priority: sealed bus file, plaintext bus file, an optional `fallback_path`, then process env. `load_detailed` also says where each key came from. It has no dependencies. Install with `pip install "git+https://github.com/mvanhorn/agentcookie#subdirectory=clients/python"`.
 - It parses `secrets.env` itself with the spec's strict grammar. A syntax error or an unreadable file raises `AgentcookieSecretError` naming the file and the line, and is never skipped (spec section 11.4), unless a sealed file exists, which wins as in the Go reader. Errors never include text from the offending line. An invalid CLI name raises `InvalidCLINameError` before any file is read.
 - A sealed file is unsealed by running `agentcookie secret env --no-aliases <cli>`, so the master key never leaves agentcookie's Keychain item. If the binary is not on `PATH`, or unsealing fails, it raises with the sealed file's path instead of falling back to the plaintext file.
-- New `agentcookie secret env --no-aliases` prints only the stored keys, without the alias names `secret env` adds. Without the flag nothing changes.
+- New `agentcookie secret env --no-aliases` prints only the stored keys, without the alias names `secret env` adds. Without the flag nothing changes. `secret env` now ignores a leading BOM and drops the `\r` of CRLF lines, as the readers do.
 - CI runs the Python tests in the Linux job. The tests live in `clients/python/tests`, outside the installed package.
 
 ### Go secrets reader reports a bad secrets.env instead of skipping it (#171, by @officialasishkumar)

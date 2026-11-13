@@ -89,6 +89,23 @@ class LoadTest(_BusTestCase):
         self.assertEqual(env["FOO"], "from-bus")
         self.assertEqual(env["BAR"], "also-bus")
 
+    def test_line_at_go_scanner_limit_raises(self):
+        # Go rejects a raw line of 256 KiB or more, counting a '\r'.
+        ok = "A=" + "x" * (256 * 1024 - 3)
+        self.assertEqual(len(_parse_env(ok + "\n")["A"]), 256 * 1024 - 3)
+        for text in (ok + "x\n", ok + "x", ok + "\r\n", "B=1\n" + ok + "xy\n"):
+            with self.subTest(n=len(text)):
+                with self.assertRaisesRegex(AgentcookieSecretError, "line (1|2): line too long"):
+                    _parse_env(text)
+
+    def test_only_go_whitespace_makes_a_blank_line(self):
+        # str.strip() would skip these; Go's TrimSpace does not.
+        for text in ("\x1c\n", "\x1f# c\n"):
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(AgentcookieSecretError, "line 1: missing '='"):
+                    _parse_env(text)
+        self.assertEqual(_parse_env("\u3000\n\xa0# c\nA=1\n"), {"A": "1"})
+
     def test_leading_bom_is_ignored(self):
         self.write(self.bus_path("demo-cli"), "\ufeffFOO=from-bus\nBAR=2\n")
         env = load("demo-cli")

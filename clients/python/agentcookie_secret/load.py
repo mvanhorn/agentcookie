@@ -39,6 +39,17 @@ _ASCII_LETTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
 _ASCII_DIGITS = frozenset("0123456789")
 _CLI_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 
+# The characters Go's strings.TrimSpace trims (unicode.IsSpace). Python's
+# str.strip() also trims \x1c-\x1f, which Go does not.
+_GO_SPACE = (
+    " \t\n\v\f\r\x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
+    "\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+)
+
+# The Go reader scans with a 256 KiB buffer, so a raw line (counting a
+# trailing '\r', not the '\n') of this many bytes or more is an error.
+_MAX_LINE_BYTES = 256 * 1024
+
 
 class AgentcookieSecretError(Exception):
     """Raised when the bus cannot be read for a CLI."""
@@ -191,19 +202,20 @@ def _read_env_file(path: str) -> Dict[str, str]:
     with open(path, "rb") as f:
         data = f.read()
     try:
-        # utf-8-sig drops one leading BOM, which spec section 3.1 permits.
-        return _parse_env(data.decode("utf-8-sig", errors="surrogateescape"))
+        # surrogateescape keeps every byte, so line lengths match Go's.
+        return _parse_env(data.decode("utf-8", errors="surrogateescape"))
     except AgentcookieSecretError as exc:
         raise AgentcookieSecretError(f"read {path}: {exc}") from None
 
 
 def _split_lines(text: str) -> List[str]:
-    # Same line splitting as Go's bufio.ScanLines: split on '\n', drop one
-    # trailing '\r' per line, and no empty final line after a trailing '\n'.
+    # Same line splitting as Go's bufio.ScanLines, before it drops a
+    # trailing '\r': split on '\n', with no empty final line after a
+    # trailing '\n'.
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()
-    return [line[:-1] if line.endswith("\r") else line for line in lines]
+    return lines
 
 
 def _parse_env(text: str) -> Dict[str, str]:
@@ -215,7 +227,13 @@ def _parse_env(text: str) -> Dict[str, str]:
     in_continuation = False
 
     line_num = 0
-    for line_num, line in enumerate(_split_lines(text), start=1):
+    for line_num, raw in enumerate(_split_lines(text), start=1):
+        if len(raw.encode("utf-8", errors="surrogateescape")) >= _MAX_LINE_BYTES:
+            raise AgentcookieSecretError(f"line {line_num}: line too long (limit 256 KiB)")
+        line = raw[:-1] if raw.endswith("\r") else raw
+        if line_num == 1 and line.startswith("\ufeff"):
+            # Spec section 3.1: a leading UTF-8 BOM is permitted and ignored.
+            line = line[1:]
         if in_continuation:
             if line.endswith("\\"):
                 pending.append(line[:-1])
@@ -227,7 +245,7 @@ def _parse_env(text: str) -> Dict[str, str]:
             in_continuation = False
             continue
 
-        trimmed = line.strip()
+        trimmed = line.strip(_GO_SPACE)
         if trimmed == "" or trimmed.startswith("#"):
             continue
         key, sep, value = line.partition("=")

@@ -204,3 +204,13 @@ TESLA_AUTH_TOKEN = "OAUTH_BEARER"
 		t.Errorf("--no-aliases should print only the stored keys, got:\n%q", out)
 	}
 }
+
+func TestParseEnvBytesShimDropsBOMAndCR(t *testing.T) {
+	got, err := parseEnvBytesShim([]byte("\ufeffA=1\r\nB=\"x\"\r\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["A"] != "1" || got["B"] != "x" || len(got) != 2 {
+		t.Fatalf("want A=1 B=x like the reader, got %q", got)
+	}
+}

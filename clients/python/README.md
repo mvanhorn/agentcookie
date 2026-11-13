@@ -14,6 +14,10 @@ From a checkout of this repository:
 pip install ./clients/python
 ```
 
+This needs pip 21.3 or newer. The stock macOS `python3` ships an older pip
+that installs an empty package, so use a virtualenv or run
+`python3 -m pip install --upgrade pip` first.
+
 Or straight from GitHub:
 
 ```bash
@@ -80,7 +84,7 @@ environment.
 A sealed file is parsed by `agentcookie secret env`, not by this package.
 That parser does not join backslash continuations, so a sealed file that
 uses them fails to load or loads different values here, while the Go
-reader reads it.
+reader reads it. Files agentcookie writes do not use them.
 
 The reader never writes. Aliases (`agentcookie secret alias`) are not
 applied; use `agentcookie secret env <cli>` when you want them.
