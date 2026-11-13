@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mvanhorn/agentcookie/pkg/agentcookiesecret"
 )
 
 func TestWritePayload_HappyPath(t *testing.T) {
@@ -203,23 +205,91 @@ func TestWritePayload_SealingRequested_MasterKeyMissing(t *testing.T) {
 	}
 }
 
-func TestRenderEnvFile_SortedDeterministic(t *testing.T) {
-	out := string(renderEnvFile(map[string]string{
+func TestRenderEnvLines_SortedDeterministic(t *testing.T) {
+	lines, dropped := renderEnvLines(map[string]string{
 		"Z": "1",
 		"A": "2",
 		"M": "3",
-	}))
-	// Strip the header comments to check just the key order.
-	lines := strings.Split(out, "\n")
-	var keyLines []string
-	for _, l := range lines {
-		if l == "" || strings.HasPrefix(l, "#") {
-			continue
-		}
-		keyLines = append(keyLines, l)
+	})
+	if dropped != 0 || len(lines) != 3 || lines[0] != "A=2" || lines[1] != "M=3" || lines[2] != "Z=1" {
+		t.Errorf("expected sorted A,M,Z, got: %v (dropped %d)", lines, dropped)
 	}
-	if len(keyLines) != 3 || keyLines[0] != "A=2" || keyLines[1] != "M=3" || keyLines[2] != "Z=1" {
-		t.Errorf("expected sorted A,M,Z, got: %v", keyLines)
+}
+
+func TestWritePayload_DropsValuesTheFileCannotCarry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	payload := map[string]map[string]string{
+		"demo-cli": {
+			"K":      "a\nB=1",
+			"BIG":    strings.Repeat("x", 256*1024),
+			"OK":     "1",
+			"QUOTED": `"tok"`,
+			"WIN":    `C:\dir\`,
+		},
+	}
+	result, errs := WritePayload(home, payload, false)
+	if len(errs) != 1 {
+		t.Fatalf("want one error for the dropped keys, got %v", errs)
+	}
+	msg := errs[0].Error()
+	if !strings.Contains(msg, "demo-cli") || !strings.Contains(msg, "dropped 2 key(s)") {
+		t.Errorf("error should name the CLI and the count, got %q", msg)
+	}
+	if strings.Contains(msg, "B=1") || strings.Contains(msg, "xxxx") || strings.Contains(msg, `"K"`) {
+		t.Errorf("error leaks a key or value: %q", msg)
+	}
+	if result.KeysWritten != 3 {
+		t.Errorf("KeysWritten = %d, want 3", result.KeysWritten)
+	}
+	got, err := agentcookiesecret.Load("demo-cli")
+	if err != nil {
+		t.Fatalf("the written file must still load: %v", err)
+	}
+	if got["OK"] != "1" || got["QUOTED"] != `"tok"` || got["WIN"] != `C:\dir\` {
+		t.Errorf("values did not read back unchanged: OK=%q QUOTED=%q WIN=%q", got["OK"], got["QUOTED"], got["WIN"])
+	}
+	if _, ok := got["K"]; ok {
+		t.Error("refused key K was written")
+	}
+	if _, ok := got["B"]; ok {
+		t.Error("newline in a value injected key B")
+	}
+	if _, ok := got["BIG"]; ok {
+		t.Error("oversized value was written")
+	}
+}
+
+func TestWritePayload_InvalidKeyNameNotEchoed(t *testing.T) {
+	home := t.TempDir()
+	payload := map[string]map[string]string{
+		"demo-cli": {"sk+SECRET": "v", "OK": "1"},
+	}
+	_, errs := WritePayload(home, payload, false)
+	if len(errs) != 1 {
+		t.Fatalf("want one error, got %v", errs)
+	}
+	if msg := errs[0].Error(); strings.Contains(msg, "SECRET") || !strings.Contains(msg, "dropped 1 key(s) with invalid names") {
+		t.Errorf("error = %q, want a count without the key", msg)
+	}
+}
+
+func TestWritePayload_EveryKeyRefusedLeavesExistingFile(t *testing.T) {
+	home := t.TempDir()
+	envPath := filepath.Join(SecretsRoot(home), "demo-cli", "secrets.env")
+	writeFile(t, envPath, "OLD=1\n")
+	result, errs := WritePayload(home, map[string]map[string]string{
+		"demo-cli": {"K": "a\nb"},
+	}, false)
+	if len(errs) != 1 {
+		t.Fatalf("want one error, got %v", errs)
+	}
+	if result.CLIsWritten != 0 || result.PlaintextWritten != 0 || result.KeysWritten != 0 {
+		t.Errorf("nothing should count as written: %+v", result)
+	}
+	got, _ := os.ReadFile(envPath)
+	if string(got) != "OLD=1\n" {
+		t.Errorf("existing secrets.env should be left as it was, got %q", got)
 	}
 }
 

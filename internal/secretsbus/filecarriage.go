@@ -253,7 +253,8 @@ func MaterializeFiles(homeDir string, cliName string, env map[string]string) (Ma
 				}
 				result.EnvAdditions[envName] = dest
 			} else {
-				errs = append(errs, fmt.Errorf("%s: file %q env companion %q is not a valid env var name; ignored", cliName, payloadKey, envName))
+				// The name came off the wire, so it is not echoed.
+				errs = append(errs, fmt.Errorf("%s: file %q env companion is not a valid env var name; ignored", cliName, payloadKey))
 			}
 		}
 	}

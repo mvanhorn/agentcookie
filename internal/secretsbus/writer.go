@@ -80,13 +80,18 @@ func WritePayload(homeDir string, payload map[string]map[string]string, sealingE
 		}
 		// Filter out malformed keys defensively. The source should have
 		// done this, but the sink does NOT trust the wire payload.
+		// The names are not echoed: a malformed wire key can be secret text.
 		safe := map[string]string{}
+		invalid := 0
 		for k, v := range kv {
 			if !envfile.ValidKey(k) {
-				errs = append(errs, fmt.Errorf("%s: dropping invalid key name %q", cliName, k))
+				invalid++
 				continue
 			}
 			safe[k] = v
+		}
+		if invalid > 0 {
+			errs = append(errs, fmt.Errorf("%s: dropped %d key(s) with invalid names", cliName, invalid))
 		}
 		// Carried-file materialization: decode any _FILE_<K>/K pairs to 0600
 		// files under ~/.agentcookie/ and strip those keys so a carried file
@@ -103,7 +108,15 @@ func WritePayload(homeDir string, payload map[string]map[string]string, sealingE
 		// `secret env` surfaces it (e.g. TESLA_CONFIG, TESLA_FLEET_KEY_FILE).
 		maps.Copy(safe, matRes.EnvAdditions)
 
-		if len(safe) == 0 {
+		lines, dropped := renderEnvLines(safe)
+		if dropped > 0 {
+			// Neither the keys nor the values are named: both came off the wire.
+			errs = append(errs, fmt.Errorf("%s: dropped %d key(s) whose values secrets.env cannot store unchanged (a newline, a trailing carriage return, both quote characters plus a backslash, or a line over 256 KiB)", cliName, dropped))
+		}
+
+		if len(lines) == 0 {
+			// Nothing left to write. As for a CLI that arrives with no keys,
+			// an existing secrets.env and sealed twin are left as they were.
 			if matRes.FilesWritten > 0 {
 				// Carried files only: count this CLI as written even though
 				// no env keys remain for secrets.env.
@@ -119,7 +132,7 @@ func WritePayload(homeDir string, payload map[string]map[string]string, sealingE
 		}
 
 		// Plaintext env file.
-		envBytes := renderEnvFile(safe)
+		envBytes := renderEnvFile(lines)
 		envPath := filepath.Join(cliDir, "secrets.env")
 		if err := atomicWrite(envPath, envBytes, 0o600); err != nil {
 			errs = append(errs, fmt.Errorf("%s: write secrets.env: %w", cliName, err))
@@ -143,30 +156,40 @@ func WritePayload(homeDir string, payload map[string]map[string]string, sealingE
 		}
 
 		result.CLIsWritten++
-		result.KeysWritten += len(safe)
+		result.KeysWritten += len(lines)
 	}
 	return result, errs
 }
 
-// renderEnvFile produces the canonical secrets.env content for a map.
-// Keys are sorted for deterministic output (helps tests and avoids
-// noisy diffs on inspection). Values are written as-is, no quoting:
-// the v1 spec accepts unquoted values for any string that doesn't need
-// escape semantics, which is the common case for OAuth tokens, hex
-// API keys, and base64-encoded payloads.
-func renderEnvFile(kv map[string]string) []byte {
+// renderEnvLines renders each pair as a secrets.env line, sorted by key for
+// deterministic output. A value is quoted when it would not read back
+// unchanged bare, and a pair whose value cannot be stored is left out and
+// counted in dropped.
+func renderEnvLines(kv map[string]string) (lines []string, dropped int) {
 	keys := make([]string, 0, len(kv))
 	for k := range kv {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+	for _, k := range keys {
+		line, err := envfile.RenderLine(k, kv[k])
+		if err != nil {
+			dropped++
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines, dropped
+}
+
+// renderEnvFile produces the canonical secrets.env content from rendered
+// lines.
+func renderEnvFile(lines []string) []byte {
 	var b strings.Builder
 	b.WriteString("# Written by agentcookie sink. See docs/spec-agentcookie-secrets-bus-v1.md for format.\n")
 	b.WriteString("# Do not hand-edit while a sync is in progress: the next sync overwrites this file.\n")
-	for _, k := range keys {
-		b.WriteString(k)
-		b.WriteString("=")
-		b.WriteString(kv[k])
+	for _, line := range lines {
+		b.WriteString(line)
 		b.WriteString("\n")
 	}
 	return []byte(b.String())
