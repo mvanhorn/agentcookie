@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -74,6 +75,8 @@ var secretImportFromCmd = &cobra.Command{
 	RunE:  runSecretImportFrom,
 }
 
+var secretEnvNoAliases bool
+
 var secretEnvCmd = &cobra.Command{
 	Use:   "env <cli-name>",
 	Short: "Print all keys for a CLI as shell-friendly export lines (for `eval $(...)`)",
@@ -105,6 +108,7 @@ func init() {
 	secretCmd.AddCommand(secretListCmd, secretGetCmd, secretSetCmd, secretRmCmd, secretImportFromCmd, secretEnvCmd, secretAliasCmd, secretLinkConfigsCmd)
 	secretImportFromCmd.Flags().StringVar(&secretImportAs, "as", "", "cli-name to file the imported secrets under (required)")
 	secretLinkConfigsCmd.Flags().BoolVar(&secretLinkConfigsApply, "apply", false, "actually create the links (default: dry run)")
+	secretEnvCmd.Flags().BoolVar(&secretEnvNoAliases, "no-aliases", false, "print only the keys stored in the bus, without alias names (what the reader libraries return)")
 }
 
 func runSecretLinkConfigs(cmd *cobra.Command, _ []string) error {
@@ -593,8 +597,13 @@ func parseEnvBytesShim(data []byte) (map[string]string, error) {
 	// rather than exporting from secretsbus to keep that package's public
 	// surface minimal.
 	out := map[string]string{}
+	// Like the reader in pkg/agentcookiesecret: a leading BOM is ignored
+	// (spec section 3.1) and a CRLF line loses its '\r', so a sealed CRLF
+	// file prints the same values every reader gets.
+	data = bytes.TrimPrefix(data, []byte("\ufeff"))
 	for lineNum, line := range strings.Split(string(data), "\n") {
 		ln := lineNum + 1
+		line = strings.TrimSuffix(line, "\r")
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
@@ -667,11 +676,15 @@ func runSecretEnv(cmd *cobra.Command, args []string) error {
 	// Apply aliases so the consumer's declared env var name (e.g.
 	// TESLA_AUTH_TOKEN) is emitted carrying the live value of the synced key
 	// it maps to (e.g. OAUTH_BEARER). Resolved on every call so it tracks
-	// token refreshes rather than going stale.
-	aliases := effectiveAliases(cliName)
-	for declared, stored := range aliases {
-		if v, ok := kv[stored]; ok {
-			kv[declared] = v
+	// token refreshes rather than going stale. --no-aliases skips this so
+	// the output is exactly the stored dataset; the Python reader unseals
+	// through it and must return the same keys as the Go reader.
+	if !secretEnvNoAliases {
+		aliases := effectiveAliases(cliName)
+		for declared, stored := range aliases {
+			if v, ok := kv[stored]; ok {
+				kv[declared] = v
+			}
 		}
 	}
 

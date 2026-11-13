@@ -440,7 +440,6 @@ The secrets bus (bearer tokens, API keys, OAuth refresh tokens) is untouched by 
 ### Not yet
 
 - One source to many sinks fan-out
-- Python reader library for the secrets bus
 - Signature verification on adoption manifests
 
 ## Documentation
