@@ -297,7 +297,7 @@ func runTeammatesApprove(ctx context.Context, out io.Writer, home, name, nodeID 
 
 func runTeammatesRemove(out io.Writer, configDir, name string) error {
 	path := config.TeammatesPath(configDir)
-	removed, err := editTeammatesYAML(path, func(doc *yaml.Node) (bool, error) {
+	removed, err := editYAMLFile(path, func(doc *yaml.Node) (bool, error) {
 		seq := mappingValue(doc, "teammates")
 		if seq == nil || seq.Kind != yaml.SequenceNode {
 			return false, nil
@@ -324,10 +324,10 @@ func runTeammatesRemove(out io.Writer, configDir, name string) error {
 	return nil
 }
 
-// editTeammatesYAML applies edit to teammates.yaml as a YAML node tree, so
-// the owner's comments survive, and writes it back atomically when edit
-// reports a change.
-func editTeammatesYAML(path string, edit func(doc *yaml.Node) (bool, error)) (bool, error) {
+// editYAMLFile applies edit to a config file (teammates.yaml, source.yaml)
+// as a YAML node tree, so the owner's comments survive, and writes it back
+// atomically, keeping its mode, when edit reports a change.
+func editYAMLFile(path string, edit func(doc *yaml.Node) (bool, error)) (bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false, err
@@ -401,7 +401,7 @@ func runTeammatesSetup(ctx context.Context, out io.Writer, configDir, home strin
 	}
 	fmt.Fprintf(out, "tincan: %s\n", path)
 	if configured == "" && cfg != nil {
-		if _, err := editTeammatesYAML(listPath, func(doc *yaml.Node) (bool, error) {
+		if _, err := editYAMLFile(listPath, func(doc *yaml.Node) (bool, error) {
 			root := doc.Content[0]
 			if root.Kind != yaml.MappingNode || mappingValue(doc, "tincan_path") != nil {
 				return false, nil

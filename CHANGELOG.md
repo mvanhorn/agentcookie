@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### New `agentcookie sinks`: list the sinks a source feeds, and remove one (#169, by @officialasishkumar)
+
+- `agentcookie sinks list` shows each sink in `source.yaml` with its peer, URL, whether its paired key is present, and its last push. `--json` prints the same rows, and an empty array on a source that delivers to teammates only. A sink whose key is missing says how to pair it again.
+- `agentcookie sinks remove <peer|url>` stops feeding a sink: it removes the entry from `source.yaml` (comments, including the file's leading ones, and other keys are kept, and the file keeps its mode) and deletes `keys/<peer>.json`. Until now this was a hand edit plus a manual key delete.
+- Deleting the key cuts a paired sink off that key: a running source reads it on every push and on every `GET /pull`, so it stops sealing for the sink at its next push and refuses that key on `GET /pull` at once. The running source keeps reporting the sink as failing until it restarts.
+- The key is kept when another sink, a teammate in `teammates.yaml`, or this machine's `sink.yaml` still uses that key file (names that map to the same file count), or another key file holds the same key. Then the removed sink can keep pulling with it, even after a restart, until the key is rotated and every legitimate user of it is re-paired, and the command says so.
+- `security.shared_secret` stays unless you pass `--revoke-shared-secret`, since pull-only sinks not listed in `source.yaml` may use it. While it stays, the command says a removed machine that has it can keep pulling with it until it is rotated. The flag removes it for every machine that uses it, refuses when a remaining sink without a peer, or without its key here, still needs it, and says a running source accepts it on `GET /pull` until it restarts.
+- Removing the last entry of a `sinks:` list also removes a legacy `sink:`/`peer:` it was shadowing, so that sink does not come back, and deletes that peer's key unless something else uses it. The only sink cannot be removed unless `teammates.yaml` lists a teammate, since a source with nothing to deliver to does not start.
+- A `source.yaml` that uses YAML anchors or aliases is refused before anything changes, since removing an anchored entry would leave it unloadable. While `teammates.yaml` lists teammates, `GET /pull` already refuses `security.shared_secret`, and the output says so.
+- Cookies and secrets a removed sink already received stay valid there until they expire or you sign out of those sites.
+
 ### Python reader for the secrets bus (#170, by @officialasishkumar)
 
 - New `agentcookie_secret` package in `clients/python`, the Python twin of the Go reader `pkg/agentcookiesecret`. `load("my-pp-cli")` returns a dict with the same priority: sealed bus file, plaintext bus file, an optional `fallback_path`, then process env. `load_detailed` also says where each key came from. It has no dependencies. Install with `pip install "git+https://github.com/mvanhorn/agentcookie#subdirectory=clients/python"`.
