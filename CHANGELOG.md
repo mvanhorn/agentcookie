@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-### Secrets read back exactly as stored, and `secret env` is safe to eval (#PRNUM)
+### Secrets read back exactly as stored, and `secret env` is safe to eval (#173)
 
 - `secret set`, `secret import-from`, `secret alias` and the sink wrote values raw. A value with a newline split into two lines, so `a\nEVIL=x` stored a second key `EVIL`, and one bad `set` could make a CLI's whole bus entry unreadable. A value ending in `\` swallowed the next line, and a value wrapped in quotes lost them. Writers now quote a value that would not read back unchanged bare (`C:\dir\` is written `'C:\dir\'`), and refuse a value with a newline or a trailing `\r`, or whose line would reach 256 KiB. The refusal names the CLI and key, never the value. `secret set` trims a trailing CRLF from stdin.
 - The sink drops a value it cannot store, keeps writing the CLI's other keys, and logs the CLI and how many keys it dropped. When every key for a CLI is dropped, its existing `secrets.env` is left as it was.
