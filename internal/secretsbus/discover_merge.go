@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"maps"
 	"os"
+
+	"github.com/mvanhorn/agentcookie/internal/envfile"
 )
 
 // LoadPayloadWithDiscovery is the v0.14 push-time entry point. It runs v1
@@ -46,7 +48,7 @@ func LoadPayloadWithDiscovery(homeDir string) (*Payload, []error) {
 		// ReadInPlacePath and ships its secrets entirely via carried files
 		// below, so the env read is skipped rather than treated as missing.
 		if rp.ReadInPlacePath != "" {
-			kv, err := parseEnvFile(rp.ReadInPlacePath)
+			kv, err := envfile.ReadFile(rp.ReadInPlacePath)
 			if err != nil {
 				if os.IsNotExist(err) {
 					errs = append(errs, fmt.Errorf("discovered project %q: read-in-place file missing: %s", slug, rp.ReadInPlacePath))

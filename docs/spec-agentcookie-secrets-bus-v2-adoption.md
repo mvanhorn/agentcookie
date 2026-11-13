@@ -117,10 +117,11 @@ Unknown top-level fields produce a stderr warning (`unknown field 'X' in agentco
 
 - Lowercase ASCII letters, ASCII digits, and the hyphen character only.
 - Must start and end with a letter or digit. No leading or trailing hyphen.
+- No two consecutive hyphens (v1 section 2.3).
 - Length: 1 to 64 characters inclusive.
-- Pattern (PCRE): `^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$`
+- Pattern (PCRE): `^(?!.*--)(?:[a-z0-9][a-z0-9-]{0,62}[a-z0-9]|[a-z0-9])$`
 
-Identical to v1 `validCLIName`. Reuses the same validator.
+The same rule as v1 section 2.3. agentcookie refuses a new name with `--` when it is declared or created, and still reads, lists and removes an existing one.
 
 ### 3.2 Display name
 

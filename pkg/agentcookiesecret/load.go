@@ -1,7 +1,6 @@
 package agentcookiesecret
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -9,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mvanhorn/agentcookie/internal/envfile"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 )
 
@@ -109,7 +109,7 @@ func LoadDetailed(cliName string, fallbackPath string) (*LoadResult, error) {
 
 	// 3. Fallback file, if requested.
 	if fallbackPath != "" {
-		if fb, err := readEnvFile(fallbackPath); err == nil {
+		if fb, err := envfile.ReadFile(fallbackPath); err == nil {
 			for k, v := range fb {
 				res.Env[k] = v
 				res.Sources[k] = SourceFallback
@@ -129,7 +129,7 @@ func LoadDetailed(cliName string, fallbackPath string) (*LoadResult, error) {
 	_, sealedStatErr := os.Stat(sealedPath)
 	sealedPresent := sealedStatErr == nil
 
-	plain, err := readEnvFile(plainPath)
+	plain, err := envfile.ReadFile(plainPath)
 	if !sealedPresent {
 		// A writer seals by creating the sealed file and then removing the
 		// plaintext one. Check again so a seal that lands between the first
@@ -163,7 +163,7 @@ func LoadDetailed(cliName string, fallbackPath string) (*LoadResult, error) {
 		if err != nil {
 			return res, fmt.Errorf("unseal %s: %w", sealedPath, err)
 		}
-		parsed, err := parseEnvBytes(plain)
+		parsed, err := envfile.ParseBytes(plain)
 		if err != nil {
 			return res, fmt.Errorf("parse unsealed %s: %w", sealedPath, err)
 		}
@@ -174,104 +174,6 @@ func LoadDetailed(cliName string, fallbackPath string) (*LoadResult, error) {
 	}
 
 	return res, nil
-}
-
-// readEnvFile is a minimal v1-conformant .env parser. Mirrors the strict
-// subset documented in the spec so this package has zero non-stdlib
-// dependencies beyond keystore (which is needed only for sealed-file
-// unseal).
-func readEnvFile(path string) (map[string]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
-	return parseEnvScanner(scanner)
-}
-
-// parseEnvBytes parses a byte slice via the same scanner-based grammar
-// as readEnvFile. Used after sealed-file unseal returns plaintext bytes.
-func parseEnvBytes(data []byte) (map[string]string, error) {
-	scanner := bufio.NewScanner(strings.NewReader(string(data)))
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
-	return parseEnvScanner(scanner)
-}
-
-func parseEnvScanner(scanner *bufio.Scanner) (map[string]string, error) {
-	out := map[string]string{}
-	lineNum := 0
-	var pending strings.Builder
-	var pendingKey string
-	var pendingLine int
-	inContinuation := false
-
-	for scanner.Scan() {
-		lineNum++
-		line := scanner.Text()
-		if lineNum == 1 {
-			// Spec section 3.1: a leading UTF-8 BOM is permitted and ignored.
-			line = strings.TrimPrefix(line, "\ufeff")
-		}
-
-		if inContinuation {
-			if strings.HasSuffix(line, "\\") {
-				pending.WriteString(line[:len(line)-1])
-				continue
-			}
-			pending.WriteString(line)
-			out[pendingKey] = stripQuotes(pending.String())
-			pending.Reset()
-			pendingKey = ""
-			inContinuation = false
-			continue
-		}
-
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		before, after, ok := strings.Cut(line, "=")
-		if !ok {
-			return nil, fmt.Errorf("line %d: missing '=' (expected KEY=VALUE)", lineNum)
-		}
-		key := before
-		if key != strings.TrimRight(key, " \t") || key != strings.TrimLeft(key, " \t") {
-			return nil, fmt.Errorf("line %d: whitespace around '=' is not allowed", lineNum)
-		}
-		if !validKeyName(key) {
-			return nil, fmt.Errorf("line %d: invalid key name", lineNum)
-		}
-		value := after
-
-		if strings.HasSuffix(value, "\\") {
-			pending.WriteString(value[:len(value)-1])
-			pendingKey = key
-			pendingLine = lineNum
-			inContinuation = true
-			continue
-		}
-		out[key] = stripQuotes(value)
-	}
-	if err := scanner.Err(); err != nil {
-		// The scanner stops on the line after the last one it returned.
-		return nil, fmt.Errorf("line %d: scan: %w", lineNum+1, err)
-	}
-	if inContinuation {
-		return nil, fmt.Errorf("line %d: unterminated backslash continuation (started on line %d)", lineNum, pendingLine)
-	}
-	return out, nil
-}
-
-func stripQuotes(v string) string {
-	if len(v) >= 2 {
-		first, last := v[0], v[len(v)-1]
-		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-			return v[1 : len(v)-1]
-		}
-	}
-	return v
 }
 
 func validCLIName(name string) bool {
@@ -287,27 +189,6 @@ func validCLIName(name string) bool {
 		case r >= '0' && r <= '9':
 		case r == '-':
 		default:
-			return false
-		}
-	}
-	return true
-}
-
-func validKeyName(k string) bool {
-	if k == "" {
-		return false
-	}
-	for i, r := range k {
-		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
-		isDigit := r >= '0' && r <= '9'
-		isUnder := r == '_'
-		if i == 0 {
-			if !isLetter && !isUnder {
-				return false
-			}
-			continue
-		}
-		if !isLetter && !isDigit && !isUnder {
 			return false
 		}
 	}

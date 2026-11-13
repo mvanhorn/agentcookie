@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/mvanhorn/agentcookie/internal/envfile"
 )
 
 func TestDeriveManifestFromPP_TeslaShape(t *testing.T) {
@@ -134,7 +136,7 @@ func TestDeriveManifestFromPP_HyphenatedSlugYieldsValidCarryKey(t *testing.T) {
 	if got := m.Files[0].Key; got != "BOOKING_COM_PP_CLI_CONFIG_TOML" {
 		t.Errorf("key: %q", got)
 	}
-	if !validKeyName(m.Files[0].Key) {
+	if !envfile.ValidKey(m.Files[0].Key) {
 		t.Errorf("carry key %q must be a valid env key name", m.Files[0].Key)
 	}
 }

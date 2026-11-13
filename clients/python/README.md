@@ -81,10 +81,8 @@ if res.sources.get("MY_OAUTH_BEARER") is Source.ENV:
 A CLI with no bus entry is not an error; you get the fallback file and the
 environment.
 
-A sealed file is parsed by `agentcookie secret env`, not by this package.
-That parser does not join backslash continuations, so a sealed file that
-uses them fails to load or loads different values here, while the Go
-reader reads it. Files agentcookie writes do not use them.
+A sealed file is parsed by `agentcookie secret env --no-aliases`, with the
+same grammar as this package.
 
 The reader never writes. Aliases (`agentcookie secret alias`) are not
 applied; use `agentcookie secret env <cli>` when you want them.

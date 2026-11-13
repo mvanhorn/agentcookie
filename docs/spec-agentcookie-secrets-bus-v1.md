@@ -126,6 +126,19 @@ Plain English summary:
 - Multi-line values are supported only via backslash continuation. A backslash as the last character of a line joins the next line into the current value. The backslash and the newline are both removed; the next line's leading whitespace, if any, is preserved.
 - The file MUST be UTF-8. A byte order mark (BOM) at the start of the file is permitted and ignored by conforming readers.
 
+#### What the shipped readers and writers do
+
+The Go reader (`pkg/agentcookiesecret`), the Python reader (`clients/python`) and the `agentcookie` CLI are more lenient than the grammar above, and agree with each other:
+
+- A bare value is the rest of the line after the first `=`, so spaces, `=` and `#` are accepted bare. `KEY=a b==` reads as `a b==`.
+- One surrounding pair of matching `"` or `'` is removed. Nothing inside it is decoded, double quotes included, so `"a\nb"` reads as the four characters `a\nb`.
+- A trailing `\r` on a line (a CRLF file) is dropped.
+- A line of 256 KiB or more is an error.
+
+agentcookie writes a value bare when it reads back unchanged bare. Otherwise it wraps the value in single quotes when it has no `'`, in double quotes when it has no `"` and no `\`, and refuses it when neither works. So `C:\dir\` is written `'C:\dir\'` and `"tok"` is written `'"tok"'`. It also refuses a value containing a newline or ending in `\r`, and a value whose line would reach 256 KiB. A value that reads back unchanged bare is never quoted, so such values look the same after a rewrite. `agentcookie secret set`, `secret rm <cli> <key>` and `secret import-from` refuse to rewrite a file that does not parse, uses a backslash continuation, or holds a value they would refuse, and name the line instead.
+
+`agentcookie secret env` prints the same `KEY=VALUE` lines, quoted so `eval` in sh, bash or zsh and these readers get the same value. A value is bare only when every character is a letter, a digit or one of `_ . / : @ % + , = -` and it does not start with `=`. Otherwise it is single-quoted when it has no `'`, double-quoted when it has none of `"`, `\`, `$` or a backtick, and otherwise left out with a note on stderr and a non-zero exit. A value with a NUL byte, and a key naming a shell variable that bash or zsh evaluates or acts on when assigned (`RANDOM`, `SECONDS`, `LINENO`, `IFS`, `PS1` and the like), are left out the same way. `agentcookie secret env --no-aliases` is the reader libraries' format and prints each value verbatim after the first `=`.
+
 ### 3.2 Explicit forbiddens
 
 The following dotenv-family features are explicitly excluded. Writers MUST NOT emit them. Readers MUST treat them as syntax errors.

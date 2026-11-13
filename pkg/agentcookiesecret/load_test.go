@@ -220,33 +220,6 @@ func TestLoad_OversizedLineNamesLine(t *testing.T) {
 	}
 }
 
-func TestParseEnvScanner_QuotesStripped(t *testing.T) {
-	got, err := parseEnvBytes([]byte("A=\"hello world\"\nB='also quoted'\nC=plain\n"))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if got["A"] != "hello world" || got["B"] != "also quoted" || got["C"] != "plain" {
-		t.Errorf("quote handling: %v", got)
-	}
-}
-
-func TestParseEnvScanner_BackslashContinuation(t *testing.T) {
-	got, err := parseEnvBytes([]byte("LONG=part1\\\npart2\n"))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if got["LONG"] != "part1part2" {
-		t.Errorf("continuation: %q", got["LONG"])
-	}
-}
-
-func TestParseEnvScanner_RejectsWhitespaceAroundEquals(t *testing.T) {
-	_, err := parseEnvBytes([]byte("KEY = value\n"))
-	if err == nil {
-		t.Errorf("whitespace around = should reject")
-	}
-}
-
 func TestValidCLIName(t *testing.T) {
 	for _, tc := range []struct {
 		in   string
@@ -285,15 +258,5 @@ func TestLoad_InvalidKeyErrorDoesNotEchoLine(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), "sk-live") {
 		t.Errorf("error leaks text from the line: %v", err)
-	}
-}
-
-func TestParseEnvScanner_StripsLeadingBOM(t *testing.T) {
-	got, err := parseEnvBytes([]byte("\xef\xbb\xbfA=1\nB=2\n"))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if got["A"] != "1" || got["B"] != "2" || len(got) != 2 {
-		t.Errorf("BOM-prefixed file should load A=1,B=2, got: %v", got)
 	}
 }
