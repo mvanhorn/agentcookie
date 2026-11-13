@@ -13,6 +13,10 @@
 - A `source.yaml` that uses YAML anchors or aliases is refused before anything changes, since removing an anchored entry would leave it unloadable. While `teammates.yaml` lists teammates, `GET /pull` already refuses `security.shared_secret`, and the output says so.
 - Cookies and secrets a removed sink already received stay valid there until they expire or you sign out of those sites.
 
+### Built with Go 1.26.11
+
+- Go 1.26.11 fixes a net/http vulnerability (GO-2026-6859) that govulncheck reports as reachable from agentcookie's HTTP server and client paths.
+
 ### New `agentcookie profile-keepalive`: Claude in Chrome stays connected on every Claude account
 
 - Claude in Chrome pairs only with the Claude account it is signed into, so a Mac with two Claude accounts uses one Chrome profile per account. Chrome unloads a profile when its last window closes, and at launch it reopens only the last one used. After that, Claude in Chrome silently stopped working for the other account.
