@@ -4,17 +4,22 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
 
+	"github.com/mvanhorn/agentcookie/internal/envfile"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/secretsbus"
 )
@@ -225,9 +230,9 @@ func runSecretGet(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("unseal: %w", err)
 		}
-		kv, err := parseEnvBytesShim(plain)
+		kv, err := envfile.ParseBytes(plain)
 		if err != nil {
-			return err
+			return fmt.Errorf("parse unsealed %s: %w", sealedPath, err)
 		}
 		if v, ok := kv[key]; ok {
 			fmt.Fprint(cmd.OutOrStdout(), v)
@@ -236,7 +241,7 @@ func runSecretGet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("key %q not found in sealed bus for %s", key, cliName)
 	}
 
-	kv, err := readEnvAll(plainPath)
+	kv, err := envfile.ReadFile(plainPath)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", plainPath, err)
 	}
@@ -249,10 +254,10 @@ func runSecretGet(cmd *cobra.Command, args []string) error {
 
 func runSecretSet(cmd *cobra.Command, args []string) error {
 	cliName, key := args[0], args[1]
-	if !validBusName(cliName) {
-		return fmt.Errorf("invalid cli-name %q", cliName)
+	if err := checkNewCLIName(cliName); err != nil {
+		return err
 	}
-	if !validBusKey(key) {
+	if !envfile.ValidKey(key) {
 		return fmt.Errorf("invalid key name %q", key)
 	}
 
@@ -264,19 +269,23 @@ func runSecretSet(cmd *cobra.Command, args []string) error {
 		if err != nil && err != io.EOF {
 			return err
 		}
-		value = strings.TrimRight(line, "\n")
+		value = strings.TrimRight(line, "\r\n")
 	} else {
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return err
 		}
-		value = strings.TrimRight(string(data), "\n")
+		value = strings.TrimRight(string(data), "\r\n")
+	}
+	// The value is never echoed, only the reason it cannot be stored.
+	if _, err := envfile.RenderLine(key, value); err != nil {
+		return fmt.Errorf("refusing to set %s/%s: %w", cliName, key, err)
 	}
 
 	envPath := filepath.Join(secretsRoot(), cliName, "secrets.env")
-	existing, _ := readEnvAll(envPath)
-	if existing == nil {
-		existing = map[string]string{}
+	existing, err := readEnvForRewrite(envPath, cliName)
+	if err != nil {
+		return err
 	}
 	existing[key] = value
 	if err := os.MkdirAll(filepath.Dir(envPath), 0o700); err != nil {
@@ -306,9 +315,9 @@ func runSecretRm(cmd *cobra.Command, args []string) error {
 	}
 	key := args[1]
 	envPath := filepath.Join(cliDir, "secrets.env")
-	existing, err := readEnvAll(envPath)
+	existing, err := readEnvForRewrite(envPath, cliName)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", envPath, err)
+		return err
 	}
 	if _, ok := existing[key]; !ok {
 		return fmt.Errorf("key %q not found for %s", key, cliName)
@@ -328,8 +337,8 @@ func runSecretImportFrom(cmd *cobra.Command, args []string) error {
 	if secretImportAs == "" {
 		return fmt.Errorf("--as <cli-name> is required")
 	}
-	if !validBusName(secretImportAs) {
-		return fmt.Errorf("invalid --as cli-name %q", secretImportAs)
+	if err := checkNewCLIName(secretImportAs); err != nil {
+		return fmt.Errorf("--as: %w", err)
 	}
 	src := args[0]
 	data, err := os.ReadFile(src)
@@ -349,11 +358,25 @@ func runSecretImportFrom(cmd *cobra.Command, args []string) error {
 	if len(flat) == 0 {
 		return fmt.Errorf("no recognizable keys in %s", src)
 	}
+	// Skip values the bus cannot carry and keep the rest. The note names
+	// the stored key, which is always a valid name, never the value.
+	for _, k := range slices.Sorted(maps.Keys(flat)) {
+		if _, err := envfile.RenderLine(k, flat[k]); err != nil {
+			delete(flat, k)
+			mappingNotes = append(mappingNotes, fmt.Sprintf("skipped %s: %v", k, err))
+		}
+	}
+	if len(flat) == 0 {
+		for _, note := range mappingNotes {
+			fmt.Fprintf(cmd.ErrOrStderr(), "  note: %s\n", note)
+		}
+		return fmt.Errorf("no importable keys in %s", src)
+	}
 
 	envPath := filepath.Join(secretsRoot(), secretImportAs, "secrets.env")
-	existing, _ := readEnvAll(envPath)
-	if existing == nil {
-		existing = map[string]string{}
+	existing, err := readEnvForRewrite(envPath, secretImportAs)
+	if err != nil {
+		return err
 	}
 	maps.Copy(existing, flat)
 	if err := os.MkdirAll(filepath.Dir(envPath), 0o700); err != nil {
@@ -404,7 +427,7 @@ func importParse(path string, data []byte) (map[string]string, []string, error) 
 			return canon, true
 		}
 		// Underscore-and-uppercase fallback for unknown but env-shaped keys.
-		if validBusKey(orig) {
+		if envfile.ValidKey(orig) {
 			return strings.ToUpper(orig), false
 		}
 		// Reserved prefix for fields we can't validate as env names.
@@ -414,17 +437,29 @@ func importParse(path string, data []byte) (map[string]string, []string, error) 
 
 	switch ext {
 	case ".env", "":
-		// Treat as env-shaped already.
-		kv, err := parseEnvBytesShim(data)
+		// Treat as env-shaped already. Keys are parsed leniently so a
+		// foreign .env still imports; one that is not a valid name is
+		// stored under its line number, since its text can be a secret
+		// pasted on its own line.
+		entries, err := envfile.Parse(bytes.NewReader(data), envfile.Options{LenientKeys: true})
 		if err != nil {
 			return nil, nil, err
 		}
-		for k, v := range kv {
-			canon, mapped := mapKey(k)
-			flat[canon] = v
-			if !mapped && canon != k {
-				notes = append(notes, fmt.Sprintf("renamed %q -> %q (reserved-prefix; review)", k, canon))
+		var renamedLines []string
+		for _, e := range entries {
+			if !envfile.ValidKey(e.Key) {
+				flat[fmt.Sprintf("_unknown_line%d", e.Line)] = e.Value
+				renamedLines = append(renamedLines, strconv.Itoa(e.Line))
+				continue
 			}
+			canon, mapped := mapKey(e.Key)
+			flat[canon] = e.Value
+			if !mapped && canon != e.Key {
+				notes = append(notes, fmt.Sprintf("renamed %q -> %q (review)", e.Key, canon))
+			}
+		}
+		if len(renamedLines) > 0 {
+			notes = append(notes, fmt.Sprintf("stored %d invalid key name(s) as _unknown_line<N> (line %s; review)", len(renamedLines), strings.Join(renamedLines, ", ")))
 		}
 	case ".json":
 		var raw map[string]any
@@ -513,32 +548,21 @@ func validBusName(name string) bool {
 	return true
 }
 
-// validBusKey mirrors secretsbus.validKeyName.
-func validBusKey(k string) bool {
-	if k == "" {
-		return false
+// checkNewCLIName applies the full spec rule to a name a command is about
+// to create: validBusName plus no "--", which the Python reader refuses.
+// Reads and removal stay on validBusName, so an existing "--" name keeps
+// working and can be removed.
+func checkNewCLIName(name string) error {
+	if !validBusName(name) || strings.Contains(name, "--") {
+		return fmt.Errorf("invalid cli-name %q: use 1-64 lowercase letters, digits and single hyphens, not starting or ending with a hyphen", name)
 	}
-	for i, r := range k {
-		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
-		isDigit := r >= '0' && r <= '9'
-		isUnder := r == '_'
-		if i == 0 {
-			if !isLetter && !isUnder {
-				return false
-			}
-			continue
-		}
-		if !isLetter && !isDigit && !isUnder {
-			return false
-		}
-	}
-	return true
+	return nil
 }
 
 // readEnvKeysOnly returns the KEY names from a secrets.env file (no values).
 // Used by `secret list` to print without leaking value content.
 func readEnvKeysOnly(path string) ([]string, error) {
-	all, err := readEnvAll(path)
+	all, err := envfile.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -549,22 +573,46 @@ func readEnvKeysOnly(path string) ([]string, error) {
 	return out, nil
 }
 
-// readEnvAll parses a secrets.env file. Wraps the strict parser used
-// inside the secretsbus package by going through a small in-line scanner.
-// Kept local to this file to avoid expanding the secretsbus public surface.
-func readEnvAll(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
+// readEnvForRewrite reads a file that a command is about to rewrite. A
+// missing file starts empty. A file the rewrite could not reproduce is
+// refused rather than silently changed: one that does not parse, uses a
+// backslash continuation, or holds a value the writer would refuse.
+func readEnvForRewrite(path, cliName string) (map[string]string, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return map[string]string{}, nil
 	}
-	return parseEnvBytesShim(data)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	defer f.Close()
+	entries, err := envfile.Parse(f, envfile.Options{})
+	if err != nil {
+		return nil, refuseRewrite(path, cliName, err.Error())
+	}
+	for _, e := range entries {
+		if e.Continued {
+			return nil, refuseRewrite(path, cliName, fmt.Sprintf("line %d: uses a backslash continuation", e.Line))
+		}
+		if _, err := envfile.RenderLine(e.Key, e.Value); err != nil {
+			return nil, refuseRewrite(path, cliName, fmt.Sprintf("line %d: %v", e.Line, err))
+		}
+	}
+	return envfile.ToMap(entries), nil
+}
+
+func refuseRewrite(path, cliName, detail string) error {
+	return fmt.Errorf("%s %s; not rewriting it, since its contents would not survive. Edit that line, or run `agentcookie secret rm %s` and set the keys again", path, detail, cliName)
 }
 
 // writeEnvAtomic mirrors secretsbus.atomicWrite via a tiny helper. The
 // secret subcommand needs a write path; we keep it next to the read path
 // for symmetry.
 func writeEnvAtomic(path string, kv map[string]string) error {
-	body := renderEnvForCmd(kv)
+	body, err := renderEnvForCmd(kv)
+	if err != nil {
+		return err
+	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, body, 0o600); err != nil {
 		return err
@@ -572,60 +620,21 @@ func writeEnvAtomic(path string, kv map[string]string) error {
 	return os.Rename(tmp, path)
 }
 
-func renderEnvForCmd(kv map[string]string) []byte {
-	keys := make([]string, 0, len(kv))
-	for k := range kv {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+// renderEnvForCmd renders kv with keys sorted, quoting each value that
+// would not read back unchanged bare. Callers check values before they get
+// here, so a refusal names only the key.
+func renderEnvForCmd(kv map[string]string) ([]byte, error) {
 	var b strings.Builder
 	b.WriteString("# Written by agentcookie secret. See docs/spec-agentcookie-secrets-bus-v1.md.\n")
-	for _, k := range keys {
-		b.WriteString(k)
-		b.WriteString("=")
-		b.WriteString(kv[k])
+	for _, k := range slices.Sorted(maps.Keys(kv)) {
+		line, err := envfile.RenderLine(k, kv[k])
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", k, err)
+		}
+		b.WriteString(line)
 		b.WriteString("\n")
 	}
-	return []byte(b.String())
-}
-
-// parseEnvBytesShim and decodeTOML are tiny local helpers that re-use the
-// stdlib + the existing TOML dep without adding a new public surface.
-
-func parseEnvBytesShim(data []byte) (map[string]string, error) {
-	// Delegate to secretsbus via a copy of the strict scanner. Kept here
-	// rather than exporting from secretsbus to keep that package's public
-	// surface minimal.
-	out := map[string]string{}
-	// Like the reader in pkg/agentcookiesecret: a leading BOM is ignored
-	// (spec section 3.1) and a CRLF line loses its '\r', so a sealed CRLF
-	// file prints the same values every reader gets.
-	data = bytes.TrimPrefix(data, []byte("\ufeff"))
-	for lineNum, line := range strings.Split(string(data), "\n") {
-		ln := lineNum + 1
-		line = strings.TrimSuffix(line, "\r")
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		before, after, ok := strings.Cut(line, "=")
-		if !ok {
-			return nil, fmt.Errorf("line %d: missing '='", ln)
-		}
-		key := before
-		if key != strings.TrimSpace(key) {
-			return nil, fmt.Errorf("line %d: whitespace around '='", ln)
-		}
-		val := after
-		if len(val) >= 2 {
-			first, last := val[0], val[len(val)-1]
-			if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-				val = val[1 : len(val)-1]
-			}
-		}
-		out[key] = val
-	}
-	return out, nil
+	return []byte(b.String()), nil
 }
 
 // decodeTOML wraps the existing BurntSushi/toml dep for the import-from
@@ -635,7 +644,7 @@ func decodeTOML(data []byte, out *map[string]any) error {
 }
 
 // runSecretEnv prints all keys for a CLI in `KEY=VALUE` form, one per line,
-// suitable for `eval $(agentcookie secret env <cli>)`. Sealed twin wins over
+// suitable for `eval "$(agentcookie secret env <cli>)"`. Sealed twin wins over
 // plaintext when both exist.
 func runSecretEnv(cmd *cobra.Command, args []string) error {
 	cliName := args[0]
@@ -659,13 +668,13 @@ func runSecretEnv(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("unseal: %w", err)
 		}
-		kv, err = parseEnvBytesShim(plain)
+		kv, err = envfile.ParseBytes(plain)
 		if err != nil {
-			return err
+			return fmt.Errorf("parse unsealed %s: %w", sealedPath, err)
 		}
 	} else {
 		var err error
-		kv, err = readEnvAll(plainPath)
+		kv, err = envfile.ReadFile(plainPath)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil
@@ -688,13 +697,15 @@ func runSecretEnv(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	keys := make([]string, 0, len(kv))
-	for k := range kv {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		fmt.Fprintf(cmd.OutOrStdout(), "%s=%s\n", k, kv[k])
+	// Each value is quoted so that eval and the reader libraries both get
+	// it unchanged. A value no quoting serves for both is left out.
+	for _, k := range slices.Sorted(maps.Keys(kv)) {
+		v, err := envfile.RenderShellValue(kv[k])
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "agentcookie secret env: left out %s: %v\n", k, err)
+			continue
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s=%s\n", k, v)
 	}
 	return nil
 }
@@ -708,7 +719,7 @@ func aliasesPath(cliName string) string {
 // readAliases loads declared-env-var -> stored-key mappings for a CLI. A
 // missing file is not an error (most CLIs need no alias).
 func readAliases(cliName string) (map[string]string, error) {
-	m, err := readEnvAll(aliasesPath(cliName))
+	m, err := envfile.ReadFile(aliasesPath(cliName))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return map[string]string{}, nil
@@ -792,11 +803,14 @@ func runSecretAlias(cmd *cobra.Command, args []string) error {
 	if len(args) != 3 {
 		return fmt.Errorf("to set an alias pass <cli-name> <declared-env-var> <stored-key>; to list pass just <cli-name>")
 	}
+	if err := checkNewCLIName(cliName); err != nil {
+		return err
+	}
 	declared, stored := args[1], args[2]
-	if !validBusKey(declared) || !validBusKey(stored) {
+	if !envfile.ValidKey(declared) || !envfile.ValidKey(stored) {
 		return fmt.Errorf("env var names must be valid identifiers (A-Z, 0-9, underscore)")
 	}
-	aliases, err := readAliases(cliName)
+	aliases, err := readEnvForRewrite(aliasesPath(cliName), cliName)
 	if err != nil {
 		return err
 	}

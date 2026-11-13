@@ -205,12 +205,11 @@ TESLA_AUTH_TOKEN = "OAUTH_BEARER"
 	}
 }
 
-func TestParseEnvBytesShimDropsBOMAndCR(t *testing.T) {
-	got, err := parseEnvBytesShim([]byte("\ufeffA=1\r\nB=\"x\"\r\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got["A"] != "1" || got["B"] != "x" || len(got) != 2 {
-		t.Fatalf("want A=1 B=x like the reader, got %q", got)
+func TestSecretEnv_DropsBOMAndCRLikeTheReader(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSecrets(t, home, "demo-cli", "\ufeffA=1\r\nB=\"x\"\r\n")
+	if out := envLines(t, "demo-cli"); out != "A=1\nB=x\n" {
+		t.Fatalf("want A=1 B=x like the reader, got %q", out)
 	}
 }
