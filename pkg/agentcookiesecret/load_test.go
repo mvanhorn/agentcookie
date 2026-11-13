@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mvanhorn/agentcookie/internal/envfile"
 )
 
 // writeFile is a t.Helper for tests; mkdir parents, write 0600.
@@ -221,7 +223,7 @@ func TestLoad_OversizedLineNamesLine(t *testing.T) {
 }
 
 func TestParseEnvScanner_QuotesStripped(t *testing.T) {
-	got, err := parseEnvBytes([]byte("A=\"hello world\"\nB='also quoted'\nC=plain\n"))
+	got, err := envfile.ParseBytes([]byte("A=\"hello world\"\nB='also quoted'\nC=plain\n"))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -231,7 +233,7 @@ func TestParseEnvScanner_QuotesStripped(t *testing.T) {
 }
 
 func TestParseEnvScanner_BackslashContinuation(t *testing.T) {
-	got, err := parseEnvBytes([]byte("LONG=part1\\\npart2\n"))
+	got, err := envfile.ParseBytes([]byte("LONG=part1\\\npart2\n"))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -241,7 +243,7 @@ func TestParseEnvScanner_BackslashContinuation(t *testing.T) {
 }
 
 func TestParseEnvScanner_RejectsWhitespaceAroundEquals(t *testing.T) {
-	_, err := parseEnvBytes([]byte("KEY = value\n"))
+	_, err := envfile.ParseBytes([]byte("KEY = value\n"))
 	if err == nil {
 		t.Errorf("whitespace around = should reject")
 	}
@@ -289,7 +291,7 @@ func TestLoad_InvalidKeyErrorDoesNotEchoLine(t *testing.T) {
 }
 
 func TestParseEnvScanner_StripsLeadingBOM(t *testing.T) {
-	got, err := parseEnvBytes([]byte("\xef\xbb\xbfA=1\nB=2\n"))
+	got, err := envfile.ParseBytes([]byte("\xef\xbb\xbfA=1\nB=2\n"))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

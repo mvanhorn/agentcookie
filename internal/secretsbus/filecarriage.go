@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/mvanhorn/agentcookie/internal/envfile"
 )
 
 // File carriage lets the secrets bus carry an arbitrary FILE (a multiline PEM,
@@ -92,7 +94,7 @@ func CarryFiles(files []ManifestV2File, enabled map[string]bool, homeDir string)
 			errs = append(errs, fmt.Errorf("file item %q: %w", f.Key, err))
 			continue
 		}
-		if !validKeyName(f.Key) {
+		if !envfile.ValidKey(f.Key) {
 			errs = append(errs, fmt.Errorf("file item %q: invalid carry key", f.Key))
 			continue
 		}
@@ -245,7 +247,7 @@ func MaterializeFiles(homeDir string, cliName string, env map[string]string) (Ma
 		// re-validated (the sink does not trust the wire).
 		if envName, ok := env[CarryFileEnvKey(payloadKey)]; ok {
 			consumed[CarryFileEnvKey(payloadKey)] = true
-			if validKeyName(envName) {
+			if envfile.ValidKey(envName) {
 				if result.EnvAdditions == nil {
 					result.EnvAdditions = map[string]string{}
 				}

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mvanhorn/agentcookie/internal/envfile"
 )
 
 func writeFile(t *testing.T, path, content string) {
@@ -192,7 +194,7 @@ func TestParseEnvFile_Comments(t *testing.T) {
 	tmp := t.TempDir()
 	p := filepath.Join(tmp, "secrets.env")
 	writeFile(t, p, "# header comment\nKEY1=value1\n\n# another\nKEY2=value2\n")
-	got, err := parseEnvFile(p)
+	got, err := envfile.ReadFile(p)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -208,7 +210,7 @@ func TestParseEnvFile_QuotesStripped(t *testing.T) {
 SQ='single quoted'
 BARE=plain
 `)
-	got, err := parseEnvFile(p)
+	got, err := envfile.ReadFile(p)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -227,7 +229,7 @@ func TestParseEnvFile_WhitespaceAroundEqualsRejected(t *testing.T) {
 	tmp := t.TempDir()
 	p := filepath.Join(tmp, "secrets.env")
 	writeFile(t, p, "KEY = value\n")
-	_, err := parseEnvFile(p)
+	_, err := envfile.ReadFile(p)
 	if err == nil {
 		t.Fatalf("whitespace around = should be rejected")
 	}
@@ -237,7 +239,7 @@ func TestParseEnvFile_MissingEqualsRejected(t *testing.T) {
 	tmp := t.TempDir()
 	p := filepath.Join(tmp, "secrets.env")
 	writeFile(t, p, "KEY value without equals\n")
-	_, err := parseEnvFile(p)
+	_, err := envfile.ReadFile(p)
 	if err == nil {
 		t.Fatalf("missing = should be rejected")
 	}
@@ -247,7 +249,7 @@ func TestParseEnvFile_BackslashContinuation(t *testing.T) {
 	tmp := t.TempDir()
 	p := filepath.Join(tmp, "secrets.env")
 	writeFile(t, p, "LONG=part1\\\npart2\n")
-	got, err := parseEnvFile(p)
+	got, err := envfile.ReadFile(p)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -260,7 +262,7 @@ func TestParseEnvFile_ReservedKeysPassThrough(t *testing.T) {
 	tmp := t.TempDir()
 	p := filepath.Join(tmp, "secrets.env")
 	writeFile(t, p, "_unknown_legacy_field=somevalue\n_BIN_BLOB=YmFzZTY0\n")
-	got, err := parseEnvFile(p)
+	got, err := envfile.ReadFile(p)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -296,5 +298,18 @@ func TestValidCLIName(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("validCLIName(%q): got %v, want %v", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestLoadPayload_InvalidKeyErrorDoesNotEchoLine(t *testing.T) {
+	home := t.TempDir()
+	writeFile(t, filepath.Join(SecretsRoot(home), "demo-cli", "secrets.env"), "A=1\nsk-live+SECRET=1\n")
+	_, errs := LoadPayload(home)
+	if len(errs) != 1 {
+		t.Fatalf("want one error, got %v", errs)
+	}
+	msg := errs[0].Error()
+	if !strings.Contains(msg, "line 2") || strings.Contains(msg, "SECRET") || strings.Contains(msg, "sk-live") {
+		t.Fatalf("error should name line 2 without the key text, got %q", msg)
 	}
 }

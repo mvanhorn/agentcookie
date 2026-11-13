@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mvanhorn/agentcookie/internal/envfile"
+
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 )
 
@@ -80,7 +82,7 @@ func WritePayload(homeDir string, payload map[string]map[string]string, sealingE
 		// done this, but the sink does NOT trust the wire payload.
 		safe := map[string]string{}
 		for k, v := range kv {
-			if !validKeyName(k) {
+			if !envfile.ValidKey(k) {
 				errs = append(errs, fmt.Errorf("%s: dropping invalid key name %q", cliName, k))
 				continue
 			}
