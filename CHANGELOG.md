@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Secrets read back exactly as stored, and `secret env` is safe to eval (#PRNUM)
+
+- `secret set`, `secret import-from`, `secret alias` and the sink wrote values raw. A value with a newline split into two lines, so `a\nEVIL=x` stored a second key `EVIL`, and one bad `set` could make a CLI's whole bus entry unreadable. A value ending in `\` swallowed the next line, and a value wrapped in quotes lost them. Writers now quote a value that would not read back unchanged bare (`C:\dir\` is written `'C:\dir\'`), and refuse a value with a newline or a trailing `\r`, or whose line would reach 256 KiB. The refusal names the CLI and key, never the value. `secret set` trims a trailing CRLF from stdin.
+- The sink drops a value it cannot store, keeps writing the CLI's other keys, and logs the CLI and how many keys it dropped. When every key for a CLI is dropped, its existing `secrets.env` is left as it was.
+- `secret get`, `secret env` and `secret list` now parse bus files with the same grammar as the Go and Python readers, so the CLI and the libraries agree on every file, including backslash continuations and invalid key names.
+- `secret set`, `secret rm <cli> <key>`, `secret import-from` and `secret alias` refuse to rewrite a file they could not write back unchanged (one that does not parse, uses a backslash continuation, or holds a value they would refuse) and name the line. Edit that line, or run `agentcookie secret rm <cli>` and set the keys again. A missing file still starts empty.
+- `secret env` quotes each value for the shell, so `eval "$(agentcookie secret env <cli>)"` assigns a synced value containing `$(...)` or `;` as text instead of running it. A value no quoting can carry safely is left out, with a note on stderr naming the key. The Python reader removes that quoting when it unseals through `secret env`; update it along with agentcookie, since an older Python reader keeps the quotes on such values.
+- `secret import-from` of a `.env` file stores a key that is not a valid name as `_unknown_line<N>` instead of a name built from its text, which can be a secret pasted on its own line. It now joins backslash continuations and handles a BOM and CRLF, and it skips a value the bus cannot carry, noting the key, and imports the rest.
+- Errors and logs no longer echo an invalid key name read from a file or received over the wire: the source-side parser, the sink's dropped-key message and the carried-file env message now give a line number or a count.
+- A new CLI name containing `--` is refused by `secret set`, `secret alias`, `secret import-from --as` and adoption manifest validation, as spec section 2.3 and the Python reader already require. An existing `--` name still reads, lists and can be removed.
+
 ### New `agentcookie sinks`: list the sinks a source feeds, and remove one (#169, by @officialasishkumar)
 
 - `agentcookie sinks list` shows each sink in `source.yaml` with its peer, URL, whether its paired key is present, and its last push. `--json` prints the same rows, and an empty array on a source that delivers to teammates only. A sink whose key is missing says how to pair it again.

@@ -63,6 +63,11 @@ shell-assignable lines:
 eval "$(agentcookie secret env tesla-pp-cli)"
 ```
 
+Each value is quoted for the shell, so a synced value containing spaces,
+`$(...)` or `;` is assigned as text and never runs. A value that no quoting
+can carry safely (one with both a `'` and one of `"`, `\`, `$` or a backtick)
+is left out, with a note on stderr naming the key.
+
 Code can read the same files with a reader library instead of a shell:
 `pkg/agentcookiesecret` for Go, and `agentcookie_secret` in `clients/python`
 for Python (`from agentcookie_secret import load; env = load("tesla-pp-cli")`).
