@@ -311,6 +311,8 @@ On Linux, `doctor` reports expected FAILs for macOS-specific checks (codesign, C
 
 The message `wrote 0 cookies` for Chrome SQLite is expected on Linux. Success is the live CDP inject line.
 
+Older sinks left an `about:blank` tab in the `live_cdp` Chrome on most injects. If yours piled up, run `agentcookie sink sweep-tabs --dry-run` to list the stale blank tabs, then `agentcookie sink sweep-tabs` once to close them. It never closes a real page, a tab a client is attached to, or the last open page.
+
 ## Cookie policy
 
 ### Linux defaults to allowlist-empty (ship nothing)
