@@ -57,6 +57,9 @@ const (
 // files are checked again.
 var afterCopy func()
 
+// beforeWALCopy, when set, runs just before the live -wal is copied.
+var beforeWALCopy func()
+
 // ReadCookies returns the ordinary cookies in the Gecko cookies.sqlite at
 // path. It copies the file and its -wal into a private temp directory, reads
 // the copy, and deletes it, so the live profile is never opened and the read
@@ -127,7 +130,15 @@ func copyStable(path, dir string) (string, error) {
 			return "", err
 		}
 		if before[1].exists {
+			if beforeWALCopy != nil {
+				beforeWALCopy()
+			}
 			if err := copyFile(live[1], dst+"-wal"); err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					// The browser checkpointed and removed its WAL mid-copy,
+					// so the database just changed; try again.
+					continue
+				}
 				return "", err
 			}
 		} else if err := os.WriteFile(dst+"-wal", nil, 0o600); err != nil {
