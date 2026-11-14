@@ -857,10 +857,6 @@ func checkSourceAdapter(
 	}
 }
 
-// checkGeckoSourceAdapter validates a Firefox-family source: the profile
-// resolved when source.yaml loaded, so it checks that cookies.sqlite is
-// present and reads it once for a count. There is no Keychain item or
-// decryption for Gecko cookies.
 func checkGeckoSourceAdapter(srcCfg *config.SourceConfig, cookiesExists func(path string) error) Check {
 	name := strings.ToLower(strings.TrimSpace(srcCfg.Browser.Name))
 	path := srcCfg.Chrome.DBPath

@@ -81,6 +81,9 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	if err := applyBrowserOverride(cfg, agentSyncBrowser); err != nil {
+		return err
+	}
 	key, err := sourceCookieKey(cfg, agentSyncBrowser, sourcePasswordFor)
 	if err != nil {
 		return err

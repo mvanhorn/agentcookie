@@ -69,6 +69,9 @@ func runExport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	if err := applyBrowserOverride(cfg, exportBrowser); err != nil {
+		return err
+	}
 	key, err := sourceCookieKey(cfg, exportBrowser, sourcePasswordFor)
 	if err != nil {
 		return err

@@ -91,6 +91,9 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	if err := applyBrowserOverride(cfg, cmuxSyncBrowser); err != nil {
+		return err
+	}
 	key, err := sourceCookieKey(cfg, cmuxSyncBrowser, cmuxSyncPasswordFor)
 	if err != nil {
 		if cmuxSyncWatch && chrome.IsKeychainAccessError(err) {

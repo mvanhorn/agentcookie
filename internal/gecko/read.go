@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -16,7 +17,6 @@ import (
 )
 
 const (
-	// Chrome stores times as microseconds since 1601-01-01.
 	chromeEpochOffsetSec = 11644473600
 
 	// moz_cookies schema versions (PRAGMA user_version) where the meaning of
@@ -35,16 +35,26 @@ const (
 	mozSameSiteLax    = 1
 	mozSameSiteStrict = 2
 
-	// Gecko schemeMap bits.
 	mozSchemeHTTP  = 0x01
 	mozSchemeHTTPS = 0x02
+
+	chromeSameSiteUnspecified = -1
+	chromeSameSiteNone        = 0
+	chromeSameSiteLax         = 1
+	chromeSameSiteStrict      = 2
+
+	chromeSchemeUnset     = 0
+	chromeSchemeNonSecure = 1
+	chromeSchemeSecure    = 2
+
+	chromePriorityMedium = 1
 
 	copyAttempts = 5
 	copyBackoff  = 50 * time.Millisecond
 )
 
 // afterCopy, when set, runs after each copy attempt and before the live
-// files are checked again. Tests use it to simulate a browser write.
+// files are checked again.
 var afterCopy func()
 
 // ReadCookies returns the ordinary cookies in the Gecko cookies.sqlite at
@@ -87,9 +97,18 @@ func statLive(path string) (liveState, error) {
 	return liveState{exists: true, size: fi.Size(), mtime: fi.ModTime()}, nil
 }
 
-// copyStable copies path and path-wal into dir and returns the copy's path.
-// A copy only counts when neither live file changed size or mtime while it
-// was taken; otherwise it retries a few times and then gives up.
+func statAll(paths []string) ([]liveState, error) {
+	out := make([]liveState, len(paths))
+	for i, p := range paths {
+		st, err := statLive(p)
+		if err != nil {
+			return nil, fmt.Errorf("stat %s: %w", p, err)
+		}
+		out[i] = st
+	}
+	return out, nil
+}
+
 func copyStable(path, dir string) (string, error) {
 	dst := filepath.Join(dir, CookiesFile)
 	live := []string{path, path + "-wal"}
@@ -97,13 +116,9 @@ func copyStable(path, dir string) (string, error) {
 		if attempt > 0 {
 			time.Sleep(copyBackoff)
 		}
-		before := make([]liveState, len(live))
-		for i, p := range live {
-			st, err := statLive(p)
-			if err != nil {
-				return "", fmt.Errorf("stat %s: %w", p, err)
-			}
-			before[i] = st
+		before, err := statAll(live)
+		if err != nil {
+			return "", err
 		}
 		if !before[0].exists {
 			return "", fmt.Errorf("%s not found at %s", CookiesFile, path)
@@ -123,17 +138,11 @@ func copyStable(path, dir string) (string, error) {
 		if afterCopy != nil {
 			afterCopy()
 		}
-		settled := true
-		for i, p := range live {
-			st, err := statLive(p)
-			if err != nil {
-				return "", fmt.Errorf("stat %s: %w", p, err)
-			}
-			if st != before[i] {
-				settled = false
-			}
+		after, err := statAll(live)
+		if err != nil {
+			return "", err
 		}
-		if settled {
+		if slices.Equal(before, after) {
 			return dst, nil
 		}
 	}
@@ -197,7 +206,7 @@ func readCopy(path string, now time.Time) ([]chrome.Cookie, error) {
 	rows, err := db.Query(`SELECT originAttributes, COALESCE(name, ''), COALESCE(value, ''),
 		COALESCE(host, ''), COALESCE(path, ''), COALESCE(expiry, 0), COALESCE(lastAccessed, 0),
 		COALESCE(isSecure, 0), COALESCE(isHttpOnly, 0), COALESCE(sameSite, 0), ` + rawSameSite + `,
-		COALESCE(schemeMap, 0) FROM moz_cookies`)
+		COALESCE(schemeMap, 0) FROM moz_cookies WHERE originAttributes = ''`)
 	if err != nil {
 		return nil, fmt.Errorf("read moz_cookies: %w", err)
 	}
@@ -219,10 +228,6 @@ func readCopy(path string, now time.Time) ([]chrome.Cookie, error) {
 	return out, nil
 }
 
-// mapCookie converts one moz_cookies row into a Chrome cookie record with
-// the same meaning downstream. It reports false for rows that are skipped:
-// any non-default originAttributes (containers, private browsing,
-// partitioned cookies) and cookies already expired at now.
 func mapCookie(r mozCookie, version int, now time.Time) (chrome.Cookie, bool) {
 	if r.originAttributes != "" {
 		return chrome.Cookie{}, false
@@ -234,7 +239,7 @@ func mapCookie(r mozCookie, version int, now time.Time) (chrome.Cookie, bool) {
 		Path:         r.path,
 		IsSecure:     r.isSecure,
 		IsHTTPOnly:   r.isHTTPOnly,
-		Priority:     1, // medium
+		Priority:     chromePriorityMedium,
 		SameSite:     mapSameSite(r, version),
 		SourceScheme: mapScheme(r.schemeMap),
 		SourcePort:   -1, // Gecko stores no port; -1 is Chrome's "unspecified"
@@ -258,37 +263,33 @@ func mapCookie(r mozCookie, version int, now time.Time) (chrome.Cookie, bool) {
 	return c, true
 }
 
-// mapSameSite returns Chrome's SameSite value: -1 unspecified, 0 None,
-// 1 Lax, 2 Strict.
 func mapSameSite(r mozCookie, version int) int {
 	if version < schemaNoRawSameSite && r.sameSite == mozSameSiteLax &&
 		r.rawSameSite.Valid && r.rawSameSite.Int64 == mozSameSiteNone {
 		// Older schemas wrote Lax-by-default into sameSite for a cookie
 		// that sent no SameSite, keeping the sent value in rawSameSite.
 		// Mozilla's own upgrade turns exactly these rows into "unset".
-		return -1
+		return chromeSameSiteUnspecified
 	}
 	switch r.sameSite {
 	case mozSameSiteNone:
-		return 0
+		return chromeSameSiteNone
 	case mozSameSiteLax:
-		return 1
+		return chromeSameSiteLax
 	case mozSameSiteStrict:
-		return 2
+		return chromeSameSiteStrict
 	default: // 256 (unset), or a value this reader does not know
-		return -1
+		return chromeSameSiteUnspecified
 	}
 }
 
-// mapScheme returns Chrome's source scheme: 2 secure, 1 non-secure,
-// 0 unset.
 func mapScheme(schemeMap int) int {
 	switch {
 	case schemeMap&mozSchemeHTTPS != 0:
-		return 2
+		return chromeSchemeSecure
 	case schemeMap&mozSchemeHTTP != 0:
-		return 1
+		return chromeSchemeNonSecure
 	default:
-		return 0
+		return chromeSchemeUnset
 	}
 }

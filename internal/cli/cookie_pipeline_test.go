@@ -42,15 +42,11 @@ func TestReadConfiguredCookiesUsesCDPWithoutSQLiteFallback(t *testing.T) {
 	}
 }
 
-// geckoTestCookie is one row of a fixture Gecko cookies.sqlite.
 type geckoTestCookie struct {
 	host, name, value string
 	expiryMS          int64
 }
 
-// writeGeckoProfile creates a single-profile Gecko root for browser under
-// home (the layout for this OS) holding a current-schema cookies.sqlite with
-// rows, and returns the cookies.sqlite path.
 func writeGeckoProfile(t *testing.T, home, browser string, rows []geckoTestCookie) string {
 	t.Helper()
 	b, ok := gecko.Lookup(browser)
@@ -131,6 +127,9 @@ func TestSourceCookieKeySkipsKeychainForGecko(t *testing.T) {
 
 	t.Run("flag overrides a Chromium config", func(t *testing.T) {
 		cfg := &config.SourceConfig{Chrome: config.ChromeRef{DBPath: "/chrome/Default/Cookies"}, Browser: config.BrowserRef{Name: "chrome"}}
+		if err := applyBrowserOverride(cfg, "firefox"); err != nil {
+			t.Fatalf("applyBrowserOverride: %v", err)
+		}
 		key, err := sourceCookieKey(cfg, "firefox", noKeychain)
 		if err != nil || key != nil {
 			t.Fatalf("key = %v, err = %v; want nil, nil", key, err)
@@ -142,13 +141,16 @@ func TestSourceCookieKeySkipsKeychainForGecko(t *testing.T) {
 
 	t.Run("Chromium flag over a Gecko config is refused", func(t *testing.T) {
 		cfg := &config.SourceConfig{Chrome: config.ChromeRef{DBPath: firefox}, Browser: config.BrowserRef{Name: "firefox"}}
-		if _, err := sourceCookieKey(cfg, "chrome", noKeychain); err == nil {
+		if err := applyBrowserOverride(cfg, "chrome"); err == nil {
 			t.Fatal("expected an error, not a Chrome key for a Firefox cookie file")
 		}
 	})
 
 	t.Run("unknown flag lists both families", func(t *testing.T) {
 		cfg := &config.SourceConfig{}
+		if err := applyBrowserOverride(cfg, "vivaldi"); err != nil {
+			t.Fatalf("applyBrowserOverride: %v", err)
+		}
 		_, err := sourceCookieKey(cfg, "vivaldi", noKeychain)
 		if err == nil || !strings.Contains(err.Error(), "chrome") || !strings.Contains(err.Error(), "zen") {
 			t.Fatalf("got %v, want an error listing Chromium and Gecko names", err)

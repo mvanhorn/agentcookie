@@ -11,14 +11,13 @@ import (
 
 type iniProfile struct {
 	name string
-	dir  string // absolute
-	def  bool   // Default=1
+	dir  string
+	def  bool // Default=1
 }
 
 type profilesINI struct {
-	root     string
-	profiles []iniProfile
-	// installDefaults are the distinct [Install...] Default= dirs, absolute.
+	root            string
+	profiles        []iniProfile
 	installDefaults []string
 }
 
@@ -94,7 +93,6 @@ func ResolveProfile(b Browser, home string, linux bool, profile string) (string,
 	return "", fmt.Errorf("%s: no single default profile; set browser.profile to one of: %s", b.Name, describe(ini.profiles))
 }
 
-// pickNamed finds the one profile across found that profile names.
 func pickNamed(b Browser, found []profilesINI, profile string) (string, error) {
 	var matches []iniProfile
 	for _, f := range found {
@@ -127,8 +125,6 @@ func describe(ps []iniProfile) string {
 	return strings.Join(out, ", ")
 }
 
-// parseProfilesINI reads the [Profile...] and [Install...] sections of a
-// profiles.ini under root.
 func parseProfilesINI(root string, data []byte) profilesINI {
 	ini := profilesINI{root: root}
 	type section struct {
@@ -170,7 +166,6 @@ func parseProfilesINI(root string, data []byte) profilesINI {
 				def:  s.keys["Default"] == "1",
 			})
 		case strings.HasPrefix(s.name, "Install") && s.keys["Default"] != "":
-			// Install defaults are relative to the root unless absolute.
 			dir := abs(s.keys["Default"], !filepath.IsAbs(s.keys["Default"]))
 			if !seen[dir] {
 				seen[dir] = true

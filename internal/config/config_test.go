@@ -292,22 +292,6 @@ security:
 	}
 }
 
-func TestSupportedBrowserNamesIncludesGecko(t *testing.T) {
-	names := SupportedBrowserNames()
-	if !sort.StringsAreSorted(names) {
-		t.Errorf("names not sorted: %v", names)
-	}
-	have := map[string]bool{}
-	for _, n := range names {
-		have[n] = true
-	}
-	for _, want := range []string{"chrome", "brave", "zen", "firefox", "librewolf", "floorp"} {
-		if !have[want] {
-			t.Errorf("SupportedBrowserNames() = %v, missing %q", names, want)
-		}
-	}
-}
-
 func TestLoadSourceMissingSinkURL(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "source.yaml", `

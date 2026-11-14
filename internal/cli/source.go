@@ -22,7 +22,6 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chromedirsync"
 	"github.com/mvanhorn/agentcookie/internal/cli/httpserver"
 	"github.com/mvanhorn/agentcookie/internal/config"
-	"github.com/mvanhorn/agentcookie/internal/gecko"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/pairing"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
@@ -188,8 +187,7 @@ func runSource(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	// A Gecko source has no Local Storage or IndexedDB to watch or pack.
-	isGecko := !cfg.CDPSource.Enabled && gecko.IsBrowser(cfg.Browser.Name)
+	isGecko := isGeckoSource(cfg)
 	adapter := strings.ToLower(strings.TrimSpace(cfg.Browser.Name))
 	var sourceBrowser chrome.Browser
 	if !cfg.CDPSource.Enabled && !isGecko {
@@ -250,13 +248,12 @@ func runSource(cmd *cobra.Command, args []string) error {
 	// When Local Storage is skipped there is nothing to push on a Local
 	// Storage write, so don't watch it either (it changes constantly).
 	localStorageDir, indexedDBDir := "", ""
-	switch {
-	case isGecko:
-	case skipLocalStorage():
-		fmt.Fprintf(os.Stderr, "agentcookie source --watch: skipping Local Storage (--skip-local-storage / %s=1)\n", envSkipLocalStorage)
-		indexedDBDir = sourceBrowser.IndexedDBDir(cfg.Browser.Profile)
-	default:
-		localStorageDir = sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile)
+	if !isGecko {
+		if skipLocalStorage() {
+			fmt.Fprintf(os.Stderr, "agentcookie source --watch: skipping Local Storage (--skip-local-storage / %s=1)\n", envSkipLocalStorage)
+		} else {
+			localStorageDir = sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile)
+		}
 		indexedDBDir = sourceBrowser.IndexedDBDir(cfg.Browser.Profile)
 	}
 	w, err := watcher.New(watcher.Config{
@@ -620,9 +617,6 @@ func pushOnce(
 	var dbsc dbscSummary
 	secrets := secretsSummary{skipped: skipSecrets()}
 
-	// Shared read pipeline (read -> cookie policy -> DBSC). See
-	// readConfiguredCookies in cookie_pipeline.go; `source` and `cmux-sync`
-	// both use it so they filter identically.
 	all, st, err := readConfiguredCookies(ctx, cfg, blocklist, key, skipDBSC, time.Now().UTC())
 	if err != nil {
 		pullPayloadCache.ClearIfCurrent(pullGen)
@@ -721,7 +715,7 @@ func pushOnce(
 	var lsTarball []byte
 	var idbTarball []byte
 	var idbSkipped []string
-	if !cfg.CDPSource.Enabled && !gecko.IsBrowser(cfg.Browser.Name) {
+	if !cfg.CDPSource.Enabled && !isGeckoSource(cfg) {
 		// CDP source mode intentionally carries cookies only: localStorage and
 		// IndexedDB remain in the existing browser and must not be scraped from
 		// an on-disk profile as a fallback. A Gecko source carries cookies

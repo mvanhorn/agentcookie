@@ -22,9 +22,6 @@ import (
 // the decryptor was never told about. These guards fail loudly the moment a
 // new fork is added to one table but not the other.
 //
-// Gecko browsers live in their own table in internal/gecko. config accepts
-// the union of both tables, so the guards check each table separately.
-//
 // The cleaner long-term shape is a single dependency-free registry (e.g. in
 // internal/chromepaths) consumed by both packages; until that refactor lands
 // these tests are the drift backstop.
@@ -64,8 +61,6 @@ func TestSourceBrowserRegistriesAgreeOnCookiesPath(t *testing.T) {
 	}
 }
 
-// Each Gecko browser must resolve, through config, to cookies.sqlite in the
-// profile under its own root on this OS.
 func TestGeckoRegistryResolvesCookiesUnderItsRoot(t *testing.T) {
 	for _, name := range gecko.Names() {
 		t.Run(name, func(t *testing.T) {

@@ -1776,8 +1776,6 @@ func resetSkipSecretsWarning() {
 	skipSecretsWarnMu.Unlock()
 }
 
-// A real push from a Gecko source carries the profile's cookies through the
-// cookie policy, and no Local Storage or IndexedDB tarball.
 func TestSourcePushGeckoProfile(t *testing.T) {
 	fx := newSourcePushFixture(t, nil)
 	home, _ := os.UserHomeDir()

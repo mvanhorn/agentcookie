@@ -1,7 +1,6 @@
-// Package gecko reads cookies from Firefox-family browsers (Zen, Firefox,
-// LibreWolf, Floorp). Gecko stores cookies unencrypted in a profile's
-// cookies.sqlite, so no Keychain item is involved. The reader only ever
-// opens a private copy of that file; the live profile is never written.
+// Package gecko reads cookies from Firefox-family browsers. The reader only
+// ever opens a private copy of a profile's cookies.sqlite; the live profile
+// is never written.
 package gecko
 
 import (
@@ -10,16 +9,11 @@ import (
 	"strings"
 )
 
-// CookiesFile is the cookie database file name inside a Gecko profile.
 const CookiesFile = "cookies.sqlite"
 
-// Browser describes where one Gecko browser keeps its profiles.
 type Browser struct {
-	Name string
-	// MacRoot is the profile root under ~/Library/Application Support.
-	MacRoot string
-	// LinuxRoots are profile roots relative to the home directory: the
-	// native root first, then its snap and flatpak roots.
+	Name       string
+	MacRoot    string
 	LinuxRoots []string
 }
 
@@ -61,13 +55,11 @@ func Lookup(name string) (Browser, bool) {
 	return b, true
 }
 
-// IsBrowser reports whether name is a Gecko browser.
 func IsBrowser(name string) bool {
-	_, ok := Lookup(name)
+	_, ok := browsers[strings.ToLower(strings.TrimSpace(name))]
 	return ok
 }
 
-// Names returns the Gecko browser names, sorted.
 func Names() []string {
 	names := make([]string, 0, len(browsers))
 	for name := range browsers {
@@ -77,7 +69,6 @@ func Names() []string {
 	return names
 }
 
-// Roots returns the absolute profile roots b may use under home.
 func (b Browser) Roots(home string, linux bool) []string {
 	if !linux {
 		return []string{filepath.Join(home, "Library", "Application Support", b.MacRoot)}

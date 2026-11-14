@@ -497,9 +497,6 @@ func DefaultChromeCookiesPath() string {
 // source browser. Empty name/profile default to Chrome/Default.
 // On macOS: ~/Library/Application Support/<browser>/<profile>/Cookies
 // On Linux: ~/.config/<browser>/<profile>/Cookies
-//
-// For a Gecko browser (zen, firefox, librewolf, floorp) it returns the
-// cookies.sqlite of the profile resolved from the browser's profiles.ini.
 func SourceBrowserCookiesPath(name, profile string) (string, error) {
 	if b, ok := gecko.Lookup(name); ok {
 		home, err := os.UserHomeDir()
@@ -577,7 +574,7 @@ func lookupSourceBrowserPath(name string) (browserPathRef, error) {
 }
 
 // SupportedBrowserNames returns the source-browser adapter names accepted by
-// source.yaml: the Chromium browsers and the Gecko browsers.
+// source.yaml.
 func SupportedBrowserNames() []string {
 	names := make([]string, 0, len(sourceBrowserPaths))
 	for name := range sourceBrowserPaths {

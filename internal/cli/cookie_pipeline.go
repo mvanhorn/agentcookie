@@ -25,27 +25,34 @@ var readCDPSource = cdpsource.Read
 
 // readConfiguredCookies reads cookies from the configured source without
 // falling back between CDP, Gecko and Chromium SQLite. CDP profiles never
-// invoke browser discovery, Keychain, or SQLite; Gecko profiles read their
-// unencrypted cookies.sqlite with no Keychain; Chromium profiles retain the
-// legacy path.
+// invoke browser discovery, Keychain, or SQLite.
 func readConfiguredCookies(ctx context.Context, cfg *config.SourceConfig, blocklist *config.Blocklist, key []byte, skipDBSC bool, now time.Time) ([]chrome.Cookie, readStats, error) {
-	if cfg.CDPSource.Enabled {
-		all, err := readCDPSource(ctx, cfg.CDPSource.Endpoint)
-		if err != nil {
-			return nil, readStats{}, fmt.Errorf("read cookies from cdp source: %w", err)
+	var all []chrome.Cookie
+	var err error
+	switch {
+	case cfg.CDPSource.Enabled:
+		if all, err = readCDPSource(ctx, cfg.CDPSource.Endpoint); err != nil {
+			err = fmt.Errorf("read cookies from cdp source: %w", err)
 		}
-		cookies, stats := filterCookies(all, blocklist, skipDBSC, now)
-		return cookies, stats, nil
-	}
-	if gecko.IsBrowser(cfg.Browser.Name) {
-		all, err := gecko.ReadCookies(cfg.Chrome.DBPath, now)
-		if err != nil {
-			return nil, readStats{}, fmt.Errorf("read %s cookies: %w", cfg.Browser.Name, err)
+	case gecko.IsBrowser(cfg.Browser.Name):
+		if all, err = gecko.ReadCookies(cfg.Chrome.DBPath, now); err != nil {
+			err = fmt.Errorf("read %s cookies: %w", cfg.Browser.Name, err)
 		}
-		cookies, stats := filterCookies(all, blocklist, skipDBSC, now)
-		return cookies, stats, nil
+	default:
+		if all, err = chrome.ReadCookiesForHost(cfg.Chrome.DBPath, "%", key); err != nil {
+			err = fmt.Errorf("read cookies: %w", err)
+		}
 	}
-	return readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, now)
+	if err != nil {
+		return nil, readStats{}, err
+	}
+	cookies, stats := filterCookies(all, blocklist, skipDBSC, now)
+	return cookies, stats, nil
+}
+
+// isGeckoSource reports whether cfg reads a Gecko profile's cookies.sqlite.
+func isGeckoSource(cfg *config.SourceConfig) bool {
+	return !cfg.CDPSource.Enabled && gecko.IsBrowser(cfg.Browser.Name)
 }
 
 // readFilteredCookies reads every cookie from the browser's Cookies DB,
@@ -88,34 +95,41 @@ func filterCookies(all []chrome.Cookie, blocklist *config.Blocklist, skipDBSC bo
 	return all, st
 }
 
-// sourcePasswordFor is the Keychain reader seam for the source-reading
-// commands; tests stub it to prove a path never reads the Keychain.
 var sourcePasswordFor = chrome.SafeStoragePasswordFor
 
-// sourceCookieKey returns the cookie decryption key for the source browser
-// that override, or else source.yaml, names.
-//
-// A Gecko browser has no key: it returns nil without touching the Keychain.
-// When override names a Gecko browser other than the configured one, cfg is
-// pointed at that browser's own cookies.sqlite, so the read never falls back
-// to the configured Chrome cookie file.
-func sourceCookieKey(cfg *config.SourceConfig, override string, passwordFor func(chrome.Browser) (string, error)) ([]byte, error) {
+// applyBrowserOverride points cfg at the browser a --browser override names.
+// A Gecko override other than the configured browser re-points cfg at that
+// browser's own cookies.sqlite, so the read never falls back to the
+// configured Chrome cookie file. A Chromium override of a Gecko source is
+// refused.
+func applyBrowserOverride(cfg *config.SourceConfig, override string) error {
 	if cfg.CDPSource.Enabled {
-		return nil, nil
+		return nil
 	}
 	override = strings.ToLower(strings.TrimSpace(override))
 	if gecko.IsBrowser(override) && !strings.EqualFold(override, strings.TrimSpace(cfg.Browser.Name)) {
 		path, err := config.SourceBrowserCookiesPath(override, "")
 		if err != nil {
-			return nil, err
+			return err
 		}
 		cfg.Browser = config.BrowserRef{Name: override}
 		cfg.Chrome.DBPath = path
 	}
 	if override != "" && !gecko.IsBrowser(override) && gecko.IsBrowser(cfg.Browser.Name) {
-		return nil, fmt.Errorf("--browser %s: source.yaml selects %s, and a Chromium override of a Gecko source is not supported; change browser.name in source.yaml instead", override, cfg.Browser.Name)
+		return fmt.Errorf("--browser %s: source.yaml selects %s, and a Chromium override of a Gecko source is not supported; change browser.name in source.yaml instead", override, cfg.Browser.Name)
 	}
-	name := override
+	return nil
+}
+
+// sourceCookieKey returns the cookie decryption key for the source browser
+// that override, or else source.yaml, names. Call applyBrowserOverride first.
+//
+// A Gecko browser has no key: it returns nil without touching the Keychain.
+func sourceCookieKey(cfg *config.SourceConfig, override string, passwordFor func(chrome.Browser) (string, error)) ([]byte, error) {
+	if cfg.CDPSource.Enabled {
+		return nil, nil
+	}
+	name := strings.ToLower(strings.TrimSpace(override))
 	if name == "" {
 		name = cfg.Browser.Name
 	}
