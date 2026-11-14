@@ -340,6 +340,20 @@ agentcookie services refresh
 - `agentcookie doctor` has a Login Items line that says which jobs show as agentcookie and what to run if one doesn't.
 - macOS may keep showing the old name until it re-registers the jobs, at the latest after your next login. If it still shows the old name after that, the last resort is `sfltool resetbtm` and a restart. That resets the Login Items approvals of every app, not just agentcookie.
 
+## Claude in Chrome on two Claude accounts
+
+Claude in Chrome pairs only with the Claude account it is signed into. To use it from two Claude Code accounts, give each account its own Chrome profile with the extension signed in, and copy your logins across once with `agentcookie profile-sync --to "Profile 1"`.
+
+Chrome unloads a profile when its last window closes, which disconnects Claude in Chrome for that account. `agentcookie profile-keepalive` keeps every such profile loaded inside the running Chrome, with no window and no focus change. The wizard turns it on when two or more profiles are signed into different Claude accounts. Otherwise it does nothing. Like the other background jobs, it runs through `agentcookie.app`, which needs the signed release build (`install-beta.sh`): macOS blocks an unsigned build run by launchd from reading Chrome's profile folder.
+
+```bash
+agentcookie profile-keepalive enable                      # turn on (no-op with one account)
+agentcookie profile-keepalive pause --profile "Profile 1" # hold off 10 minutes, e.g. before profile-sync
+agentcookie profile-keepalive disable                     # turn off and keep it off
+```
+
+While it is on, closing a profile's windows does not cut Claude in Chrome's access to that profile. Only `disable` does. Pausing only stops reloads; to unload a profile the keep-alive already loaded (before `profile-sync`, say), pause it, then open a window of that profile and close it, or quit Chrome.
+
 ## Fan out to multiple sinks
 
 One source can push the same cookies and secrets to several sinks. A source push reads and filters your cookies once, then seals and POSTs to each sink independently with that sink's own paired key. A sink that is down or unreachable is isolated: it fails on its own while the other sinks still receive the payload.
@@ -364,9 +378,17 @@ agentcookie wizard install --as source --add-sink \
   --sink-url http://<new-sink>.tailnet.ts.net:9999/sync
 ```
 
-`agentcookie status` and `agentcookie doctor` report each sink's last push and failures. See [examples/source-multi-sink.yaml](examples/source-multi-sink.yaml).
+`agentcookie status` and `agentcookie doctor` report each sink's last push and failures. `agentcookie sinks list` shows each configured sink with its key and last push. See [examples/source-multi-sink.yaml](examples/source-multi-sink.yaml).
 
-**Trust note:** every sink receives the same full cookie and secret set, so a compromise of the least-trusted sink exposes everything. Only list sinks you trust with the whole payload. To stop feeding a sink, remove its entry from `sinks:` and delete its `keys/<peer>.json`. The device-bound (DBSC) caveat below is per-sink and unchanged: each sink still needs its own Chrome signed into the same Google account.
+To stop feeding a sink (retired, or one you no longer trust):
+
+```bash
+agentcookie sinks remove grok-bot   # by peer, or by URL for a sink without one
+```
+
+It takes the sink out of `source.yaml`, keeping your comments, and deletes its `keys/<peer>.json`. A running source reads each key on every push, so the sink gets nothing from its next push on, and `GET /pull` refuses that key at once. Restart the source to drop the sink from its push list and from `status`. The key stays when another sink, a teammate or this machine's `sink.yaml` still uses that key file, or another key file holds the same key. Then the removed sink can keep pulling with it, even after a restart, until the key is rotated and every legitimate user of it is re-paired. `security.shared_secret` stays unless you pass `--revoke-shared-secret`, because pull-only sinks not listed in `source.yaml` may use it; while it stays, a removed machine that has it can keep pulling with it until you rotate it. With the flag it is removed for every machine that uses it, and a running source still accepts it on `GET /pull` until you restart it. Removing the last `sinks:` entry also removes a legacy `sink:`/`peer:` it was shadowing, and that peer's key unless something else uses it. The only sink cannot be removed unless `teammates.yaml` lists a teammate; pair another sink first, or run `agentcookie wizard uninstall`. Cookies and secrets the sink already received stay valid there until they expire or you sign out of those sites.
+
+**Trust note:** every sink receives the same full cookie and secret set, so a compromise of the least-trusted sink exposes everything. Only list sinks you trust with the whole payload, and remove one with `agentcookie sinks remove` as soon as you stop trusting it. The device-bound (DBSC) caveat below is per-sink and unchanged: each sink still needs its own Chrome signed into the same Google account.
 
 ## Client-only sinks (inbound blocked)
 
@@ -426,7 +448,6 @@ The secrets bus (bearer tokens, API keys, OAuth refresh tokens) is untouched by 
 ### Not yet
 
 - One source to many sinks fan-out
-- Python reader library for the secrets bus
 - Signature verification on adoption manifests
 
 ## Documentation

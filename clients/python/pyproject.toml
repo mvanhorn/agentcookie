@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentcookie-secret"
+version = "0.1.0"
+description = "Read per-CLI secrets synced by agentcookie (the secrets bus)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/mvanhorn/agentcookie"
+
+[tool.setuptools]
+packages = ["agentcookie_secret"]

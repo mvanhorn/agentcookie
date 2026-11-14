@@ -312,3 +312,19 @@ func TestSafeJoinUnderRoot(t *testing.T) {
 		}
 	}
 }
+
+func TestMaterializeFiles_InvalidEnvCompanionNotEchoed(t *testing.T) {
+	home := t.TempDir()
+	env := map[string]string{
+		"PEM":                  base64.StdEncoding.EncodeToString([]byte("data")),
+		CarryFileKey("PEM"):    "cli/key.pem",
+		CarryFileEnvKey("PEM"): "sk+SECRET",
+	}
+	res, _, errs := MaterializeFiles(home, "cli", env)
+	if res.FilesWritten != 1 || len(res.EnvAdditions) != 0 {
+		t.Fatalf("file should be written without an env addition: %+v", res)
+	}
+	if len(errs) != 1 || strings.Contains(errs[0].Error(), "SECRET") {
+		t.Fatalf("want one error without the companion text, got %v", errs)
+	}
+}

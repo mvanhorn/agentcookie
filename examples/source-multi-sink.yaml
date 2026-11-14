@@ -30,3 +30,7 @@ chrome:
 #
 #   agentcookie wizard install --as source --add-sink --peer <new-sink> \
 #     --sink-url http://<new-sink>.tailnet.ts.net:9999/sync
+#
+# Stop feeding a sink (removes its entry here and deletes its paired key):
+#
+#   agentcookie sinks remove <peer>
