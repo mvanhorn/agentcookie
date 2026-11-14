@@ -8,6 +8,44 @@
 - Both Chromes agentcookie launches now pass `MacAppCodeSignClone` in `--disable-features`, merged with chromedp's default disabled features so none of those are dropped.
 - No config change is needed.
 
+### Secrets read back exactly as stored, and `secret env` is safe to eval (#173)
+
+- `secret set`, `secret import-from`, `secret alias` and the sink wrote values raw. A value with a newline split into two lines, so `a\nEVIL=x` stored a second key `EVIL`, and one bad `set` could make a CLI's whole bus entry unreadable. A value ending in `\` swallowed the next line, and a value wrapped in quotes lost them. Writers now quote a value that would not read back unchanged bare (`C:\dir\` is written `'C:\dir\'`), and refuse a value with a newline or a trailing `\r`, or whose line would reach 256 KiB. The refusal names the CLI and key, never the value. `secret set` trims a trailing CRLF from stdin.
+- The sink drops a value it cannot store, keeps writing the CLI's other keys, and logs the CLI and how many keys it dropped. When every key for a CLI is dropped, its existing `secrets.env` is left as it was.
+- `secret get`, `secret env` and `secret list` now parse bus files with the same grammar as the Go and Python readers, so the CLI and the libraries agree on every file, including backslash continuations and invalid key names. That also fixes the Python reader's sealed path, which unseals through `secret env`.
+- `secret set`, `secret rm <cli> <key>` and `secret import-from` refuse to rewrite a `secrets.env` they could not write back unchanged (one that does not parse, uses a backslash continuation, or holds a value they would refuse) and name the line. Edit that line, or run `agentcookie secret rm <cli>` and set the keys again. `secret alias` refuses the same way for `aliases.env`. A missing file still starts empty.
+- `secret env` quotes each value for the shell, so `eval "$(agentcookie secret env <cli>)"` assigns a synced value containing `$(...)`, `;` or a leading `=` (which zsh expands) as text instead of running it. A value no quoting can carry safely (one with a `'` and one of `"`, `\`, `$` or a backtick), or one with a NUL byte, is left out with a note on stderr naming the key, and the command exits non-zero after printing the rest. The same happens to a key naming a shell variable the shell evaluates or acts on when assigned, such as `RANDOM` (bash runs `$(...)` in its value even inside single quotes), `SECONDS`, `IFS` or `PS1`. `secret env --no-aliases`, the format the Python reader parses, still prints each value verbatim, so released Python readers keep working.
+- `secret import-from` of a `.env` file stores a key that is not a valid name as `_unknown_line<N>` instead of a name built from its text, which can be a secret pasted on its own line. It now joins backslash continuations and handles a BOM and CRLF, and it skips a value the bus cannot carry, noting the key, and imports the rest.
+- Errors and logs no longer echo an invalid key name read from a file or received over the wire: the source-side parser, the sink's dropped-key message and the carried-file env message now give a line number or a count.
+- A new CLI name containing `--` is refused by `secret set`, `secret alias`, `secret import-from --as` and adoption manifest validation, as spec section 2.3 and the Python reader already require. An existing `--` name still reads, lists and can be removed.
+
+### New `agentcookie sinks`: list the sinks a source feeds, and remove one (#169, by @officialasishkumar)
+
+- `agentcookie sinks list` shows each sink in `source.yaml` with its peer, URL, whether its paired key is present, and its last push. `--json` prints the same rows, and an empty array on a source that delivers to teammates only. A sink whose key is missing says how to pair it again.
+- `agentcookie sinks remove <peer|url>` stops feeding a sink: it removes the entry from `source.yaml` (comments, including the file's leading ones, and other keys are kept, and the file keeps its mode) and deletes `keys/<peer>.json`. Until now this was a hand edit plus a manual key delete.
+- Deleting the key cuts a paired sink off that key: a running source reads it on every push and on every `GET /pull`, so it stops sealing for the sink at its next push and refuses that key on `GET /pull` at once. The running source keeps reporting the sink as failing until it restarts.
+- The key is kept when another sink, a teammate in `teammates.yaml`, or this machine's `sink.yaml` still uses that key file (names that map to the same file count), or another key file holds the same key. Then the removed sink can keep pulling with it, even after a restart, until the key is rotated and every legitimate user of it is re-paired, and the command says so.
+- `security.shared_secret` stays unless you pass `--revoke-shared-secret`, since pull-only sinks not listed in `source.yaml` may use it. While it stays, the command says a removed machine that has it can keep pulling with it until it is rotated. The flag removes it for every machine that uses it, refuses when a remaining sink without a peer, or without its key here, still needs it, and says a running source accepts it on `GET /pull` until it restarts.
+- Removing the last entry of a `sinks:` list also removes a legacy `sink:`/`peer:` it was shadowing, so that sink does not come back, and deletes that peer's key unless something else uses it. The only sink cannot be removed unless `teammates.yaml` lists a teammate, since a source with nothing to deliver to does not start.
+- A `source.yaml` that uses YAML anchors or aliases is refused before anything changes, since removing an anchored entry would leave it unloadable. While `teammates.yaml` lists teammates, `GET /pull` already refuses `security.shared_secret`, and the output says so.
+- Cookies and secrets a removed sink already received stay valid there until they expire or you sign out of those sites.
+
+### Python reader for the secrets bus (#170, by @officialasishkumar)
+
+- New `agentcookie_secret` package in `clients/python`, the Python twin of the Go reader `pkg/agentcookiesecret`. `load("my-pp-cli")` returns a dict with the same priority: sealed bus file, plaintext bus file, an optional `fallback_path`, then process env. `load_detailed` also says where each key came from. It has no dependencies. Install with `pip install "git+https://github.com/mvanhorn/agentcookie#subdirectory=clients/python"`.
+- It parses `secrets.env` itself with the spec's strict grammar. A syntax error or an unreadable file raises `AgentcookieSecretError` naming the file and the line, and is never skipped (spec section 11.4), unless a sealed file exists, which wins as in the Go reader. Errors never include text from the offending line. An invalid CLI name raises `InvalidCLINameError` before any file is read.
+- A sealed file is unsealed by running `agentcookie secret env --no-aliases <cli>`, so the master key never leaves agentcookie's Keychain item. If the binary is not on `PATH`, or unsealing fails, it raises with the sealed file's path instead of falling back to the plaintext file.
+- New `agentcookie secret env --no-aliases` prints only the stored keys, without the alias names `secret env` adds. Without the flag nothing changes. `secret env` now ignores a leading BOM and drops the `\r` of CRLF lines, as the readers do.
+- CI runs the Python tests in the Linux job. The tests live in `clients/python/tests`, outside the installed package.
+
+### Go secrets reader reports a bad secrets.env instead of skipping it (#171, by @officialasishkumar)
+
+- `agentcookiesecret.Load` (and `LoadWithFallback`, `LoadDetailed`) silently skipped a `~/.agentcookie/secrets/<cli>/secrets.env` that did not parse or could not be read, so the CLI ran on process env or its fallback file, which the bus is meant to override. It now returns an error naming the file and, for a syntax error, the line, as spec section 11.4 requires. The error never includes text from the offending line, since that text can be a secret. A leading UTF-8 BOM is now ignored. A missing file is still not an error, and the fallback file is unchanged. On error `Load` returns no map, so a consumer that wants to keep running must re-apply its own fallback, including process env.
+
+### Built with Go 1.26.11
+
+- Go 1.26.11 fixes a net/http vulnerability (GO-2026-6859) that govulncheck reports as reachable from agentcookie's HTTP server and client paths.
+
 ### New `agentcookie profile-keepalive`: Claude in Chrome stays connected on every Claude account
 
 - Claude in Chrome pairs only with the Claude account it is signed into, so a Mac with two Claude accounts uses one Chrome profile per account. Chrome unloads a profile when its last window closes, and at launch it reopens only the last one used. After that, Claude in Chrome silently stopped working for the other account.

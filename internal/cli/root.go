@@ -47,7 +47,7 @@ func Execute() {
 	rootCmd.PersistentFlags().StringVar(&common.ConfigDir, "config-dir", defaultConfigDir(), "directory holding source.yaml, sink.yaml, blocklist.yaml")
 	rootCmd.PersistentFlags().BoolVar(&common.JSON, "json", false, "emit machine-readable JSON output where the subcommand supports it")
 
-	rootCmd.AddCommand(sourceCmd, sinkCmd, pairCmd, teammatesCmd, statusCmd, versionCmd, wizardCmd, doctorCmd, secretCmd, discoverCmd, cookiesCmd, accountsCmd, cmuxSyncCmd, agentSyncCmd, profileSyncCmd, profileKeepaliveCmd, exportCmd, joinCmd, servicesCmd)
+	rootCmd.AddCommand(sourceCmd, sinkCmd, pairCmd, sinksCmd, teammatesCmd, statusCmd, versionCmd, wizardCmd, doctorCmd, secretCmd, discoverCmd, cookiesCmd, accountsCmd, cmuxSyncCmd, agentSyncCmd, profileSyncCmd, profileKeepaliveCmd, exportCmd, joinCmd, servicesCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		if ec, ok := errors.AsType[*exitCodeError](err); ok {
