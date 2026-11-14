@@ -8,6 +8,11 @@
 - Both Chromes agentcookie launches now pass `MacAppCodeSignClone` in `--disable-features`, merged with chromedp's default disabled features so none of those are dropped.
 - No config change is needed.
 
+### Live CDP sinks stop leaving a blank tab per inject (#156, by @hayECOM)
+
+- Each live CDP inject opened an `about:blank` tab in the attached Chrome and relied on chromedp closing it when the connection was cancelled, with a one-second budget. A loaded browser missed that budget, so a sink injecting on every sync left a tab behind nearly every time: one Mac sink's shared Chrome built up thousands of blank tabs and about 2.6 GB of memory in 2.3 days. Injection now talks only to the browser session (`Target.getTargets`, `Target.getBrowserContexts`, `Storage.setCookies`) and creates no tab at all.
+- If your Chrome already piled up blank tabs, run `agentcookie sink sweep-tabs` once on the sink machine. Add `--dry-run` first to list the tabs it would close without closing any, and `--endpoint <url>` to sweep a Chrome other than the `live_cdp` one in `sink.yaml`. It lists the browser's tabs, waits 60 seconds, lists again, and closes tabs that were `about:blank` both times. It never closes a page with a real URL, a tab a client is attached to or opened in the last 60 seconds, a popup a page opened, a tab outside Chrome's default browser context, a service worker, extension, or browser UI target, or the last open page, and it always leaves one stale blank tab. A sink never sweeps on its own: on Linux `live_cdp` points at the agents' own Chrome, where an idle Playwright or Puppeteer page looks the same as a leaked tab.
+
 ### cmux delivery reuses an open browser tab instead of adding one (#157, by @hayECOM)
 
 - The cmux adapter cached its injection tab only in memory, so every sink restart (and every time the user closed that tab) added another unfocused `about:blank` browser tab to the first workspace, and stray "New tab" browsers piled up. It now reads `cmux tree --all --json` and reuses a browser surface that is already open in any workspace, preferring an `about:blank` tab over a live page. It adds a tab only when no browser surface is open, or when `tree` is unavailable on an older cmux. WebKit cookies are profile-wide, so any browser surface works.
