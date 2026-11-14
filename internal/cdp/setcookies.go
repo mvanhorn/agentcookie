@@ -13,6 +13,7 @@ import (
 	"github.com/chromedp/chromedp"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
+	"github.com/mvanhorn/agentcookie/internal/chromeflags"
 )
 
 // chromeStartTimeout caps how long we wait for the headless Chrome to
@@ -52,6 +53,11 @@ func InjectCookies(ctx context.Context, profileDir string, cookies []chrome.Cook
 		// dir was created fresh by the wizard.
 		chromedp.Flag("no-first-run", true),
 		chromedp.Flag("no-default-browser-check", true),
+		// Stop macOS Chrome leaking a code_sign_clone copy of its app
+		// bundle into $TMPDIR/../X on every killed launch. Merged with
+		// chromedp's own disable-features defaults (a second Flag call
+		// replaces the value rather than appending).
+		chromedp.Flag("disable-features", chromeflags.ChromedpDisabledFeatures()),
 	)
 	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx, opts...)
 	defer allocCancel()
