@@ -4,7 +4,7 @@
 
 ### Read logins from Zen, Firefox, LibreWolf and Floorp (rebuilt from #161-#167, by @ffu3xu4tw)
 
-- `browser.name` in `source.yaml` and `--browser` on `export`, `agent-sync` and `cmux-sync` accept `zen`, `firefox`, `librewolf` and `floorp`, on macOS and Linux (including snap and flatpak Firefox). `source`, `export`, `agent-sync`, `cmux-sync` and `doctor` read the profile's cookies through the same cookie policy and DBSC filter as Chrome.
+- `browser.name` in `source.yaml` and `--browser` on `export`, `agent-sync` and `cmux-sync` accept `zen`, `firefox`, `librewolf` and `floorp`, on macOS and Linux (including snap and flatpak Firefox, and Firefox profiles under `$XDG_CONFIG_HOME/mozilla/firefox` or `~/.config/mozilla/firefox`). `source`, `export`, `agent-sync`, `cmux-sync` and `doctor` read the profile's cookies through the same cookie policy and DBSC filter as Chrome.
 - No Keychain item is read: these browsers store cookies unencrypted. agentcookie copies `cookies.sqlite` and its `-wal` into a private temp directory, reads the copy and deletes it, so it never writes to the profile and works while the browser runs. If the file keeps changing during the copy, the read fails rather than shipping a partial set.
 - The profile is the one the browser opens (the installed default in `profiles.ini`, else the default profile, else the only one). An ambiguous choice is an error that lists the candidates; `browser.profile` picks one by name or directory.
 - Expiry, last access, SameSite, Secure, HttpOnly and scheme carry the same meaning as Chrome cookies. Container, private-browsing and partitioned cookies are skipped. A Firefox-family source ships cookies only, with no Local Storage or IndexedDB.

@@ -4,12 +4,17 @@
 package gecko
 
 import (
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 )
 
 const CookiesFile = "cookies.sqlite"
+
+// xdgConfigPrefix marks a Linux root under the XDG config directory:
+// $XDG_CONFIG_HOME when it is set to an absolute path, else ~/.config.
+const xdgConfigPrefix = ".config/"
 
 type Browser struct {
 	Name       string
@@ -30,6 +35,10 @@ var browsers = map[string]Browser{
 			".mozilla/firefox",
 			"snap/firefox/common/.mozilla/firefox",
 			".var/app/org.mozilla.firefox/.mozilla/firefox",
+			// Current Firefox uses the XDG location when no legacy
+			// ~/.mozilla exists.
+			xdgConfigPrefix + "mozilla/firefox",
+			".var/app/org.mozilla.firefox/config/mozilla/firefox",
 		},
 	},
 	"librewolf": {
@@ -74,7 +83,12 @@ func (b Browser) Roots(home string, linux bool) []string {
 		return []string{filepath.Join(home, "Library", "Application Support", b.MacRoot)}
 	}
 	roots := make([]string, 0, len(b.LinuxRoots))
+	xdg := os.Getenv("XDG_CONFIG_HOME")
 	for _, r := range b.LinuxRoots {
+		if rest, ok := strings.CutPrefix(r, xdgConfigPrefix); ok && filepath.IsAbs(xdg) {
+			roots = append(roots, filepath.Join(xdg, filepath.FromSlash(rest)))
+			continue
+		}
 		roots = append(roots, filepath.Join(home, filepath.FromSlash(r)))
 	}
 	return roots

@@ -226,6 +226,9 @@ func TestReadCookiesSameSiteAndScheme(t *testing.T) {
 		for name, ss := range map[string]int{"none": 0, "lax": 1, "strict": 2, "unset": 256} {
 			r := row(name, ".example.com", realExpiryMS)
 			r.sameSite = ss
+			if ss == 0 {
+				r.isSecure = 1 // SameSite=None only holds with Secure
+			}
 			rows = append(rows, r)
 		}
 		httpOnly := row("http", ".example.com", realExpiryMS)
@@ -256,8 +259,10 @@ func TestReadCookiesSameSiteAndScheme(t *testing.T) {
 			r.sameSite, r.rawSameSite = ss, raw
 			return r
 		}
+		none := mk("none", 0, 0)
+		none.isSecure = 1 // SameSite=None only holds with Secure
 		path := writeFixture(t, 14, []mozRow{
-			mk("none", 0, 0),
+			none,
 			mk("lax", 1, 1),
 			mk("strict", 2, 2),
 			// Lax applied by default to a cookie that sent no SameSite.

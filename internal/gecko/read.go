@@ -273,6 +273,12 @@ func mapSameSite(r mozCookie, version int) int {
 	}
 	switch r.sameSite {
 	case mozSameSiteNone:
+		if r.isSecure == 0 {
+			// Chrome rejects SameSite=None without Secure, and Firefox
+			// itself loads such a row as unset
+			// (eRejectedNoneRequiresSecure -> SAMESITE_UNSET).
+			return chromeSameSiteUnspecified
+		}
 		return chromeSameSiteNone
 	case mozSameSiteLax:
 		return chromeSameSiteLax

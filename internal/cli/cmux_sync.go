@@ -82,7 +82,7 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 	// LoadSourceLocal, not LoadSource: the local loop has no push target,
 	// so it must not require sink.url or a peer/secret. A missing
 	// source.yaml is fine (defaults: default Chrome path, no blocklist).
-	cfg, err := config.LoadSourceLocal(common.ConfigDir)
+	cfg, err := config.LoadSourceLocalForBrowser(common.ConfigDir, cmuxSyncBrowser)
 	if err != nil {
 		return err
 	}

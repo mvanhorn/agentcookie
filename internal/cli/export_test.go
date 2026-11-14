@@ -5,11 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
+	"github.com/mvanhorn/agentcookie/internal/config"
+	"github.com/mvanhorn/agentcookie/internal/gecko"
 )
 
 func TestToExportCookies(t *testing.T) {
@@ -143,5 +147,61 @@ func TestExportBrowserFirefoxReadsProfileWithoutChromeOrKeychain(t *testing.T) {
 		if !c.Secure || !c.HTTPOnly || c.SameSite != "unspecified" || c.ExpirationDate == nil {
 			t.Errorf("cookie %s mapped as %+v", c.Name, c)
 		}
+	}
+}
+
+func TestExportBrowserOverrideSkipsBrokenConfiguredGeckoProfile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeGeckoProfile(t, home, "zen", []geckoTestCookie{
+		{".example.com", "session", "zen-value", futureMS()},
+	})
+	// source.yaml selects Firefox, whose profiles.ini has two profiles and
+	// no default: resolving it is an ambiguity error.
+	ff, _ := gecko.Lookup("firefox")
+	ffRoot := ff.Roots(home, runtime.GOOS == "linux")[0]
+	writeCLIFile(t, filepath.Join(ffRoot, "profiles.ini"), "[Profile0]\nName=work\nIsRelative=1\nPath=Profiles/aaaa.work\n\n[Profile1]\nName=play\nIsRelative=1\nPath=Profiles/bbbb.play\n")
+	configDir := t.TempDir()
+	withConfigDir(t, configDir)
+	writeCLIFile(t, filepath.Join(configDir, "source.yaml"), "browser:\n  name: firefox\n")
+
+	// Without an override the configured profile's error still surfaces.
+	if _, err := config.LoadSourceLocal(configDir); err == nil || !strings.Contains(err.Error(), "no single default profile") {
+		t.Fatalf("LoadSourceLocal err = %v, want the Firefox ambiguity error", err)
+	}
+	if _, err := config.LoadSourceLocalForBrowser(configDir, "firefox"); err == nil {
+		t.Fatal("an override naming the configured browser must still resolve its profile")
+	}
+
+	prev := sourcePasswordFor
+	sourcePasswordFor = func(chrome.Browser) (string, error) {
+		t.Fatal("export --browser zen must not read the Keychain")
+		return "", nil
+	}
+	t.Cleanup(func() { sourcePasswordFor = prev })
+	prevBrowser := exportBrowser
+	exportBrowser = "zen"
+	t.Cleanup(func() { exportBrowser = prevBrowser })
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+	if err := runExport(cmd, nil); err != nil {
+		t.Fatalf("export --browser zen: %v", err)
+	}
+	var got []exportCookie
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode export output: %v", err)
+	}
+	if len(got) != 1 || got[0].Value != "zen-value" {
+		t.Fatalf("exported %+v, want the one Zen cookie", got)
+	}
+
+	// A Chromium override of the Gecko config is still refused with its
+	// own error, not the Firefox profile error.
+	exportBrowser = "chrome"
+	if err := runExport(cmd, nil); err == nil || !strings.Contains(err.Error(), "a Chromium override of a Gecko source is not supported") {
+		t.Fatalf("export --browser chrome err = %v, want the Chromium-override refusal", err)
 	}
 }

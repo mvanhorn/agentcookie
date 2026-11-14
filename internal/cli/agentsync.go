@@ -73,7 +73,7 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	// LoadSourceLocal: the agent-sync loop has no push target, so it must not
 	// require sink.url or a peer/secret. Missing source.yaml is fine (default
 	// Chrome path, no blocklist).
-	cfg, err := config.LoadSourceLocal(common.ConfigDir)
+	cfg, err := config.LoadSourceLocalForBrowser(common.ConfigDir, agentSyncBrowser)
 	if err != nil {
 		return err
 	}
