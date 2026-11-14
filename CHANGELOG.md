@@ -7,6 +7,7 @@
 - On macOS, Chrome copies its app bundle into `$TMPDIR/../X/com.google.Chrome.code_sign_clone` at launch and removes the copy only on a clean shutdown. agentcookie kills the Chrome it starts, so every sync left a copy behind, and a long-running sink built up hundreds of them.
 - Both Chromes agentcookie launches now pass `MacAppCodeSignClone` in `--disable-features`, merged with chromedp's default disabled features so none of those are dropped.
 - No config change is needed.
+
 ### cmux delivery reuses an open browser tab instead of adding one (#157, by @hayECOM)
 
 - The cmux adapter cached its injection tab only in memory, so every sink restart (and every time the user closed that tab) added another unfocused `about:blank` browser tab to the first workspace, and stray "New tab" browsers piled up. It now reads `cmux tree --all --json` and reuses a browser surface that is already open in any workspace, preferring an `about:blank` tab over a live page. It adds a tab only when no browser surface is open, or when `tree` is unavailable on an older cmux. WebKit cookies are profile-wide, so any browser surface works.
