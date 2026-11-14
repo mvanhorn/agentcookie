@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/mvanhorn/agentcookie/internal/cdpsource"
+	"github.com/mvanhorn/agentcookie/internal/gecko"
 	"gopkg.in/yaml.v3"
 )
 
@@ -308,7 +309,7 @@ func resolveSourcePaths(path string, cfg *SourceConfig) error {
 		return nil
 	}
 	cfg.Chrome.DBPath = ExpandTilde(cfg.Chrome.DBPath)
-	if cfg.Browser.Name != "" {
+	if cfg.Browser.Name != "" && !gecko.IsBrowser(cfg.Browser.Name) {
 		if _, err := lookupSourceBrowserPath(cfg.Browser.Name); err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
@@ -496,7 +497,21 @@ func DefaultChromeCookiesPath() string {
 // source browser. Empty name/profile default to Chrome/Default.
 // On macOS: ~/Library/Application Support/<browser>/<profile>/Cookies
 // On Linux: ~/.config/<browser>/<profile>/Cookies
+//
+// For a Gecko browser (zen, firefox, librewolf, floorp) it returns the
+// cookies.sqlite of the profile resolved from the browser's profiles.ini.
 func SourceBrowserCookiesPath(name, profile string) (string, error) {
+	if b, ok := gecko.Lookup(name); ok {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		dir, err := gecko.ResolveProfile(b, home, IsLinux(), profile)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(dir, gecko.CookiesFile), nil
+	}
 	ref, err := lookupSourceBrowserPath(name)
 	if err != nil {
 		return "", err
@@ -562,12 +577,13 @@ func lookupSourceBrowserPath(name string) (browserPathRef, error) {
 }
 
 // SupportedBrowserNames returns the source-browser adapter names accepted by
-// source.yaml.
+// source.yaml: the Chromium browsers and the Gecko browsers.
 func SupportedBrowserNames() []string {
 	names := make([]string, 0, len(sourceBrowserPaths))
 	for name := range sourceBrowserPaths {
 		names = append(names, name)
 	}
+	names = append(names, gecko.Names()...)
 	sort.Strings(names)
 	return names
 }

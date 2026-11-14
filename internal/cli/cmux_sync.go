@@ -91,29 +91,14 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var key []byte
-	if !cfg.CDPSource.Enabled {
-		browserName := cmuxSyncBrowser
-		if browserName == "" {
-			browserName = cfg.Browser.Name
+	key, err := sourceCookieKey(cfg, cmuxSyncBrowser, cmuxSyncPasswordFor)
+	if err != nil {
+		if cmuxSyncWatch && chrome.IsKeychainAccessError(err) {
+			fmt.Fprintf(os.Stderr, "agentcookie cmux-sync --watch: Keychain not accessible; exiting cleanly so launchd does not restart.\nFix: %s\n", chrome.SafeStorageRemediation)
+			cmuxExitFunc(0)
+			return nil
 		}
-		sourceBrowser, err := chrome.LookupBrowser(browserName)
-		if err != nil {
-			return err
-		}
-		password, err := cmuxSyncPasswordFor(sourceBrowser)
-		if err != nil {
-			if cmuxSyncWatch && chrome.IsKeychainAccessError(err) {
-				fmt.Fprintf(os.Stderr, "agentcookie cmux-sync --watch: Keychain not accessible; exiting cleanly so launchd does not restart.\nFix: %s\n", chrome.SafeStorageRemediation)
-				cmuxExitFunc(0)
-				return nil
-			}
-			return err
-		}
-		key, err = chrome.DeriveAESKey(password)
-		if err != nil {
-			return err
-		}
+		return err
 	}
 
 	skipDBSC := cmuxSyncSkipDBSC || os.Getenv("AGENTCOOKIE_SKIP_DBSC_SUSPECT") == "1"

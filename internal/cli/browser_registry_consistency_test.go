@@ -1,11 +1,17 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"sort"
 	"testing"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/config"
+	"github.com/mvanhorn/agentcookie/internal/gecko"
 )
 
 // The source-browser adapter table is intentionally maintained in two places:
@@ -16,20 +22,24 @@ import (
 // the decryptor was never told about. These guards fail loudly the moment a
 // new fork is added to one table but not the other.
 //
+// Gecko browsers live in their own table in internal/gecko. config accepts
+// the union of both tables, so the guards check each table separately.
+//
 // The cleaner long-term shape is a single dependency-free registry (e.g. in
 // internal/chromepaths) consumed by both packages; until that refactor lands
 // these tests are the drift backstop.
 
 func TestSourceBrowserRegistriesAgreeOnSupportedNames(t *testing.T) {
-	chromeNames := chrome.SupportedBrowserNames()
+	want := append(chrome.SupportedBrowserNames(), gecko.Names()...)
+	sort.Strings(want)
 	configNames := config.SupportedBrowserNames()
 
-	if len(chromeNames) != len(configNames) {
-		t.Fatalf("supported-browser sets differ in size: chrome=%v config=%v", chromeNames, configNames)
+	if !slices.Equal(want, configNames) {
+		t.Fatalf("config names %v, want chrome+gecko %v", configNames, want)
 	}
-	for i := range chromeNames {
-		if chromeNames[i] != configNames[i] {
-			t.Fatalf("supported-browser sets differ at %d: chrome=%v config=%v", i, chromeNames, configNames)
+	for _, name := range gecko.Names() {
+		if _, err := chrome.LookupBrowser(name); err == nil {
+			t.Errorf("%q is in both the Chromium and the Gecko table", name)
 		}
 	}
 }
@@ -51,6 +61,33 @@ func TestSourceBrowserRegistriesAgreeOnCookiesPath(t *testing.T) {
 		if got != want {
 			t.Errorf("Cookies path drift for %q: chrome=%q config=%q", name, want, got)
 		}
+	}
+}
+
+// Each Gecko browser must resolve, through config, to cookies.sqlite in the
+// profile under its own root on this OS.
+func TestGeckoRegistryResolvesCookiesUnderItsRoot(t *testing.T) {
+	for _, name := range gecko.Names() {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			b, _ := gecko.Lookup(name)
+			root := b.Roots(home, runtime.GOOS == "linux")[0]
+			if err := os.MkdirAll(filepath.Join(root, "p1.default"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			ini := "[Profile0]\nName=default\nIsRelative=1\nPath=p1.default\n"
+			if err := os.WriteFile(filepath.Join(root, "profiles.ini"), []byte(ini), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := config.SourceBrowserCookiesPath(name, "")
+			if err != nil {
+				t.Fatalf("config.SourceBrowserCookiesPath(%q): %v", name, err)
+			}
+			if want := filepath.Join(root, "p1.default", "cookies.sqlite"); got != want {
+				t.Errorf("got %q, want %q", got, want)
+			}
+		})
 	}
 }
 

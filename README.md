@@ -183,6 +183,37 @@ bash teammate-install.sh v1.2.3 amd64=<sha256> arm64=<sha256>
 
 `join` writes a pull-mode `sink.yaml` (no `listen.addr`), a sync-all `blocklist.yaml` if none exists, pairs, and pulls once. The proxy comes from `--proxy` or the `proxy` saved in the agent's Tincan `client.json`. `--pull-once` exits 0 when cookies are current, 3 when the laptop is unreachable (retry before the first logged-in action), and 4 when the machine needs to re-pair. With `--cadence turn+timer` it also keeps one background loop pulling every 5 to 15 minutes. The tailnet ACL must let the agent's tag reach `<laptop>:9998`. For live injection into the browser the agent drives, start that browser with `--remote-debugging-port=9223 --remote-debugging-address=127.0.0.1` (the default `live_cdp.endpoint` is `http://127.0.0.1:9223`); without it cookies land only in the sidecar store for HTTP clients and the sink reports 0 contexts.
 
+### Firefox-family browsers (Zen, Firefox, LibreWolf, Floorp)
+
+agentcookie can read logins from Zen, Firefox, LibreWolf and Floorp on macOS
+and Linux. Name the browser in `source.yaml`, or pass `--browser` to `export`,
+`agent-sync` or `cmux-sync`:
+
+```yaml
+# ~/.config/agentcookie/source.yaml
+browser:
+  name: zen          # or firefox, librewolf, floorp
+  # profile: work    # optional: a profile's Name= or its directory
+```
+
+These browsers keep cookies unencrypted in the profile's `cookies.sqlite`, so
+no Keychain item is read. agentcookie copies `cookies.sqlite` and its `-wal`
+into a private temp directory, reads the copy, and deletes it. It never writes
+to the profile, and it works while the browser is running.
+
+- The profile is the one the browser itself opens: the installed default in
+  `profiles.ini`, else the profile marked default, else the only profile. If
+  that is ambiguous (several profiles and no default, release and Developer
+  Edition installs with different defaults, or both a native and a snap or
+  flatpak profile root), loading `source.yaml` fails and lists the
+  candidates. Set `browser.profile` to pick one.
+- Only ordinary cookies are read. Container, private-browsing and partitioned
+  cookies are skipped.
+- A Firefox-family source carries cookies only: no Local Storage or IndexedDB.
+- `agentcookie doctor` reports the profile and a cookie count.
+- Commands that only work with Chromium profiles, such as `cookies` and
+  `profile-sync`, refuse these browser names.
+
 ### Linux CDP source (existing browser; no SQLite access)
 
 When the authenticated browser already runs on Linux, set `cdp_source` in its
@@ -432,6 +463,7 @@ The secrets bus (bearer tokens, API keys, OAuth refresh tokens) is untouched by 
 - Extra Chrome profile discovery: Mac profiles (Profile 1, Profile 2, etc.) are auto-discovered and decrypted; extra-profile cookies flow to sidecar, adapters, and live CDP alongside Default profile cookies
 - Sink adapters union extra-profile cookies through the same blocklist policy
 - Per-CLI secrets bus for bearer tokens and API keys
+- Firefox-family sources: Zen, Firefox, LibreWolf and Floorp cookies, read from a private copy with no Keychain
 - 520+ unit tests across 26 packages
 
 ### Honest limits

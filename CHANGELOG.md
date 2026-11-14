@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Read logins from Zen, Firefox, LibreWolf and Floorp (rebuilt from #161-#167, by @ffu3xu4tw)
+
+- `browser.name` in `source.yaml` and `--browser` on `export`, `agent-sync` and `cmux-sync` accept `zen`, `firefox`, `librewolf` and `floorp`, on macOS and Linux (including snap and flatpak Firefox). `source`, `export`, `agent-sync`, `cmux-sync` and `doctor` read the profile's cookies through the same cookie policy and DBSC filter as Chrome.
+- No Keychain item is read: these browsers store cookies unencrypted. agentcookie copies `cookies.sqlite` and its `-wal` into a private temp directory, reads the copy and deletes it, so it never writes to the profile and works while the browser runs. If the file keeps changing during the copy, the read fails rather than shipping a partial set.
+- The profile is the one the browser opens (the installed default in `profiles.ini`, else the default profile, else the only one). An ambiguous choice is an error that lists the candidates; `browser.profile` picks one by name or directory.
+- Expiry, last access, SameSite, Secure, HttpOnly and scheme carry the same meaning as Chrome cookies. Container, private-browsing and partitioned cookies are skipped. A Firefox-family source ships cookies only, with no Local Storage or IndexedDB.
+- `--browser chrome` (or another Chromium name) on a `source.yaml` that selects a Firefox-family browser is refused instead of decrypting a Firefox file with a Chrome key.
+
 ### Secrets read back exactly as stored, and `secret env` is safe to eval (#173)
 
 - `secret set`, `secret import-from`, `secret alias` and the sink wrote values raw. A value with a newline split into two lines, so `a\nEVIL=x` stored a second key `EVIL`, and one bad `set` could make a CLI's whole bus entry unreadable. A value ending in `\` swallowed the next line, and a value wrapped in quotes lost them. Writers now quote a value that would not read back unchanged bare (`C:\dir\` is written `'C:\dir\'`), and refuse a value with a newline or a trailing `\r`, or whose line would reach 256 KiB. The refusal names the CLI and key, never the value. `secret set` trims a trailing CRLF from stdin.

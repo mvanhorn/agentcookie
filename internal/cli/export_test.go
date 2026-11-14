@@ -1,8 +1,13 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"path/filepath"
 	"testing"
+
+	"github.com/spf13/cobra"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 )
@@ -88,6 +93,55 @@ func TestExportSameSite(t *testing.T) {
 	for in, want := range cases {
 		if got := exportSameSite(in); got != want {
 			t.Fatalf("exportSameSite(%d) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestExportBrowserFirefoxReadsProfileWithoutChromeOrKeychain(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeGeckoProfile(t, home, "firefox", []geckoTestCookie{
+		{".example.com", "session", "ff-value", futureMS()},
+		{"www.example.com", "pref", "p", futureMS()},
+	})
+	// source.yaml points at a Chrome cookie file that is not a database: if
+	// export read it, the command would fail.
+	configDir := t.TempDir()
+	withConfigDir(t, configDir)
+	chromeCookies := filepath.Join(t.TempDir(), "Cookies")
+	writeCLIFile(t, chromeCookies, "not a sqlite file")
+	writeCLIFile(t, filepath.Join(configDir, "source.yaml"), "chrome:\n  db_path: "+chromeCookies+"\nbrowser:\n  name: chrome\n")
+
+	prev := sourcePasswordFor
+	sourcePasswordFor = func(chrome.Browser) (string, error) {
+		t.Fatal("export --browser firefox must not read the Keychain")
+		return "", nil
+	}
+	t.Cleanup(func() { sourcePasswordFor = prev })
+	prevBrowser := exportBrowser
+	exportBrowser = "firefox"
+	t.Cleanup(func() { exportBrowser = prevBrowser })
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+	if err := runExport(cmd, nil); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	var got []exportCookie
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode export output: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("exported %d cookies, want the 2 Firefox cookies", len(got))
+	}
+	for _, c := range got {
+		if c.Domain != ".example.com" && c.Domain != "www.example.com" {
+			t.Errorf("unexpected domain %q", c.Domain)
+		}
+		if !c.Secure || !c.HTTPOnly || c.SameSite != "unspecified" || c.ExpirationDate == nil {
+			t.Errorf("cookie %s mapped as %+v", c.Name, c)
 		}
 	}
 }

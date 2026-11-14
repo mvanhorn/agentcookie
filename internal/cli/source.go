@@ -22,6 +22,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chromedirsync"
 	"github.com/mvanhorn/agentcookie/internal/cli/httpserver"
 	"github.com/mvanhorn/agentcookie/internal/config"
+	"github.com/mvanhorn/agentcookie/internal/gecko"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/pairing"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
@@ -181,23 +182,22 @@ func runSource(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var key []byte
+	// SafeStoragePasswordFor already prefixes its error with
+	// "read <service> from Keychain ..."; don't double the prefix.
+	key, err := sourceCookieKey(cfg, "", sourcePasswordFor)
+	if err != nil {
+		return err
+	}
+	// A Gecko source has no Local Storage or IndexedDB to watch or pack.
+	isGecko := !cfg.CDPSource.Enabled && gecko.IsBrowser(cfg.Browser.Name)
+	adapter := strings.ToLower(strings.TrimSpace(cfg.Browser.Name))
 	var sourceBrowser chrome.Browser
-	if !cfg.CDPSource.Enabled {
+	if !cfg.CDPSource.Enabled && !isGecko {
 		sourceBrowser, err = chrome.LookupBrowser(cfg.Browser.Name)
 		if err != nil {
 			return err
 		}
-		password, err := chrome.SafeStoragePasswordFor(sourceBrowser)
-		if err != nil {
-			// SafeStoragePasswordFor already prefixes its error with
-			// "read <service> from Keychain ..."; don't double the prefix.
-			return err
-		}
-		key, err = chrome.DeriveAESKey(password)
-		if err != nil {
-			return err
-		}
+		adapter = sourceBrowser.Name
 	}
 	// Per-sink transport secrets are resolved inside the fan-out loop
 	// (pushOnce), not here: resolving all secrets up front would let one
@@ -249,16 +249,20 @@ func runSource(cmd *cobra.Command, args []string) error {
 	// window: a write to any surface coalesces into one full envelope push.
 	// When Local Storage is skipped there is nothing to push on a Local
 	// Storage write, so don't watch it either (it changes constantly).
-	localStorageDir := ""
-	if !skipLocalStorage() {
-		localStorageDir = sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile)
-	} else {
+	localStorageDir, indexedDBDir := "", ""
+	switch {
+	case isGecko:
+	case skipLocalStorage():
 		fmt.Fprintf(os.Stderr, "agentcookie source --watch: skipping Local Storage (--skip-local-storage / %s=1)\n", envSkipLocalStorage)
+		indexedDBDir = sourceBrowser.IndexedDBDir(cfg.Browser.Profile)
+	default:
+		localStorageDir = sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile)
+		indexedDBDir = sourceBrowser.IndexedDBDir(cfg.Browser.Profile)
 	}
 	w, err := watcher.New(watcher.Config{
 		CookiesPath:     cfg.Chrome.DBPath,
 		LocalStorageDir: localStorageDir,
-		IndexedDBDir:    sourceBrowser.IndexedDBDir(cfg.Browser.Profile),
+		IndexedDBDir:    indexedDBDir,
 		Push:            push,
 		PushTimeout:     sourcePushBudget(),
 		OnEvent: func(ev watcher.Event) {
@@ -270,7 +274,7 @@ func runSource(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("init watcher: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "agentcookie source --watch: adapter=%s watching %s, sinks=%s\n", sourceBrowser.Name, cfg.Chrome.DBPath, sinkURLList(sinks))
+	fmt.Fprintf(os.Stderr, "agentcookie source --watch: adapter=%s watching %s, sinks=%s\n", adapter, cfg.Chrome.DBPath, sinkURLList(sinks))
 
 	// The secrets-bus and discovery watchers fire the same push callback as
 	// the cookies watcher so the payload includes whichever surface
@@ -616,25 +620,13 @@ func pushOnce(
 	var dbsc dbscSummary
 	secrets := secretsSummary{skipped: skipSecrets()}
 
-	// Shared read pipeline (decrypt -> cookie policy -> DBSC). See
-	// readFilteredCookies in cookie_pipeline.go; `source` and `cmux-sync`
+	// Shared read pipeline (read -> cookie policy -> DBSC). See
+	// readConfiguredCookies in cookie_pipeline.go; `source` and `cmux-sync`
 	// both use it so they filter identically.
-	var all []chrome.Cookie
-	var st readStats
-	var err error
-	if cfg.CDPSource.Enabled {
-		all, err = readCDPSource(ctx, cfg.CDPSource.Endpoint)
-		if err != nil {
-			pullPayloadCache.ClearIfCurrent(pullGen)
-			return nil, dbsc, secrets, fmt.Errorf("read cookies from cdp source: %w", err)
-		}
-		all, st = filterCookies(all, blocklist, skipDBSC, time.Now().UTC())
-	} else {
-		all, st, err = readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
-		if err != nil {
-			pullPayloadCache.ClearIfCurrent(pullGen)
-			return nil, dbsc, secrets, err
-		}
+	all, st, err := readConfiguredCookies(ctx, cfg, blocklist, key, skipDBSC, time.Now().UTC())
+	if err != nil {
+		pullPayloadCache.ClearIfCurrent(pullGen)
+		return nil, dbsc, secrets, err
 	}
 	totalRead := st.totalRead
 	totalDropped := st.totalDropped
@@ -729,10 +721,11 @@ func pushOnce(
 	var lsTarball []byte
 	var idbTarball []byte
 	var idbSkipped []string
-	if !cfg.CDPSource.Enabled {
+	if !cfg.CDPSource.Enabled && !gecko.IsBrowser(cfg.Browser.Name) {
 		// CDP source mode intentionally carries cookies only: localStorage and
 		// IndexedDB remain in the existing browser and must not be scraped from
-		// an on-disk profile as a fallback.
+		// an on-disk profile as a fallback. A Gecko source carries cookies
+		// only too: its storage is not in Chrome's format.
 		sourceBrowser, err := chrome.LookupBrowser(cfg.Browser.Name)
 		if err != nil {
 			pullPayloadCache.ClearIfCurrent(pullGen)

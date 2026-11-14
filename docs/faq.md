@@ -10,9 +10,9 @@ You can certainly stack agentcookie with an extension if you want; they don't fi
 
 Because the alternative is a hosted relay, which is a third-party data plane for highly sensitive material (session cookies), and that bar is too high for a v0.1 personal-use tool. Tailscale gives end-to-end WireGuard between your devices with zero infrastructure on your part. agentcookie layers its own AEAD on top so the wire format would survive a transport swap (raw SSH, Cloudflare Tunnel, S3-as-bus); Tailscale is the v0.1 default because it works for almost everyone in the target audience already.
 
-## Why doesn't agentcookie sync Firefox / Safari / Arc / Brave / Edge?
+## Which browsers can agentcookie read from?
 
-Firefox and Safari have different cookie stores entirely; supporting them is real work and would split test surface, so v0.1 stays Chrome stable on macOS. Chromium-derived browsers (Arc, Brave, Edge, Vivaldi) share the cookie format with Chrome and are easy follow-ups - file an issue and they likely land in v0.2.
+Chrome, plus the Chromium browsers Brave, Edge, Arc, Dia and Atlas (Atlas cookies cannot be decrypted; see `agentcookie doctor`), and the Firefox-family browsers Zen, Firefox, LibreWolf and Floorp. Set `browser.name` in `source.yaml`. Firefox-family browsers store cookies unencrypted, so agentcookie reads a private copy of the profile's `cookies.sqlite` with no Keychain prompt; it reads cookies only, not Local Storage or IndexedDB. See the README section "Firefox-family browsers". Safari is not supported.
 
 ## What about Linux sinks?
 

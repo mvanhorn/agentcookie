@@ -21,6 +21,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/config"
+	"github.com/mvanhorn/agentcookie/internal/gecko"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 	"github.com/mvanhorn/agentcookie/internal/launchd"
 	"github.com/mvanhorn/agentcookie/internal/macapp"
@@ -795,13 +796,16 @@ func checkSourceAdapter(
 		decryptSmoke = sourceAdapterDecryptSmoke
 	}
 
+	if gecko.IsBrowser(srcCfg.Browser.Name) {
+		return checkGeckoSourceAdapter(srcCfg, cookiesExists)
+	}
 	b, err := chrome.LookupBrowser(srcCfg.Browser.Name)
 	if err != nil {
 		return Check{
 			Name:        "Source adapter",
 			Severity:    SeverityFail,
 			Detail:      err.Error(),
-			Remediation: "set source.yaml browser.name to one of: " + strings.Join(chrome.SupportedBrowserNames(), ", "),
+			Remediation: "set source.yaml browser.name to one of: " + strings.Join(config.SupportedBrowserNames(), ", "),
 		}
 	}
 	if err := cookiesExists(srcCfg.Chrome.DBPath); err != nil {
@@ -850,6 +854,37 @@ func checkSourceAdapter(
 		Name:     "Source adapter",
 		Severity: SeverityOK,
 		Detail:   fmt.Sprintf("adapter: %s - cookies: present, keychain: readable, decryption: ok", b.Name),
+	}
+}
+
+// checkGeckoSourceAdapter validates a Firefox-family source: the profile
+// resolved when source.yaml loaded, so it checks that cookies.sqlite is
+// present and reads it once for a count. There is no Keychain item or
+// decryption for Gecko cookies.
+func checkGeckoSourceAdapter(srcCfg *config.SourceConfig, cookiesExists func(path string) error) Check {
+	name := strings.ToLower(strings.TrimSpace(srcCfg.Browser.Name))
+	path := srcCfg.Chrome.DBPath
+	if err := cookiesExists(path); err != nil {
+		return Check{
+			Name:        "Source adapter",
+			Severity:    SeverityFail,
+			Detail:      fmt.Sprintf("adapter: %s - cookies.sqlite missing at %s", name, path),
+			Remediation: fmt.Sprintf("open %s once with the configured profile, or set browser.profile to the profile that holds your logins", name),
+		}
+	}
+	cookies, err := gecko.ReadCookies(path, time.Now())
+	if err != nil {
+		return Check{
+			Name:        "Source adapter",
+			Severity:    SeverityFail,
+			Detail:      fmt.Sprintf("adapter: %s - read %s failed: %v", name, path, err),
+			Remediation: "re-run doctor; if it keeps failing, check the file is a Firefox-family cookies.sqlite",
+		}
+	}
+	return Check{
+		Name:     "Source adapter",
+		Severity: SeverityOK,
+		Detail:   fmt.Sprintf("adapter: %s - profile: %s, read %d cookies (no Keychain needed)", name, filepath.Dir(path), len(cookies)),
 	}
 }
 

@@ -235,8 +235,76 @@ security:
 	if err == nil {
 		t.Fatal("expected unsupported browser error")
 	}
-	if !strings.Contains(err.Error(), "supported:") || !strings.Contains(err.Error(), "chrome") {
-		t.Errorf("error should list supported browsers, got %v", err)
+	if !strings.Contains(err.Error(), "supported:") || !strings.Contains(err.Error(), "chrome") || !strings.Contains(err.Error(), "zen") {
+		t.Errorf("error should list Chromium and Gecko browsers, got %v", err)
+	}
+}
+
+func TestLoadSourceGeckoBrowserResolvesProfileCookies(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "Library", "Application Support", "zen")
+	if runtime.GOOS == "linux" {
+		root = filepath.Join(home, ".zen")
+	}
+	profile := filepath.Join(root, "Profiles", "abcd.Default (release)")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "profiles.ini", `[Profile0]
+Name=Default (release)
+IsRelative=1
+Path=Profiles/abcd.Default (release)
+Default=1
+`)
+	dir := t.TempDir()
+	writeFile(t, dir, "source.yaml", `
+sink:
+  url: http://example.test:9999/sync
+browser:
+  name: zen
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+	cfg, err := LoadSource(dir)
+	if err != nil {
+		t.Fatalf("LoadSource: %v", err)
+	}
+	if want := filepath.Join(profile, "cookies.sqlite"); cfg.Chrome.DBPath != want {
+		t.Errorf("DBPath: got %q, want %q", cfg.Chrome.DBPath, want)
+	}
+}
+
+func TestLoadSourceGeckoBrowserWithoutProfileFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	writeFile(t, dir, "source.yaml", `
+sink:
+  url: http://example.test:9999/sync
+browser:
+  name: firefox
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+	_, err := LoadSource(dir)
+	if err == nil || !strings.Contains(err.Error(), "profiles.ini") {
+		t.Fatalf("got %v, want an error naming the missing profiles.ini", err)
+	}
+}
+
+func TestSupportedBrowserNamesIncludesGecko(t *testing.T) {
+	names := SupportedBrowserNames()
+	if !sort.StringsAreSorted(names) {
+		t.Errorf("names not sorted: %v", names)
+	}
+	have := map[string]bool{}
+	for _, n := range names {
+		have[n] = true
+	}
+	for _, want := range []string{"chrome", "brave", "zen", "firefox", "librewolf", "floorp"} {
+		if !have[want] {
+			t.Errorf("SupportedBrowserNames() = %v, missing %q", names, want)
+		}
 	}
 }
 
