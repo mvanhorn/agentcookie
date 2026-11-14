@@ -63,6 +63,30 @@ func TestSpecRenderCmuxSyncRole(t *testing.T) {
 	}
 }
 
+func TestSpecRenderProfileKeepaliveRole(t *testing.T) {
+	s := Spec{
+		Role:       RoleProfileKeepalive,
+		BinaryPath: "/Users/test/bin/agentcookie",
+		LogDir:     "/Users/test/.agentcookie/logs",
+		ExtraArgs:  []string{"run"},
+	}
+	out, err := s.Render()
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	str := string(out)
+	for _, want := range []string{
+		"dev.agentcookie.profile-keepalive",
+		"<string>profile-keepalive</string>",
+		"<string>run</string>",
+		"/Users/test/.agentcookie/logs/profile-keepalive.out.log",
+	} {
+		if !strings.Contains(str, want) {
+			t.Errorf("rendered plist missing %q\nFull output:\n%s", want, str)
+		}
+	}
+}
+
 func TestSpecRenderSinkRole(t *testing.T) {
 	s := Spec{
 		Role:       RoleSink,

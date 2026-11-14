@@ -63,7 +63,7 @@ func Validate(m *Manifest) error {
 		return fmt.Errorf("name %q contains path-traversal segment", m.Name)
 	}
 	if !validSlug(m.Name) {
-		return fmt.Errorf("name %q must be lowercase, alphanumeric+hyphens, 1-64 chars, no leading/trailing hyphen", m.Name)
+		return fmt.Errorf("name %q must be lowercase, alphanumeric+hyphens, 1-64 chars, no leading/trailing or double hyphen", m.Name)
 	}
 	if m.DisplayName == "" {
 		return errors.New("display_name is required")
@@ -176,11 +176,12 @@ func Render(m *Manifest) string {
 	return b.String()
 }
 
-// validSlug mirrors internal/secretsbus.validCLIName for the public API
-// surface. The two are intentionally duplicated so this package has no
-// internal-package dependency.
+// validSlug applies the v1 CLI name rule (spec section 2.3) to a name being
+// declared. It is stricter than internal/secretsbus.validCLIName, which reads
+// existing entries and still accepts "--". The two are intentionally
+// duplicated so this package has no internal-package dependency.
 func validSlug(name string) bool {
-	if name == "" || len(name) > 64 {
+	if name == "" || len(name) > 64 || strings.Contains(name, "--") {
 		return false
 	}
 	if name[0] == '-' || name[len(name)-1] == '-' {

@@ -8,12 +8,12 @@
 package secretsbus
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
+
+	"github.com/mvanhorn/agentcookie/internal/envfile"
 
 	"github.com/BurntSushi/toml"
 )
@@ -117,7 +117,7 @@ func LoadPayload(homeDir string) (*Payload, []error) {
 			continue
 		}
 
-		envMap, err := parseEnvFile(envPath)
+		envMap, err := envfile.ReadFile(envPath)
 		if err != nil {
 			nonFatal = append(nonFatal, fmt.Errorf("%s: parse secrets.env: %w", cliName, err))
 			continue
@@ -153,114 +153,6 @@ func validCLIName(name string) bool {
 		case r >= '0' && r <= '9':
 		case r == '-':
 		default:
-			return false
-		}
-	}
-	return true
-}
-
-// parseEnvFile reads a v1-conformant secrets.env file. Implements the strict
-// grammar subset documented in the spec: KEY=VALUE one per line, # comments,
-// double or single quotes, no variable interpolation. Backslash continuation
-// at end-of-line joins the next line. Reserved keys (underscore-prefixed)
-// pass through unchanged.
-func parseEnvFile(path string) (map[string]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	out := map[string]string{}
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxEnvFileBytes)
-	lineNum := 0
-	var pending strings.Builder
-	var pendingKey string
-	inContinuation := false
-
-	for scanner.Scan() {
-		lineNum++
-		line := scanner.Text()
-
-		if inContinuation {
-			// Continue the previous value. Backslash continuation handled below.
-			if strings.HasSuffix(line, "\\") {
-				pending.WriteString(line[:len(line)-1])
-				continue
-			}
-			pending.WriteString(line)
-			out[pendingKey] = stripQuotes(pending.String())
-			pending.Reset()
-			pendingKey = ""
-			inContinuation = false
-			continue
-		}
-
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		before, after, ok := strings.Cut(line, "=")
-		if !ok {
-			return nil, fmt.Errorf("line %d: missing '=' (expected KEY=VALUE)", lineNum)
-		}
-		key := before
-		if key != strings.TrimRight(key, " \t") || key != strings.TrimLeft(key, " \t") {
-			return nil, fmt.Errorf("line %d: whitespace around '=' is not allowed", lineNum)
-		}
-		if !validKeyName(key) {
-			return nil, fmt.Errorf("line %d: invalid key name %q", lineNum, key)
-		}
-		value := after
-
-		if strings.HasSuffix(value, "\\") {
-			pending.WriteString(value[:len(value)-1])
-			pendingKey = key
-			inContinuation = true
-			continue
-		}
-		out[key] = stripQuotes(value)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan: %w", err)
-	}
-	if inContinuation {
-		return nil, fmt.Errorf("unterminated backslash continuation for key %q", pendingKey)
-	}
-	return out, nil
-}
-
-// stripQuotes removes a single surrounding pair of double or single quotes.
-// Mirrors the dotenv-common convention.
-func stripQuotes(v string) string {
-	if len(v) >= 2 {
-		first, last := v[0], v[len(v)-1]
-		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-			return v[1 : len(v)-1]
-		}
-	}
-	return v
-}
-
-// validKeyName mirrors the v1 spec: must start with a letter or underscore,
-// rest may include letters, digits, underscores. Hyphens and dots are NOT
-// permitted in keys (most dotenv parsers reject them in env-var export).
-func validKeyName(k string) bool {
-	if k == "" {
-		return false
-	}
-	for i, r := range k {
-		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
-		isDigit := r >= '0' && r <= '9'
-		isUnder := r == '_'
-		if i == 0 {
-			if !isLetter && !isUnder {
-				return false
-			}
-			continue
-		}
-		if !isLetter && !isDigit && !isUnder {
 			return false
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,6 +22,25 @@ const chromeEpochDeltaMicros int64 = 11644473600 * 1000 * 1000
 // exclusive lock on Cookies when up). The spike documents this limitation; live
 // injection via CDP lands in U4.
 func WriteCookies(dbPath string, cookies []Cookie, key []byte) (int, error) {
+	return writeCookies(dbPath, cookies, key, false)
+}
+
+// WriteCookiesChromeNative upserts cookies into a Cookies database that a
+// real Chrome will load later (another local profile, not a PP-CLI sink). It
+// keeps the file's own meta.version and, when that version is 24+ (Chrome's
+// App-Bound layout), prepends the SHA256(host_key) prefix Chrome expects, so
+// Chrome keeps the cookies on its next load instead of silently dropping them.
+// Unlike WriteCookies it never rewrites meta.version: downgrading a live
+// profile's version would make Chrome re-run its schema migration.
+//
+// Chrome does NOT lock Cookies while the profile is loaded, and it would
+// never see rows written behind its back. Callers must make sure the profile
+// is closed first (see cli profile-sync's open-file check).
+func WriteCookiesChromeNative(dbPath string, cookies []Cookie, key []byte) (int, error) {
+	return writeCookies(dbPath, cookies, key, true)
+}
+
+func writeCookies(dbPath string, cookies []Cookie, key []byte, native bool) (int, error) {
 	db, err := sql.Open("sqlite3", "file:"+dbPath+"?_journal=WAL&_busy_timeout=2000")
 	if err != nil {
 		return 0, fmt.Errorf("open destination cookies db: %w", err)
@@ -38,7 +58,16 @@ func WriteCookies(dbPath string, cookies []Cookie, key []byte) (int, error) {
 		return 0, fmt.Errorf("read cookies schema: %w", err)
 	}
 
-	insertSQL, args := buildUpsert(cols)
+	insertSQL, args := buildUpsert(cols, native)
+
+	appBound := false
+	if native {
+		v, err := readMetaVersion(db)
+		if err != nil {
+			return 0, err
+		}
+		appBound = v >= 24
+	}
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -63,7 +92,11 @@ func WriteCookies(dbPath string, cookies []Cookie, key []byte) (int, error) {
 		// future kooky v0.2.9+ readers also skip the 32-byte strip. When the
 		// deferred PP/kooky bump lands, flip both: re-enable
 		// prependAppBoundPrefix and drop the meta.version=18 write.
-		encrypted, err := encryptValueBytes([]byte(c.Value), key)
+		plain := []byte(c.Value)
+		if appBound {
+			plain = prependAppBoundPrefix(plain, c.HostKey)
+		}
+		encrypted, err := encryptValueBytes(plain, key)
 		if err != nil {
 			return written, fmt.Errorf("encrypt %s/%s: %w", c.HostKey, c.Name, err)
 		}
@@ -79,8 +112,10 @@ func WriteCookies(dbPath string, cookies []Cookie, key []byte) (int, error) {
 		written++
 	}
 
-	if err := writeMetaVersion(tx, "18"); err != nil {
-		return written, err
+	if !native {
+		if err := writeMetaVersion(tx, "18"); err != nil {
+			return written, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -104,6 +139,24 @@ func writeMetaVersion(tx *sql.Tx, v string) error {
 		return fmt.Errorf("write meta.version=%s: %w", v, err)
 	}
 	return nil
+}
+
+// readMetaVersion returns the Cookies database's meta.version as an int, or
+// 0 when the meta table or row is missing (a pre-meta or empty database).
+func readMetaVersion(db *sql.DB) (int, error) {
+	var v string
+	err := db.QueryRow(`SELECT value FROM meta WHERE key='version'`).Scan(&v)
+	if err != nil {
+		if err == sql.ErrNoRows || strings.Contains(err.Error(), "no such table") {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read meta.version: %w", err)
+	}
+	n, convErr := strconv.Atoi(strings.TrimSpace(v))
+	if convErr != nil {
+		return 0, fmt.Errorf("parse meta.version %q: %w", v, convErr)
+	}
+	return n, nil
 }
 
 func encryptValue(plaintext string, key []byte) ([]byte, error) {
@@ -161,7 +214,11 @@ type rowInput struct {
 // buildUpsert returns an INSERT ... ON CONFLICT statement targeting only the
 // columns present in the live schema, plus a function that returns the matching
 // args slice for a given Cookie.
-func buildUpsert(cols map[string]bool) (string, func(rowInput) []any) {
+//
+// keepSiteKey writes each cookie's own top_frame_site_key and
+// has_cross_site_ancestor (the native-profile path) instead of the sink's
+// fixed "" and 1.
+func buildUpsert(cols map[string]bool, keepSiteKey bool) (string, func(rowInput) []any) {
 	// Column order is fixed for stable arg-binding regardless of map iteration.
 	type field struct {
 		name string
@@ -170,7 +227,12 @@ func buildUpsert(cols map[string]bool) (string, func(rowInput) []any) {
 	candidates := []field{
 		{"creation_utc", func(r rowInput) any { return r.creationUTC }},
 		{"host_key", func(r rowInput) any { return r.cookie.HostKey }},
-		{"top_frame_site_key", func(r rowInput) any { return "" }},
+		{"top_frame_site_key", func(r rowInput) any {
+			if keepSiteKey {
+				return r.cookie.TopFrameSiteKey
+			}
+			return ""
+		}},
 		{"name", func(r rowInput) any { return r.cookie.Name }},
 		{"value", func(r rowInput) any { return "" }},
 		{"encrypted_value", func(r rowInput) any { return r.encrypted }},
@@ -187,7 +249,12 @@ func buildUpsert(cols map[string]bool) (string, func(rowInput) []any) {
 		{"source_port", func(r rowInput) any { return r.cookie.SourcePort }},
 		{"last_update_utc", func(r rowInput) any { return r.lastUpdateUTC }},
 		{"source_type", func(r rowInput) any { return 0 }},
-		{"has_cross_site_ancestor", func(r rowInput) any { return 1 }},
+		{"has_cross_site_ancestor", func(r rowInput) any {
+			if keepSiteKey {
+				return r.cookie.HasCrossSiteAncestor
+			}
+			return 1
+		}},
 	}
 
 	var present []field

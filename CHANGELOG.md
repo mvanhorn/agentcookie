@@ -7,6 +7,67 @@
 - The cmux adapter cached its injection tab only in memory, so every sink restart (and every time the user closed that tab) added another unfocused `about:blank` browser tab to the first workspace, and stray "New tab" browsers piled up. It now reads `cmux tree --all --json` and reuses a browser surface that is already open in any workspace, preferring an `about:blank` tab over a live page. It adds a tab only when no browser surface is open, or when `tree` is unavailable on an older cmux. WebKit cookies are profile-wide, so any browser surface works.
 - A reused tab may be a live page, so the adapter only ever calls `browser.cookies.set` on it (after a read-only `browser.url.get` liveness check), never navigate, reload, focus or close. cmux session-restore can resurrect browser tabs as shells that fail every `browser.*` call; the check skips those. The auth probe in `verify.go` still opens and closes its own tab because it navigates.
 - When a cached tab has gone away, the retry reuses another open tab and never picks the one that just failed.
+### Secrets read back exactly as stored, and `secret env` is safe to eval (#173)
+
+- `secret set`, `secret import-from`, `secret alias` and the sink wrote values raw. A value with a newline split into two lines, so `a\nEVIL=x` stored a second key `EVIL`, and one bad `set` could make a CLI's whole bus entry unreadable. A value ending in `\` swallowed the next line, and a value wrapped in quotes lost them. Writers now quote a value that would not read back unchanged bare (`C:\dir\` is written `'C:\dir\'`), and refuse a value with a newline or a trailing `\r`, or whose line would reach 256 KiB. The refusal names the CLI and key, never the value. `secret set` trims a trailing CRLF from stdin.
+- The sink drops a value it cannot store, keeps writing the CLI's other keys, and logs the CLI and how many keys it dropped. When every key for a CLI is dropped, its existing `secrets.env` is left as it was.
+- `secret get`, `secret env` and `secret list` now parse bus files with the same grammar as the Go and Python readers, so the CLI and the libraries agree on every file, including backslash continuations and invalid key names. That also fixes the Python reader's sealed path, which unseals through `secret env`.
+- `secret set`, `secret rm <cli> <key>` and `secret import-from` refuse to rewrite a `secrets.env` they could not write back unchanged (one that does not parse, uses a backslash continuation, or holds a value they would refuse) and name the line. Edit that line, or run `agentcookie secret rm <cli>` and set the keys again. `secret alias` refuses the same way for `aliases.env`. A missing file still starts empty.
+- `secret env` quotes each value for the shell, so `eval "$(agentcookie secret env <cli>)"` assigns a synced value containing `$(...)`, `;` or a leading `=` (which zsh expands) as text instead of running it. A value no quoting can carry safely (one with a `'` and one of `"`, `\`, `$` or a backtick), or one with a NUL byte, is left out with a note on stderr naming the key, and the command exits non-zero after printing the rest. The same happens to a key naming a shell variable the shell evaluates or acts on when assigned, such as `RANDOM` (bash runs `$(...)` in its value even inside single quotes), `SECONDS`, `IFS` or `PS1`. `secret env --no-aliases`, the format the Python reader parses, still prints each value verbatim, so released Python readers keep working.
+- `secret import-from` of a `.env` file stores a key that is not a valid name as `_unknown_line<N>` instead of a name built from its text, which can be a secret pasted on its own line. It now joins backslash continuations and handles a BOM and CRLF, and it skips a value the bus cannot carry, noting the key, and imports the rest.
+- Errors and logs no longer echo an invalid key name read from a file or received over the wire: the source-side parser, the sink's dropped-key message and the carried-file env message now give a line number or a count.
+- A new CLI name containing `--` is refused by `secret set`, `secret alias`, `secret import-from --as` and adoption manifest validation, as spec section 2.3 and the Python reader already require. An existing `--` name still reads, lists and can be removed.
+
+### New `agentcookie sinks`: list the sinks a source feeds, and remove one (#169, by @officialasishkumar)
+
+- `agentcookie sinks list` shows each sink in `source.yaml` with its peer, URL, whether its paired key is present, and its last push. `--json` prints the same rows, and an empty array on a source that delivers to teammates only. A sink whose key is missing says how to pair it again.
+- `agentcookie sinks remove <peer|url>` stops feeding a sink: it removes the entry from `source.yaml` (comments, including the file's leading ones, and other keys are kept, and the file keeps its mode) and deletes `keys/<peer>.json`. Until now this was a hand edit plus a manual key delete.
+- Deleting the key cuts a paired sink off that key: a running source reads it on every push and on every `GET /pull`, so it stops sealing for the sink at its next push and refuses that key on `GET /pull` at once. The running source keeps reporting the sink as failing until it restarts.
+- The key is kept when another sink, a teammate in `teammates.yaml`, or this machine's `sink.yaml` still uses that key file (names that map to the same file count), or another key file holds the same key. Then the removed sink can keep pulling with it, even after a restart, until the key is rotated and every legitimate user of it is re-paired, and the command says so.
+- `security.shared_secret` stays unless you pass `--revoke-shared-secret`, since pull-only sinks not listed in `source.yaml` may use it. While it stays, the command says a removed machine that has it can keep pulling with it until it is rotated. The flag removes it for every machine that uses it, refuses when a remaining sink without a peer, or without its key here, still needs it, and says a running source accepts it on `GET /pull` until it restarts.
+- Removing the last entry of a `sinks:` list also removes a legacy `sink:`/`peer:` it was shadowing, so that sink does not come back, and deletes that peer's key unless something else uses it. The only sink cannot be removed unless `teammates.yaml` lists a teammate, since a source with nothing to deliver to does not start.
+- A `source.yaml` that uses YAML anchors or aliases is refused before anything changes, since removing an anchored entry would leave it unloadable. While `teammates.yaml` lists teammates, `GET /pull` already refuses `security.shared_secret`, and the output says so.
+- Cookies and secrets a removed sink already received stay valid there until they expire or you sign out of those sites.
+
+### Python reader for the secrets bus (#170, by @officialasishkumar)
+
+- New `agentcookie_secret` package in `clients/python`, the Python twin of the Go reader `pkg/agentcookiesecret`. `load("my-pp-cli")` returns a dict with the same priority: sealed bus file, plaintext bus file, an optional `fallback_path`, then process env. `load_detailed` also says where each key came from. It has no dependencies. Install with `pip install "git+https://github.com/mvanhorn/agentcookie#subdirectory=clients/python"`.
+- It parses `secrets.env` itself with the spec's strict grammar. A syntax error or an unreadable file raises `AgentcookieSecretError` naming the file and the line, and is never skipped (spec section 11.4), unless a sealed file exists, which wins as in the Go reader. Errors never include text from the offending line. An invalid CLI name raises `InvalidCLINameError` before any file is read.
+- A sealed file is unsealed by running `agentcookie secret env --no-aliases <cli>`, so the master key never leaves agentcookie's Keychain item. If the binary is not on `PATH`, or unsealing fails, it raises with the sealed file's path instead of falling back to the plaintext file.
+- New `agentcookie secret env --no-aliases` prints only the stored keys, without the alias names `secret env` adds. Without the flag nothing changes. `secret env` now ignores a leading BOM and drops the `\r` of CRLF lines, as the readers do.
+- CI runs the Python tests in the Linux job. The tests live in `clients/python/tests`, outside the installed package.
+
+### Go secrets reader reports a bad secrets.env instead of skipping it (#171, by @officialasishkumar)
+
+- `agentcookiesecret.Load` (and `LoadWithFallback`, `LoadDetailed`) silently skipped a `~/.agentcookie/secrets/<cli>/secrets.env` that did not parse or could not be read, so the CLI ran on process env or its fallback file, which the bus is meant to override. It now returns an error naming the file and, for a syntax error, the line, as spec section 11.4 requires. The error never includes text from the offending line, since that text can be a secret. A leading UTF-8 BOM is now ignored. A missing file is still not an error, and the fallback file is unchanged. On error `Load` returns no map, so a consumer that wants to keep running must re-apply its own fallback, including process env.
+
+### Built with Go 1.26.11
+
+- Go 1.26.11 fixes a net/http vulnerability (GO-2026-6859) that govulncheck reports as reachable from agentcookie's HTTP server and client paths.
+
+### New `agentcookie profile-keepalive`: Claude in Chrome stays connected on every Claude account
+
+- Claude in Chrome pairs only with the Claude account it is signed into, so a Mac with two Claude accounts uses one Chrome profile per account. Chrome unloads a profile when its last window closes, and at launch it reopens only the last one used. After that, Claude in Chrome silently stopped working for the other account.
+- A new launch agent checks every 15 seconds and loads any such profile again inside the running Chrome with `--no-startup-window`, so its extension reconnects with no window and no focus change. Switching Claude Code accounts (for example with ccswap) needs nothing else.
+- It does nothing unless two or more Chrome profiles are signed into different Claude accounts in Claude in Chrome. It reads that account from a private, short-lived copy of the extension's storage. `wizard install` turns it on only then, and `--no-profile-keepalive` opts out.
+- It never starts, quits or restarts Chrome, and waits while Chrome is not running. Before trusting the Chrome process in `SingletonLock`, it checks that the lock was written on this Mac and that the PID still runs Chrome. The handoff to Chrome has a 10-second deadline that kills the sender, never Chrome, so a hung Chrome is not killed by the handoff.
+- After three loads in a row do not take, it sends one macOS notification. `agentcookie doctor` has a Profile keep-alive line that warns and never fails.
+- `agentcookie profile-keepalive pause --profile "Profile 1"` holds off for 10 minutes (`--for` changes it), so `profile-sync` can run. Pausing does not unload a profile the keep-alive already loaded, so after pausing, open a window of that profile and close it (or quit Chrome). profile-sync's "profile is open" error lists these steps.
+- While it is on, closing a profile's windows no longer cuts Claude in Chrome's access to that profile. `agentcookie profile-keepalive disable` does, and keeps it off across later wizard installs until `enable`.
+
+### Release CI notarizes with an App Store Connect API key
+
+- The release workflow now notarizes with an App Store Connect API key (`AC_API_KEY_P8`, `AC_API_KEY_ID`, `AC_API_ISSUER_ID`) when those secrets are set, and falls back to the Apple ID + app-specific password only when they are not. No Apple Account password or 2FA is involved.
+- `vX.Y.Z-ci.N` tags build, sign and notarize but never publish, so release CI can be proven without a release. The binary still rejects `-ci` tags, so a CI-built binary never sends a teammate notice for an unpublished release.
+- New `scripts/setup-release-secrets.sh <AuthKey_XXXX.p8> <issuer-id>` exports only the newest still-valid Developer ID identity as a .p12 (its password goes through the environment, never argv), checks the API key with Apple, and sets all release secrets without printing them. The v1.4.0 to v1.6.0 Mac builds failed in CI because these secrets were missing.
+
+### New `agentcookie profile-sync`: copy logins into a second local Chrome profile
+
+- Copies cookies one-way from one Chrome profile on this Mac (default `Default`) into another, for example `--to "Profile 1"`. Useful when a second profile runs Claude in Chrome on a second Claude account and should be logged into the same sites.
+- Never clobbers the target's own logins: a cookie the target set or changed itself is kept. Only cookies profile-sync copied earlier, and the target left alone, are updated. Ownership is tracked by value hash (never values) in `~/.agentcookie/profile-sync/`.
+- claude.ai, claude.com and anthropic.com are never copied, so each profile keeps its own Claude account. Device-bound Google cookies are skipped. `--exclude` adds more domains, and `--dry-run` shows the plan.
+- Chrome only reads cookies when a profile loads and keeps no SQLite lock, so profile-sync refuses while any process holds the target's cookie store open. Close the target profile's windows first.
+- Writes keep the target's `meta.version` and add the App-Bound prefix Chrome 127+ expects (new `chrome.WriteCookiesChromeNative`). The sink's `WriteCookies` path is unchanged.
 
 ### macOS: Login Items shows "agentcookie" instead of the signer's name
 

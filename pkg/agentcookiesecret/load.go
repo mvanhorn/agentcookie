@@ -1,13 +1,14 @@
 package agentcookiesecret
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/mvanhorn/agentcookie/internal/envfile"
 	"github.com/mvanhorn/agentcookie/internal/keystore"
 )
 
@@ -41,11 +42,12 @@ var ErrInvalidCLIName = errors.New("agentcookiesecret: cli name violates v1 nami
 // Load resolves secrets for the given CLI from the agentcookie bus and
 // returns them as a flat map. Equivalent to LoadWithFallback(cliName, "").
 //
-// Errors are returned for invalid cli-name and for unreadable sealed
-// files when the master key is required. Missing bus files are NOT
-// errors: Load falls through to process env and returns whatever env
-// variables match. Callers can distinguish "no bus entry, env-only" by
-// inspecting the result's Sources field.
+// Errors are returned for invalid cli-name, for a secrets.env that does
+// not parse or cannot be read (the error names the file and line), and
+// for unreadable sealed files when the master key is required. Missing
+// bus files are NOT errors: Load falls through to process env and
+// returns whatever env variables match. Callers can distinguish "no bus
+// entry, env-only" by inspecting the result's Sources field.
 func Load(cliName string) (map[string]string, error) {
 	res, err := LoadDetailed(cliName, "")
 	if err != nil {
@@ -107,7 +109,7 @@ func LoadDetailed(cliName string, fallbackPath string) (*LoadResult, error) {
 
 	// 3. Fallback file, if requested.
 	if fallbackPath != "" {
-		if fb, err := readEnvFile(fallbackPath); err == nil {
+		if fb, err := envfile.ReadFile(fallbackPath); err == nil {
 			for k, v := range fb {
 				res.Env[k] = v
 				res.Sources[k] = SourceFallback
@@ -115,19 +117,38 @@ func LoadDetailed(cliName string, fallbackPath string) (*LoadResult, error) {
 		}
 	}
 
-	// 2. Plaintext bus file.
+	// 2. Plaintext bus file. A missing file just means no bus entry. Any
+	// other failure (a syntax error, an unreadable file) is returned once
+	// we know the plaintext file is the selected source: the spec forbids
+	// skipping a bad file, since the caller would then run on env values
+	// the bus was meant to override. When a sealed twin exists it is
+	// authoritative (spec section 5.2) and a bad plaintext sibling is ignored.
 	home, _ := os.UserHomeDir()
 	plainPath := filepath.Join(home, ".agentcookie", "secrets", cliName, "secrets.env")
-	if plain, err := readEnvFile(plainPath); err == nil {
+	sealedPath := plainPath + ".sealed"
+	_, sealedStatErr := os.Stat(sealedPath)
+	sealedPresent := sealedStatErr == nil
+
+	plain, err := envfile.ReadFile(plainPath)
+	if !sealedPresent {
+		// A writer seals by creating the sealed file and then removing the
+		// plaintext one. Check again so a seal that lands between the first
+		// stat and the plaintext read is still found.
+		_, sealedStatErr = os.Stat(sealedPath)
+		sealedPresent = sealedStatErr == nil
+	}
+	switch {
+	case err == nil:
 		for k, v := range plain {
 			res.Env[k] = v
 			res.Sources[k] = SourceBusPlain
 		}
+	case !errors.Is(err, fs.ErrNotExist) && !sealedPresent:
+		return res, fmt.Errorf("read %s: %w", plainPath, err)
 	}
 
 	// 1. Sealed bus file (highest priority).
-	sealedPath := plainPath + ".sealed"
-	if _, err := os.Stat(sealedPath); err == nil {
+	if sealedPresent {
 		masterKey, mkErr := keystore.ReadMasterKey()
 		if mkErr != nil {
 			// Sealed file present but no master key. Caller almost
@@ -142,7 +163,7 @@ func LoadDetailed(cliName string, fallbackPath string) (*LoadResult, error) {
 		if err != nil {
 			return res, fmt.Errorf("unseal %s: %w", sealedPath, err)
 		}
-		parsed, err := parseEnvBytes(plain)
+		parsed, err := envfile.ParseBytes(plain)
 		if err != nil {
 			return res, fmt.Errorf("parse unsealed %s: %w", sealedPath, err)
 		}
@@ -153,97 +174,6 @@ func LoadDetailed(cliName string, fallbackPath string) (*LoadResult, error) {
 	}
 
 	return res, nil
-}
-
-// readEnvFile is a minimal v1-conformant .env parser. Mirrors the strict
-// subset documented in the spec so this package has zero non-stdlib
-// dependencies beyond keystore (which is needed only for sealed-file
-// unseal).
-func readEnvFile(path string) (map[string]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
-	return parseEnvScanner(scanner)
-}
-
-// parseEnvBytes parses a byte slice via the same scanner-based grammar
-// as readEnvFile. Used after sealed-file unseal returns plaintext bytes.
-func parseEnvBytes(data []byte) (map[string]string, error) {
-	scanner := bufio.NewScanner(strings.NewReader(string(data)))
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
-	return parseEnvScanner(scanner)
-}
-
-func parseEnvScanner(scanner *bufio.Scanner) (map[string]string, error) {
-	out := map[string]string{}
-	lineNum := 0
-	var pending strings.Builder
-	var pendingKey string
-	inContinuation := false
-
-	for scanner.Scan() {
-		lineNum++
-		line := scanner.Text()
-
-		if inContinuation {
-			if strings.HasSuffix(line, "\\") {
-				pending.WriteString(line[:len(line)-1])
-				continue
-			}
-			pending.WriteString(line)
-			out[pendingKey] = stripQuotes(pending.String())
-			pending.Reset()
-			pendingKey = ""
-			inContinuation = false
-			continue
-		}
-
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		before, after, ok := strings.Cut(line, "=")
-		if !ok {
-			return nil, fmt.Errorf("line %d: missing '=' (expected KEY=VALUE)", lineNum)
-		}
-		key := before
-		if key != strings.TrimRight(key, " \t") || key != strings.TrimLeft(key, " \t") {
-			return nil, fmt.Errorf("line %d: whitespace around '=' is not allowed", lineNum)
-		}
-		if !validKeyName(key) {
-			return nil, fmt.Errorf("line %d: invalid key name %q", lineNum, key)
-		}
-		value := after
-
-		if strings.HasSuffix(value, "\\") {
-			pending.WriteString(value[:len(value)-1])
-			pendingKey = key
-			inContinuation = true
-			continue
-		}
-		out[key] = stripQuotes(value)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan: %w", err)
-	}
-	if inContinuation {
-		return nil, fmt.Errorf("unterminated backslash continuation for key %q", pendingKey)
-	}
-	return out, nil
-}
-
-func stripQuotes(v string) string {
-	if len(v) >= 2 {
-		first, last := v[0], v[len(v)-1]
-		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-			return v[1 : len(v)-1]
-		}
-	}
-	return v
 }
 
 func validCLIName(name string) bool {
@@ -259,27 +189,6 @@ func validCLIName(name string) bool {
 		case r >= '0' && r <= '9':
 		case r == '-':
 		default:
-			return false
-		}
-	}
-	return true
-}
-
-func validKeyName(k string) bool {
-	if k == "" {
-		return false
-	}
-	for i, r := range k {
-		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
-		isDigit := r >= '0' && r <= '9'
-		isUnder := r == '_'
-		if i == 0 {
-			if !isLetter && !isUnder {
-				return false
-			}
-			continue
-		}
-		if !isLetter && !isDigit && !isUnder {
 			return false
 		}
 	}

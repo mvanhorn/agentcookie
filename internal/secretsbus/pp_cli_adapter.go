@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/mvanhorn/agentcookie/internal/envfile"
 )
 
 // ppCLIMetadata is the subset of .printing-press.json the adapter cares about.
@@ -77,14 +79,14 @@ func DeriveManifestFromPP(jsonPath string) (*ManifestV2, error) {
 			if spec.Name == "" {
 				continue
 			}
-			if !validKeyName(spec.Name) {
+			if !envfile.ValidKey(spec.Name) {
 				continue
 			}
 			m.Sync.Keys[spec.Name] = spec.Sensitive
 		}
 	} else {
 		for _, name := range meta.AuthEnvVars {
-			if !validKeyName(name) {
+			if !envfile.ValidKey(name) {
 				continue
 			}
 			m.Sync.Keys[name] = true
@@ -99,7 +101,7 @@ func DeriveManifestFromPP(jsonPath string) (*ManifestV2, error) {
 		return m, nil
 	}
 	carryKey := ppCarryKey(meta.CLIName)
-	if !validKeyName(carryKey) {
+	if !envfile.ValidKey(carryKey) {
 		return nil, fmt.Errorf("%s: cli_name %q yields invalid carry key %q", jsonPath, meta.CLIName, carryKey)
 	}
 	m.Files = []ManifestV2File{{
