@@ -2,9 +2,11 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
-	"time"
+	"io"
+
+	"github.com/spf13/cobra"
 
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/livecdp"
@@ -14,51 +16,67 @@ import (
 // CDP endpoint. Tests replace it so they never dial Chrome.
 var liveCDPSweep = livecdp.SweepStaleBlankTabs
 
-// liveCDPSweepMaxPasses caps the startup sweep. Each pass closes every
-// stale tab it can within its budget, so a pile needs more than one pass
-// only when a pass runs out of time; a cap stops a browser that keeps
-// growing blank tabs from holding the sweep open forever.
-const liveCDPSweepMaxPasses = 10
-
-// liveCDPSweepPassBudget is one sweep pass's time: the age wait plus room
-// to close a few thousand paced tabs.
-const liveCDPSweepPassBudget = livecdp.DefaultSweepMinAge + 2*time.Minute
-
-// startLiveCDPSweep closes, in the background, the about:blank tabs earlier
-// sink versions leaked into the live CDP Chrome (one per inject). It runs
-// sweep passes, each with its own budget, until one closes nothing, so a
-// pile of thousands clears on one sink start. It runs when live CDP is on
-// and the sink may modify Chrome (not --dry-run). It reports whether it
-// started.
-func startLiveCDPSweep(ctx context.Context, cfg *config.SinkConfig) bool {
-	if !cfg.LiveCDP.Enabled || sinkDryRun {
-		return false
-	}
-	endpoint := cfg.LiveCDP.Endpoint
-	if endpoint == "" {
-		endpoint = livecdp.DefaultCDPEndpoint
-	}
-	go runLiveCDPSweep(ctx, endpoint)
-	return true
+type sinkSweepTabsOptions struct {
+	Endpoint string
+	DryRun   bool
 }
 
-// runLiveCDPSweep runs sweep passes until one closes nothing, a pass fails
-// without closing anything, ctx ends, or the pass cap is reached.
-func runLiveCDPSweep(ctx context.Context, endpoint string) {
-	total := 0
-	for pass := 1; pass <= liveCDPSweepMaxPasses && ctx.Err() == nil; pass++ {
-		passCtx, cancel := context.WithTimeout(ctx, liveCDPSweepPassBudget)
-		closed, err := liveCDPSweep(passCtx, endpoint, livecdp.DefaultSweepMinAge)
-		cancel()
-		total += closed
+var sinkSweepTabsOpts sinkSweepTabsOptions
+
+var sinkSweepTabsCmd = &cobra.Command{
+	Use:   "sweep-tabs",
+	Short: "Close the blank tabs older sink versions left in the live CDP Chrome",
+	Long: `Earlier sink versions could leave an about:blank tab in the attached
+Chrome on each live CDP inject, so a long-running sink piled up thousands
+of them. Injects no longer open tabs. Run this once to close the ones already there.
+
+It lists the browser's tabs, waits 60 seconds, lists them again, and closes
+tabs that were about:blank both times. It never closes a page with a real
+URL, a tab a client is attached to, a popup a page opened, a tab outside
+Chrome's default browser context, or the last open page, and it always
+leaves one stale blank tab.
+
+It sweeps the live_cdp endpoint in sink.yaml. --endpoint sweeps another
+Chrome instead. --dry-run lists the tabs it would close and closes none.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		return runSinkSweepTabsWith(cmd.Context(), cmd.OutOrStdout(), common.ConfigDir, sinkSweepTabsOpts)
+	},
+}
+
+func init() {
+	sinkSweepTabsCmd.Flags().StringVar(&sinkSweepTabsOpts.Endpoint, "endpoint", "", "CDP endpoint to sweep instead of live_cdp.endpoint from sink.yaml")
+	sinkSweepTabsCmd.Flags().BoolVar(&sinkSweepTabsOpts.DryRun, "dry-run", false, "list the tabs it would close and close none")
+	sinkCmd.AddCommand(sinkSweepTabsCmd)
+}
+
+// runSinkSweepTabsWith runs one sweep pass and reports what it closed, or
+// with DryRun what it would close.
+func runSinkSweepTabsWith(ctx context.Context, out io.Writer, configDir string, opts sinkSweepTabsOptions) error {
+	endpoint := opts.Endpoint
+	if endpoint == "" {
+		cfg, err := config.LoadSink(configDir)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "agentcookie sink: stale-tab sweep pass %d at %s: closed %d, then failed: %v\n", pass, endpoint, closed, err)
+			return fmt.Errorf("read sink.yaml (or pass --endpoint): %w", err)
 		}
-		if closed == 0 {
-			break
+		if !cfg.LiveCDP.Enabled {
+			return errors.New("live_cdp is not enabled in sink.yaml; pass --endpoint to sweep a Chrome by its CDP endpoint")
+		}
+		endpoint = cfg.LiveCDP.Endpoint
+		if endpoint == "" {
+			endpoint = livecdp.DefaultCDPEndpoint
 		}
 	}
-	if total > 0 {
-		fmt.Fprintf(os.Stderr, "agentcookie sink: stale-tab sweep closed %d about:blank tab(s) at %s\n", total, endpoint)
+
+	fmt.Fprintf(out, "Watching %s for %s for blank tabs that stay blank...\n", endpoint, livecdp.DefaultSweepMinAge)
+	ids, err := liveCDPSweep(ctx, endpoint, livecdp.DefaultSweepMinAge, opts.DryRun)
+	if opts.DryRun {
+		fmt.Fprintf(out, "Would close %d stale about:blank tab(s) at %s.\n", len(ids), endpoint)
+		for _, id := range ids {
+			fmt.Fprintf(out, "  %s\n", id)
+		}
+	} else {
+		fmt.Fprintf(out, "Closed %d stale about:blank tab(s) at %s.\n", len(ids), endpoint)
 	}
+	return err
 }

@@ -66,10 +66,14 @@ type fakeBrowser struct {
 	lists   int
 	infos   int
 	onClose func(fb *fakeBrowser)
+	onList  func(fb *fakeBrowser)
 }
 
 func (fb *fakeBrowser) list() ([]*target.Info, error) {
 	fb.lists++
+	if fb.onList != nil {
+		defer fb.onList(fb)
+	}
 	out := make([]*target.Info, 0, len(fb.targets))
 	for _, info := range fb.targets {
 		c := *info
@@ -151,7 +155,12 @@ func TestCloseStaleBlanks_RevalidatesCandidates(t *testing.T) {
 // Guard-revert: drop the per-close info check and this goes red.
 func TestCloseStaleBlanks_SparesTabChangedMidBatch(t *testing.T) {
 	noClosePause(t)
-	fb := &fakeBrowser{targets: []*target.Info{blankTab("a"), blankTab("b"), blankTab("c"), blankTab("d"), realTab("real")}}
+	fb := &fakeBrowser{targets: []*target.Info{blankTab("a"), blankTab("b"), blankTab("c"), blankTab("d")}}
+	// Enough real pages that the sweep is far from the last-page floor, so
+	// it does not relist before each close.
+	for i := range sweepRelistEvery + 5 {
+		fb.targets = append(fb.targets, realTab(fmt.Sprintf("real%d", i)))
+	}
 	// Right after a closes, inside the same batch: b is navigated, c is
 	// attached. No relist happens before their turn.
 	fb.onClose = func(fb *fakeBrowser) {
@@ -185,6 +194,30 @@ func TestCloseStaleBlanks_KeepsAPage(t *testing.T) {
 	fb = &fakeBrowser{targets: []*target.Info{blankTab("a"), blankTab("b"), prerender}}
 	if got := fb.sweep(t, fb.candidates()); len(got) != 1 {
 		t.Fatalf("closed %v, want exactly 1 of 2 blanks", got)
+	}
+}
+
+// TestCloseStaleBlanks_RelistsNearFloor: near the last page, the page count
+// from a listing taken a few closes ago is not enough. Another client that
+// closes pages between the sweep's closes (here the only real page and the
+// spared last candidate) must not lead the sweep to close the last page.
+//
+// Guard-revert: relist only every sweepRelistEvery closes and this goes red.
+func TestCloseStaleBlanks_RelistsNearFloor(t *testing.T) {
+	noClosePause(t)
+	fb := &fakeBrowser{targets: []*target.Info{blankTab("a"), blankTab("b"), blankTab("c"), blankTab("d"), blankTab("e"), realTab("real")}}
+	candidates := fb.candidates()
+	fb.onClose = func(fb *fakeBrowser) {
+		fb.remove("real")
+		fb.remove("e")
+		fb.onClose = nil
+	}
+	fb.sweep(t, candidates)
+	if pages := livePages(fb.targets); pages < 1 {
+		t.Fatalf("closed %v and left no page open", fb.closed)
+	}
+	if !slices.Equal(fb.closed, []target.ID{"a", "b", "c"}) {
+		t.Fatalf("closed %v, want [a b c]: d is the browser's last page", fb.closed)
 	}
 }
 
@@ -226,10 +259,55 @@ func TestCloseStaleBlanks_ClearsLargePileWithFewListings(t *testing.T) {
 		t.Fatalf("closed %d of %d blanks, want %d (all but the spared last)", len(closed), n, n-1)
 	}
 	// A fixed bound, not one derived from sweepRelistEvery, so relisting
-	// before every close fails it.
-	const maxLists = 100
+	// before every close fails it. It allows one listing per batch plus one
+	// per close in the last batch before the floor.
+	const maxLists = 150
 	if fb.lists > maxLists {
 		t.Fatalf("%d target listings for %d closes, want at most %d", fb.lists, len(closed), maxLists)
+	}
+}
+
+// sweepPassBrowser is a browser holding a real page, three stale blanks, and
+// a blank another client opens between the sweep's two listings.
+func sweepPassBrowser() *fakeBrowser {
+	fb := &fakeBrowser{targets: []*target.Info{blankTab("stale1"), realTab("real"), blankTab("stale2"), blankTab("stale3")}}
+	fb.onList = func(fb *fakeBrowser) {
+		fb.targets = append(fb.targets, blankTab("fresh"))
+		fb.onList = nil
+	}
+	return fb
+}
+
+func TestSweepPass_ClosesStaleBlanksOnly(t *testing.T) {
+	noClosePause(t)
+	fb := sweepPassBrowser()
+	closed, err := sweepPass(context.Background(), fb.list, fb.info, fb.close, testDefaultCtx, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []target.ID{"stale1", "stale2"}
+	if !slices.Equal(closed, want) || !slices.Equal(fb.closed, want) {
+		t.Fatalf("returned %v, closed %v, want %v", closed, fb.closed, want)
+	}
+	for _, id := range []target.ID{"real", "fresh", "stale3"} {
+		if fb.find(id) == nil {
+			t.Errorf("%s was closed; the real page, the fresh blank, and the spared last blank must stay", id)
+		}
+	}
+}
+
+func TestSweepPass_DryRunClosesNothing(t *testing.T) {
+	noClosePause(t)
+	fb := sweepPassBrowser()
+	would, err := sweepPass(context.Background(), fb.list, fb.info, fb.close, testDefaultCtx, 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []target.ID{"stale1", "stale2"}; !slices.Equal(would, want) {
+		t.Fatalf("dry run listed %v, want %v", would, want)
+	}
+	if len(fb.closed) != 0 {
+		t.Fatalf("dry run closed %v", fb.closed)
 	}
 }
 
@@ -363,8 +441,8 @@ func TestSweepStaleBlankTabs_Live(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		n, err := SweepStaleBlankTabs(context.Background(), endpoint, minAge)
-		done <- result{n, err}
+		ids, err := SweepStaleBlankTabs(context.Background(), endpoint, minAge, false)
+		done <- result{len(ids), err}
 	}()
 	// Opened after the sweep's first listing, so younger than minAge.
 	time.Sleep(minAge / 2)
