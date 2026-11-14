@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### macOS: agentcookie's own Chrome no longer leaks app-bundle copies (#168, by @Kyzcreig)
+
+- On macOS, Chrome copies its app bundle into `$TMPDIR/../X/com.google.Chrome.code_sign_clone` at launch and removes the copy only on a clean shutdown. agentcookie kills the Chrome it starts, so every sync left a copy behind, and a long-running sink built up hundreds of them.
+- Both Chromes agentcookie launches now pass `MacAppCodeSignClone` in `--disable-features`, merged with chromedp's default disabled features so none of those are dropped.
+- No config change is needed.
+
 ### Live CDP sinks stop leaving a blank tab per inject (#156, by @hayECOM)
 
 - Each live CDP inject opened an `about:blank` tab in the attached Chrome and relied on chromedp closing it when the connection was cancelled, with a one-second budget. A loaded browser missed that budget, so a sink injecting on every sync left a tab behind nearly every time: one Mac sink's shared Chrome built up thousands of blank tabs and about 2.6 GB of memory in 2.3 days. Injection now talks only to the browser session (`Target.getTargets`, `Target.getBrowserContexts`, `Storage.setCookies`) and creates no tab at all.
