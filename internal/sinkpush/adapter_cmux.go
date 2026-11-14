@@ -246,8 +246,9 @@ func (a *CmuxAdapter) PushContext(ctx context.Context, cookies []chrome.Cookie) 
 }
 
 // ensureSurfaceLocked returns the cached injection surface ref. With no
-// cache it first reuses a browser surface that is already open anywhere in
-// cmux and passes a liveness probe (see reusableBrowserSurfaces and
+// cache, and when cmux has a single browser profile, it first reuses a
+// browser surface that is already open anywhere in cmux and passes a
+// liveness probe (see reusableBrowserSurfaces and
 // surfaceAliveLocked), and only when there is none adds an
 // unfocused about:blank browser tab to an existing workspace. avoid is a
 // surface ref that must not be picked (the one that just failed); "" for
@@ -259,22 +260,33 @@ func (a *CmuxAdapter) ensureSurfaceLocked(ctx context.Context, avoid string) (st
 	if a.surfaceID != "" {
 		return a.surfaceID, nil
 	}
-	treeOut, err := a.run(ctx, "tree", "--all", "--json")
-	if err != nil && isCmuxUnavailable(err) {
+	// Each cmux browser profile has its own cookie store, and `tree` does not
+	// say which profile a tab uses, while verify probes the default profile.
+	// So reuse an open tab only when there is a single profile. Otherwise
+	// (several profiles, or a cmux that cannot list them) add the adapter's
+	// own tab, in the default profile when cmux names one.
+	profiles, defaultProfile, err := a.browserProfilesLocked(ctx)
+	if err != nil {
 		return "", err
 	}
-	// Any other discovery failure (an older cmux without `tree --json`,
-	// unparseable output) falls through to adding a tab: one stray tab
-	// beats no delivery.
-	if err == nil {
-		for _, sid := range reusableBrowserSurfaces(treeOut, avoid) {
-			alive, perr := a.surfaceAliveLocked(ctx, sid)
-			if perr != nil {
-				return "", perr
-			}
-			if alive {
-				a.surfaceID = sid
-				return sid, nil
+	if profiles == 1 {
+		treeOut, err := a.run(ctx, "tree", "--all", "--json")
+		if err != nil && isCmuxUnavailable(err) {
+			return "", err
+		}
+		// Any other discovery failure (an older cmux without `tree --json`,
+		// unparseable output) falls through to adding a tab: one stray tab
+		// beats no delivery.
+		if err == nil {
+			for _, sid := range reusableBrowserSurfaces(treeOut, avoid) {
+				alive, perr := a.surfaceAliveLocked(ctx, sid)
+				if perr != nil {
+					return "", perr
+				}
+				if alive {
+					a.surfaceID = sid
+					return sid, nil
+				}
 			}
 		}
 	}
@@ -285,7 +297,14 @@ func (a *CmuxAdapter) ensureSurfaceLocked(ctx context.Context, avoid string) (st
 	// --focus false adds the about:blank as a non-selected background tab,
 	// so the user's selected surface stays put and nothing pops into view.
 	// cmux picks the workspace's active pane when --pane is omitted.
-	out, err := a.run(ctx, "new-surface", "--type", "browser", "--workspace", ws, "--url", "about:blank", "--focus", "false")
+	// `new-surface` has no profile flag, so with several profiles the tab is
+	// opened with `browser open`, which names the profile (and, like the
+	// --focus false here, does not take focus).
+	args := []string{"new-surface", "--type", "browser", "--workspace", ws, "--url", "about:blank", "--focus", "false"}
+	if profiles > 1 && defaultProfile != "" {
+		args = []string{"browser", "open", "about:blank", "--workspace", ws, "--focus", "false", "--profile", defaultProfile}
+	}
+	out, err := a.run(ctx, args...)
 	if err != nil {
 		return "", err
 	}
@@ -295,6 +314,38 @@ func (a *CmuxAdapter) ensureSurfaceLocked(ctx context.Context, avoid string) (st
 	}
 	a.surfaceID = sid
 	return sid, nil
+}
+
+// browserProfilesLocked returns how many browser profiles cmux has and the
+// id of its built-in default profile, from `cmux browser profiles list
+// --json`. A cmux that cannot list them (an older build, unparseable
+// output) yields 0 profiles and no error; only cmux being unreachable is
+// returned as an error.
+// Caller must hold a.mu.
+func (a *CmuxAdapter) browserProfilesLocked(ctx context.Context) (int, string, error) {
+	out, err := a.run(ctx, "browser", "profiles", "list", "--json")
+	if err != nil {
+		if isCmuxUnavailable(err) {
+			return 0, "", err
+		}
+		return 0, "", nil
+	}
+	var parsed struct {
+		Profiles []struct {
+			ID             string `json:"id"`
+			BuiltInDefault bool   `json:"built_in_default"`
+		} `json:"profiles"`
+	}
+	if json.Unmarshal([]byte(out), &parsed) != nil {
+		return 0, "", nil
+	}
+	def := ""
+	for _, p := range parsed.Profiles {
+		if p.BuiltInDefault {
+			def = p.ID
+		}
+	}
+	return len(parsed.Profiles), def, nil
 }
 
 // surfaceAliveLocked probes a reuse candidate with a read-only

@@ -30,6 +30,9 @@ type fakeCmux struct {
 
 	deadSurfaces map[string]error // browser.url.get probe error per surface ref (nil = alive)
 
+	profilesOut string // browser profiles list --json response ("" = only the built-in Default profile)
+	profilesErr error
+
 	// Auth-verify (verify.go) scripting.
 	evalOuts   []string // browser.eval responses, consumed in order; last repeats
 	evalErrs   []error  // browser.eval errors, consumed in order; last repeats
@@ -60,7 +63,17 @@ func (f *fakeCmux) run(args ...string) (string, error) {
 		}
 		return out, nil
 	}
-	if len(args) >= 1 && args[0] == "new-surface" {
+	if len(args) >= 3 && args[0] == "browser" && args[1] == "profiles" && args[2] == "list" {
+		if f.profilesErr != nil {
+			return "", f.profilesErr
+		}
+		out := f.profilesOut
+		if out == "" {
+			out = oneCmuxProfile
+		}
+		return out, nil
+	}
+	if isAddCall(args) {
 		i := f.addIdx
 		f.addIdx++
 		if i < len(f.addErrs) && f.addErrs[i] != nil {
@@ -530,10 +543,17 @@ func TestFilterByHostPatterns(t *testing.T) {
 }
 
 // countAdds counts new-surface (hidden-tab add) calls.
+// isAddCall reports whether a cmux call adds a browser tab, by either
+// command the adapter uses for it.
+func isAddCall(c []string) bool {
+	return (len(c) >= 1 && c[0] == "new-surface") ||
+		(len(c) >= 2 && c[0] == "browser" && c[1] == "open")
+}
+
 func countAdds(calls [][]string) int {
 	n := 0
 	for _, c := range calls {
-		if len(c) >= 1 && c[0] == "new-surface" {
+		if isAddCall(c) {
 			n++
 		}
 	}
@@ -935,5 +955,102 @@ func TestCmuxPush_ProbeCmuxUnavailableHardFails(t *testing.T) {
 	}
 	if countAdds(f.calls) != 0 {
 		t.Errorf("must not add a tab when cmux is unreachable")
+	}
+}
+
+// `cmux browser profiles list --json` responses, in the shape cmux prints.
+const oneCmuxProfile = `{"current_profile_id":"52B43C05-4A1D-45D3-8FD5-9EF94952E445","profiles":[` +
+	`{"built_in_default":true,"current":true,"id":"52B43C05-4A1D-45D3-8FD5-9EF94952E445","name":"Default","slug":"default"}]}`
+
+const twoCmuxProfiles = `{"current_profile_id":"9D0C1E7A-0000-4000-8000-000000000002","profiles":[` +
+	`{"built_in_default":true,"current":false,"id":"52B43C05-4A1D-45D3-8FD5-9EF94952E445","name":"Default","slug":"default"},` +
+	`{"built_in_default":false,"current":true,"id":"9D0C1E7A-0000-4000-8000-000000000002","name":"Work","slug":"work"}]}`
+
+func TestCmuxPush_TwoProfilesAddsOwnTabNotReuse(t *testing.T) {
+	// An open blank tab could belong to either profile, and verify reads the
+	// default one, so the push must not set cookies through it.
+	f := &fakeCmux{
+		profilesOut: twoCmuxProfiles,
+		treeOuts:    []string{cmuxTree([]string{"surface:1|terminal|-", "surface:743|browser|"})},
+		addOut:      "OK surface:9 pane:1 workspace:2",
+	}
+	a := newTestCmux(f, nil)
+	if err := a.Push([]chrome.Cookie{{HostKey: ".x.com", Name: "a", Value: "1"}}); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if n := countAdds(f.calls); n != 1 {
+		t.Fatalf("with two profiles the push must add its own tab, got %d adds: %v", n, f.calls)
+	}
+	for _, c := range f.calls {
+		for _, arg := range c {
+			if strings.Contains(arg, "surface:743") {
+				t.Errorf("existing tab surface:743 must not be touched, got %v", c)
+			}
+		}
+	}
+	if a.surfaceID != "surface:9" {
+		t.Errorf("surface = %q, want the added surface:9", a.surfaceID)
+	}
+}
+
+func TestCmuxPush_TwoProfilesAddsTabInDefaultProfile(t *testing.T) {
+	f := &fakeCmux{profilesOut: twoCmuxProfiles, addOut: "OK surface:9 pane:1 workspace:2"}
+	a := newTestCmux(f, nil)
+	if err := a.Push([]chrome.Cookie{{HostKey: ".x.com", Name: "a", Value: "1"}}); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	var add []string
+	for _, c := range f.calls {
+		if isAddCall(c) {
+			add = c
+		}
+	}
+	if add == nil {
+		t.Fatalf("no tab added, got %v", f.calls)
+	}
+	if !hasFlag(add, "--profile", "52B43C05-4A1D-45D3-8FD5-9EF94952E445") {
+		t.Errorf("tab must name the default profile explicitly, got %v", add)
+	}
+	if !hasFlag(add, "--workspace", "workspace:2") || !hasFlag(add, "--focus", "false") {
+		t.Errorf("tab must go to the host workspace unfocused, got %v", add)
+	}
+	// Cached: the next push adds nothing and asks no profile question.
+	before := len(f.calls)
+	if err := a.Push([]chrome.Cookie{{HostKey: ".x.com", Name: "a", Value: "1"}}); err != nil {
+		t.Fatalf("second Push: %v", err)
+	}
+	if n := countAdds(f.calls); n != 1 {
+		t.Errorf("second push must reuse the cached tab, got %d adds", n)
+	}
+	if len(f.calls) != before+1 {
+		t.Errorf("second push should only set cookies, got %v", f.calls[before:])
+	}
+}
+
+func TestCmuxPush_ProfileListUnavailableAddsOneCachedTab(t *testing.T) {
+	// An older cmux without the profile list: the profile of an open tab is
+	// unknown, so add the adapter's tab with the existing command, once.
+	f := &fakeCmux{
+		profilesErr: errors.New("exit status 1 (unknown browser subcommand: profiles)"),
+		treeOuts:    []string{cmuxTree([]string{"surface:743|browser|"})},
+	}
+	a := newTestCmux(f, nil)
+	if err := a.Push([]chrome.Cookie{{HostKey: ".x.com", Name: "a", Value: "1"}}); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if n := countAdds(f.calls); n != 1 {
+		t.Fatalf("want one added tab, got %d: %v", n, f.calls)
+	}
+	if findCall(f.calls, "new-surface") == nil {
+		t.Errorf("with no profile list the tab must be added with new-surface, got %v", f.calls)
+	}
+	if a.surfaceID != "surface:9" {
+		t.Errorf("surface = %q, want the added surface:9", a.surfaceID)
+	}
+	if err := a.Push([]chrome.Cookie{{HostKey: ".x.com", Name: "b", Value: "2"}}); err != nil {
+		t.Fatalf("second Push: %v", err)
+	}
+	if n := countAdds(f.calls); n != 1 {
+		t.Errorf("second push must reuse the cached tab, got %d adds", n)
 	}
 }
