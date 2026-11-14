@@ -1161,3 +1161,41 @@ func TestCheckChromeStores_SkipChromeSQLiteListsWithoutReading(t *testing.T) {
 		t.Errorf("detail should list the store and name skip_chrome_sqlite; got %q", c.Detail)
 	}
 }
+
+func TestCheckSourceAdapterGecko(t *testing.T) {
+	// Either step running turns the check into a failure the cases catch.
+	noKeychain := func(chrome.Browser) (string, error) {
+		return "", errors.New("a Gecko source must not read the Keychain")
+	}
+	noDecrypt := func(string, []byte) error {
+		return errors.New("a Gecko source has nothing to decrypt")
+	}
+
+	t.Run("resolved profile reports a cookie count", func(t *testing.T) {
+		home := t.TempDir()
+		path := writeGeckoProfile(t, home, "zen", []geckoTestCookie{
+			{".example.com", "a", "1", futureMS()},
+			{".example.org", "b", "2", futureMS()},
+		})
+		cfg := &config.SourceConfig{Chrome: config.ChromeRef{DBPath: path}, Browser: config.BrowserRef{Name: "zen"}}
+		c := checkSourceAdapter(cfg, nil, noKeychain, noDecrypt)
+		if c.Severity != SeverityOK {
+			t.Fatalf("got %q (%q), want OK", c.Severity, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "adapter: zen") || !strings.Contains(c.Detail, "2 cookies") {
+			t.Errorf("detail should name zen and the count: %q", c.Detail)
+		}
+	})
+
+	t.Run("missing cookies.sqlite names the path", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "Profiles", "x.default", "cookies.sqlite")
+		cfg := &config.SourceConfig{Chrome: config.ChromeRef{DBPath: path}, Browser: config.BrowserRef{Name: "firefox"}}
+		c := checkSourceAdapter(cfg, nil, noKeychain, noDecrypt)
+		if c.Severity != SeverityFail {
+			t.Fatalf("got %q (%q), want FAIL", c.Severity, c.Detail)
+		}
+		if !strings.Contains(c.Detail, path) {
+			t.Errorf("detail should name %s: %q", path, c.Detail)
+		}
+	})
+}

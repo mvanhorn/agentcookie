@@ -1775,3 +1775,36 @@ func resetSkipSecretsWarning() {
 	skipSecretsWarnedFor = ""
 	skipSecretsWarnMu.Unlock()
 }
+
+func TestSourcePushGeckoProfile(t *testing.T) {
+	fx := newSourcePushFixture(t, nil)
+	home, _ := os.UserHomeDir()
+	path := writeGeckoProfile(t, home, "zen", []geckoTestCookie{
+		{".example.com", "session", "zen-session", futureMS()},
+		{"blocked.com", "tracker", "t", futureMS()},
+	})
+	fx.cfg.Chrome.DBPath = path
+	fx.cfg.Browser = config.BrowserRef{Name: "zen"}
+	writeCLIFile(t, filepath.Join(fx.configDir, "blocklist.yaml"), `
+version: 1
+policy: allowlist
+domains:
+  - pattern: "%.example.com"
+`)
+	t.Setenv(envSkipLocalStorage, "")
+	t.Setenv("AGENTCOOKIE_SYNC_INDEXEDDB", "1")
+
+	if _, err := pushWithFreshBlocklist(context.Background(), fx.cfg, nil, false, false, false, fx.srcState, nil); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	if got := fx.hostsAt(0); !reflect.DeepEqual(got, []string{".example.com"}) {
+		t.Fatalf("pushed hosts = %v, want only the allowed Zen cookie", got)
+	}
+	env := fx.capture.envelopeAt(0)
+	if len(env.Cookies) != 1 || env.Cookies[0].Value != "zen-session" {
+		t.Fatalf("envelope cookies = %#v", env.Cookies)
+	}
+	if len(env.LocalStorageTarball) != 0 || len(env.IndexedDBTarball) != 0 {
+		t.Errorf("Gecko push carried storage tarballs (ls=%d idb=%d bytes)", len(env.LocalStorageTarball), len(env.IndexedDBTarball))
+	}
+}

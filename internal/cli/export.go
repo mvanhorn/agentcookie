@@ -58,7 +58,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 	// LoadSourceLocal, not LoadSource: export has no push target, so it must
 	// not require sink.url or a peer/secret. A missing source.yaml is fine
 	// (defaults: default Chrome path, no blocklist).
-	cfg, err := config.LoadSourceLocal(common.ConfigDir)
+	cfg, err := config.LoadSourceLocalForBrowser(common.ConfigDir, exportBrowser)
 	if err != nil {
 		return err
 	}
@@ -69,24 +69,12 @@ func runExport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var key []byte
-	if !cfg.CDPSource.Enabled {
-		browserName := exportBrowser
-		if browserName == "" {
-			browserName = cfg.Browser.Name
-		}
-		sourceBrowser, err := chrome.LookupBrowser(browserName)
-		if err != nil {
-			return err
-		}
-		password, err := chrome.SafeStoragePasswordFor(sourceBrowser)
-		if err != nil {
-			return err
-		}
-		key, err = chrome.DeriveAESKey(password)
-		if err != nil {
-			return err
-		}
+	if err := applyBrowserOverride(cfg, exportBrowser); err != nil {
+		return err
+	}
+	key, err := sourceCookieKey(cfg, exportBrowser, sourcePasswordFor)
+	if err != nil {
+		return err
 	}
 
 	skipDBSC := exportSkipDBSC || os.Getenv("AGENTCOOKIE_SKIP_DBSC_SUSPECT") == "1"

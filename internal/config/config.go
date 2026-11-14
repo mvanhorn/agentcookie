@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/mvanhorn/agentcookie/internal/cdpsource"
+	"github.com/mvanhorn/agentcookie/internal/gecko"
 	"gopkg.in/yaml.v3"
 )
 
@@ -268,7 +269,7 @@ func LoadSource(dir string) (*SourceConfig, error) {
 	if err := validateSharedSecret(path, cfg.Security.SharedSecret); err != nil {
 		return nil, err
 	}
-	if err := resolveSourcePaths(path, &cfg); err != nil {
+	if err := resolveSourcePaths(path, &cfg, false); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
@@ -281,6 +282,17 @@ func LoadSource(dir string) (*SourceConfig, error) {
 // documented "no sink, no peer" use case. A missing source.yaml is fine:
 // it yields defaults (default Chrome path, no blocklist, cmux off).
 func LoadSourceLocal(dir string) (*SourceConfig, error) {
+	return LoadSourceLocalForBrowser(dir, "")
+}
+
+// LoadSourceLocalForBrowser is LoadSourceLocal for a command run with a
+// --browser override. When source.yaml names a Gecko browser and override
+// names a different browser, the configured browser's profile is not
+// resolved: the override replaces it, so a missing or ambiguous profile of
+// the configured browser must not block the command. Chrome.DBPath is then
+// left empty for the caller's override handling to fill in. An empty
+// override behaves exactly like LoadSourceLocal.
+func LoadSourceLocalForBrowser(dir, override string) (*SourceConfig, error) {
 	path := filepath.Join(dir, "source.yaml")
 	var cfg SourceConfig
 	if _, statErr := os.Stat(path); statErr == nil {
@@ -288,7 +300,10 @@ func LoadSourceLocal(dir string) (*SourceConfig, error) {
 			return nil, err
 		}
 	}
-	if err := resolveSourcePaths(path, &cfg); err != nil {
+	override = strings.TrimSpace(override)
+	skipGeckoProfile := override != "" && gecko.IsBrowser(cfg.Browser.Name) &&
+		!strings.EqualFold(override, strings.TrimSpace(cfg.Browser.Name))
+	if err := resolveSourcePaths(path, &cfg, skipGeckoProfile); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
@@ -296,8 +311,9 @@ func LoadSourceLocal(dir string) (*SourceConfig, error) {
 
 // resolveSourcePaths applies the browser/Chrome-path/cmux-path resolution
 // shared by LoadSource and LoadSourceLocal (everything except the
-// push-only sink/peer/secret validation).
-func resolveSourcePaths(path string, cfg *SourceConfig) error {
+// push-only sink/peer/secret validation). skipGeckoProfile leaves an unset
+// Chrome.DBPath empty instead of resolving the configured Gecko profile.
+func resolveSourcePaths(path string, cfg *SourceConfig, skipGeckoProfile bool) error {
 	if cfg.CDPSource.Enabled {
 		if err := cdpsource.ValidateEndpoint(cfg.CDPSource.Endpoint); err != nil {
 			return fmt.Errorf("%s: %w", path, err)
@@ -308,12 +324,12 @@ func resolveSourcePaths(path string, cfg *SourceConfig) error {
 		return nil
 	}
 	cfg.Chrome.DBPath = ExpandTilde(cfg.Chrome.DBPath)
-	if cfg.Browser.Name != "" {
+	if cfg.Browser.Name != "" && !gecko.IsBrowser(cfg.Browser.Name) {
 		if _, err := lookupSourceBrowserPath(cfg.Browser.Name); err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
 	}
-	if cfg.Chrome.DBPath == "" {
+	if cfg.Chrome.DBPath == "" && !skipGeckoProfile {
 		if cfg.Browser.Name != "" || cfg.Browser.Profile != "" {
 			dbPath, err := SourceBrowserCookiesPath(cfg.Browser.Name, cfg.Browser.Profile)
 			if err != nil {
@@ -497,6 +513,17 @@ func DefaultChromeCookiesPath() string {
 // On macOS: ~/Library/Application Support/<browser>/<profile>/Cookies
 // On Linux: ~/.config/<browser>/<profile>/Cookies
 func SourceBrowserCookiesPath(name, profile string) (string, error) {
+	if b, ok := gecko.Lookup(name); ok {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		dir, err := gecko.ResolveProfile(b, home, IsLinux(), profile)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(dir, gecko.CookiesFile), nil
+	}
 	ref, err := lookupSourceBrowserPath(name)
 	if err != nil {
 		return "", err
@@ -568,6 +595,7 @@ func SupportedBrowserNames() []string {
 	for name := range sourceBrowserPaths {
 		names = append(names, name)
 	}
+	names = append(names, gecko.Names()...)
 	sort.Strings(names)
 	return names
 }
