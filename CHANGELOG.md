@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### macOS: agentcookie's own Chrome no longer leaks app-bundle copies (#168, by @Kyzcreig)
+
+- On macOS, Chrome copies its app bundle into `$TMPDIR/../X/com.google.Chrome.code_sign_clone` at launch and removes the copy only on a clean shutdown. agentcookie kills the Chrome it starts, so every sync left a copy behind, and a long-running sink built up hundreds of them.
+- Both Chromes agentcookie launches now pass `MacAppCodeSignClone` in `--disable-features`, merged with chromedp's default disabled features so none of those are dropped.
+- No config change is needed.
+
 ### New `agentcookie profile-keepalive`: Claude in Chrome stays connected on every Claude account
 
 - Claude in Chrome pairs only with the Claude account it is signed into, so a Mac with two Claude accounts uses one Chrome profile per account. Chrome unloads a profile when its last window closes, and at launch it reopens only the last one used. After that, Claude in Chrome silently stopped working for the other account.

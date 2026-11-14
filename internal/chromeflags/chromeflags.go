@@ -26,7 +26,7 @@ const chromedpDefaultDisabled = "site-per-process,Translate,BlinkGenPropertyTree
 func DisabledFeatures(base string) string {
 	seen := map[string]bool{}
 	var out []string
-	for _, f := range strings.Split(base+","+MacAppCodeSignClone, ",") {
+	for f := range strings.SplitSeq(base+","+MacAppCodeSignClone, ",") {
 		f = strings.TrimSpace(f)
 		if f == "" || seen[f] {
 			continue
