@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### cmux delivery reuses an open browser tab instead of adding one (#157, by @hayECOM)
+
+- The cmux adapter cached its injection tab only in memory, so every sink restart (and every time the user closed that tab) added another unfocused `about:blank` browser tab to the first workspace, and stray "New tab" browsers piled up. It now reads `cmux tree --all --json` and reuses a browser surface that is already open in any workspace, preferring an `about:blank` tab over a live page. It adds a tab only when no browser surface is open, or when `tree` is unavailable on an older cmux. WebKit cookies are profile-wide, so any browser surface works.
+- A reused tab may be a live page, so the adapter only ever calls `browser.cookies.set` on it (after a read-only `browser.url.get` liveness check), never navigate, reload, focus or close. cmux session-restore can resurrect browser tabs as shells that fail every `browser.*` call; the check skips those. The auth probe in `verify.go` still opens and closes its own tab because it navigates.
+- When a cached tab has gone away, the retry reuses another open tab and never picks the one that just failed.
+- Reuse happens only when cmux has a single browser profile, since each profile has its own cookie store and `tree` does not say which one a tab uses. With several profiles, or a cmux that cannot list them, the adapter keeps one tab of its own in the default profile, the one `verify` checks.
+
 ### Secrets read back exactly as stored, and `secret env` is safe to eval (#173)
 
 - `secret set`, `secret import-from`, `secret alias` and the sink wrote values raw. A value with a newline split into two lines, so `a\nEVIL=x` stored a second key `EVIL`, and one bad `set` could make a CLI's whole bus entry unreadable. A value ending in `\` swallowed the next line, and a value wrapped in quotes lost them. Writers now quote a value that would not read back unchanged bare (`C:\dir\` is written `'C:\dir\'`), and refuse a value with a newline or a trailing `\r`, or whose line would reach 256 KiB. The refusal names the CLI and key, never the value. `secret set` trims a trailing CRLF from stdin.
