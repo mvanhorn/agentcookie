@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### cmux with more than one browser profile: the sync tab no longer splits your pane
+
+- With several cmux browser profiles, agentcookie opens its tab in the Default profile with `cmux browser open`, because a plain new tab uses whichever profile was used last. That command adds a split pane, so the tab is now moved into the workspace's active pane as a background tab, which closes the split.
+- With one profile (the common case) nothing changes.
+
 ### Read logins from Zen, Firefox, LibreWolf and Floorp (rebuilt from #161-#167, by @ffu3xu4tw)
 
 - `browser.name` in `source.yaml` and `--browser` on `export`, `agent-sync` and `cmux-sync` accept `zen`, `firefox`, `librewolf` and `floorp`, on macOS and Linux (including snap and flatpak Firefox, and Firefox profiles under `$XDG_CONFIG_HOME/mozilla/firefox` or `~/.config/mozilla/firefox`). `source`, `export`, `agent-sync`, `cmux-sync` and `doctor` read the profile's cookies through the same cookie policy and DBSC filter as Chrome.

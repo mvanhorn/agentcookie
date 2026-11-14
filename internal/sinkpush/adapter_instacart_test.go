@@ -59,6 +59,9 @@ func TestInstacartAdapter_IsInstalled_True(t *testing.T) {
 }
 
 func TestInstacartAdapter_IsInstalled_False(t *testing.T) {
+	// Isolate from a real instacart-pp-cli on this machine.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", "")
 	a := &InstacartAdapter{binary: "/nonexistent/path/instacart-pp-cli"}
 	if a.IsInstalled() {
 		t.Errorf("IsInstalled() = true, want false when binary missing")
@@ -66,6 +69,8 @@ func TestInstacartAdapter_IsInstalled_False(t *testing.T) {
 }
 
 func TestInstacartAdapter_IsInstalled_IsDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", "")
 	dir := t.TempDir()
 	a := &InstacartAdapter{binary: dir}
 	if a.IsInstalled() {

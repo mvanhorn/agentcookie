@@ -297,11 +297,13 @@ func (a *CmuxAdapter) ensureSurfaceLocked(ctx context.Context, avoid string) (st
 	// --focus false adds the about:blank as a non-selected background tab,
 	// so the user's selected surface stays put and nothing pops into view.
 	// cmux picks the workspace's active pane when --pane is omitted.
-	// `new-surface` has no profile flag, so with several profiles the tab is
+	// `new-surface` has no profile flag, and with several profiles it uses
+	// the last-used one, not the default. So with several profiles the tab is
 	// opened with `browser open`, which names the profile (and, like the
 	// --focus false here, does not take focus).
+	useOpen := profiles > 1 && defaultProfile != ""
 	args := []string{"new-surface", "--type", "browser", "--workspace", ws, "--url", "about:blank", "--focus", "false"}
-	if profiles > 1 && defaultProfile != "" {
+	if useOpen {
 		args = []string{"browser", "open", "about:blank", "--workspace", ws, "--focus", "false", "--profile", defaultProfile}
 	}
 	out, err := a.run(ctx, args...)
@@ -311,6 +313,13 @@ func (a *CmuxAdapter) ensureSurfaceLocked(ctx context.Context, avoid string) (st
 	sid := surfaceRefRE.FindString(out)
 	if sid == "" {
 		return "", fmt.Errorf("could not parse surface ref from %q", strings.TrimSpace(out))
+	}
+	if useOpen {
+		// `browser open` adds the tab as a new split pane. Move it into the
+		// workspace's active pane as a background tab, which closes the
+		// split. The surface keeps its profile. If the move fails the split
+		// stays, which is untidy but still delivers to the right profile.
+		_, _ = a.run(ctx, "move-surface", "--surface", sid, "--workspace", ws, "--focus", "false")
 	}
 	a.surfaceID = sid
 	return sid, nil

@@ -1014,6 +1014,15 @@ func TestCmuxPush_TwoProfilesAddsTabInDefaultProfile(t *testing.T) {
 	if !hasFlag(add, "--workspace", "workspace:2") || !hasFlag(add, "--focus", "false") {
 		t.Errorf("tab must go to the host workspace unfocused, got %v", add)
 	}
+	var move []string
+	for _, c := range f.calls {
+		if len(c) >= 1 && c[0] == "move-surface" {
+			move = c
+		}
+	}
+	if !hasFlag(move, "--surface", "surface:9") || !hasFlag(move, "--workspace", "workspace:2") || !hasFlag(move, "--focus", "false") {
+		t.Errorf("the split `browser open` makes must be moved into the active pane unfocused, got %v", move)
+	}
 	// Cached: the next push adds nothing and asks no profile question.
 	before := len(f.calls)
 	if err := a.Push([]chrome.Cookie{{HostKey: ".x.com", Name: "a", Value: "1"}}); err != nil {
