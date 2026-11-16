@@ -387,6 +387,8 @@ agentcookie profile-keepalive disable                     # turn off and keep it
 
 While it is on, closing a profile's windows does not cut Claude in Chrome's access to that profile. Only `disable` does. Pausing only stops reloads; to unload a profile the keep-alive already loaded (before `profile-sync`, say), pause it, then open a window of that profile and close it, or quit Chrome.
 
+If the Claude side panel says "Claude in Chrome uses a different account", that profile's claude.ai login and its Claude in Chrome sign-in are two different Claude accounts. `agentcookie doctor` names the profile on its "Claude in Chrome accounts" line. To fix it, open that profile, sign out of claude.ai and back in with the account Claude in Chrome uses (or sign Claude in Chrome into the claude.ai account), then click Reload in the side panel.
+
 ## Fan out to multiple sinks
 
 One source can push the same cookies and secrets to several sinks. A source push reads and filters your cookies once, then seals and POSTs to each sink independently with that sink's own paired key. A sink that is down or unreachable is isolated: it fails on its own while the other sinks still receive the payload.
