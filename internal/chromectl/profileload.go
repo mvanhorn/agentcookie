@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,10 +30,11 @@ var (
 	localHostname = os.Hostname
 	// bonjourHostname is the machine's Bonjour name, which does not change
 	// when the network hands out a different domain.
-	bonjourHostname = func() (string, error) {
+	// It is read once per process: the keep-alive checks Chrome every tick.
+	bonjourHostname = sync.OnceValues(func() (string, error) {
 		out, err := probe("/usr/sbin/scutil", "--get", "LocalHostName")
 		return strings.TrimSpace(out), err
-	}
+	})
 	psStatComm = func(pid int) (string, error) {
 		out, err := probe("/bin/ps", "-o", "stat=,comm=", "-p", strconv.Itoa(pid))
 		return strings.TrimSpace(out), err
@@ -101,21 +103,23 @@ func ChromeStatus(root string) (int, bool, string) {
 	if strings.ContainsAny(stat, "TUD") {
 		return 0, false, fmt.Sprintf("Chrome PID %d is stopped or unresponsive", pid)
 	}
-	if !lockIsLocal(lockHost, pid, root) {
-		host, _ := localHostname()
+	if host, local := lockIsLocal(lockHost, pid, root); !local {
 		return 0, false, fmt.Sprintf("Chrome's lock host %q does not match this machine (%q)", lockHost, host)
 	}
 	return pid, true, ""
 }
 
-func lockIsLocal(lockHost string, pid int, root string) bool {
-	if host, err := localHostname(); err == nil && sameHost(lockHost, host) {
-		return true
+// lockIsLocal also returns the local hostname it compared against, for the
+// caller's reason text.
+func lockIsLocal(lockHost string, pid int, root string) (string, bool) {
+	host, err := localHostname()
+	if err == nil && sameHost(lockHost, host) {
+		return host, true
 	}
-	if host, err := bonjourHostname(); err == nil && sameHost(lockHost, host) {
-		return true
+	if bonjour, err := bonjourHostname(); err == nil && sameHost(lockHost, bonjour) {
+		return host, true
 	}
-	return holdsFilesUnder(pid, root)
+	return host, holdsFilesUnder(pid, root)
 }
 
 // sameHost compares the first DNS label of two hostnames, ignoring case, so

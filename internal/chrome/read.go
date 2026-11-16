@@ -105,15 +105,10 @@ WHERE host_key LIKE ?`
 		); err != nil {
 			return nil, fmt.Errorf("scan row: %w", err)
 		}
-		plain, err := decryptValue(encryptedValue, key)
+		c.Value, err = decryptCookieValue(encryptedValue, key, c.HostKey, c.Name)
 		if err != nil {
-			return nil, fmt.Errorf("decrypt %s/%s: %w", c.HostKey, c.Name, err)
+			return nil, err
 		}
-		// Chrome 127+ on macOS embeds a 32-byte host-bound prefix in the
-		// plaintext. Strip it so downstream consumers (CDP, dumps, fixtures)
-		// see only the real cookie value.
-		stripped := stripAppBoundPrefix([]byte(plain), c.HostKey)
-		c.Value = string(stripped)
 		cookies = append(cookies, c)
 	}
 	if err := rows.Err(); err != nil {
@@ -178,9 +173,20 @@ ORDER BY last_access_utc DESC LIMIT 1`, hostPattern, name).Scan(&host, &enc)
 	if err != nil {
 		return "", false, fmt.Errorf("query cookie %s: %w", name, err)
 	}
+	v, err := decryptCookieValue(enc, key, host, name)
+	if err != nil {
+		return "", false, err
+	}
+	return v, true, nil
+}
+
+// decryptCookieValue decrypts one cookie's encrypted_value. Chrome 127+ on
+// macOS embeds a 32-byte host-bound prefix in the plaintext; it is stripped
+// so callers (CDP, dumps, fixtures) see only the real cookie value.
+func decryptCookieValue(enc, key []byte, host, name string) (string, error) {
 	plain, err := decryptValue(enc, key)
 	if err != nil {
-		return "", false, fmt.Errorf("decrypt %s/%s: %w", host, name, err)
+		return "", fmt.Errorf("decrypt %s/%s: %w", host, name, err)
 	}
-	return string(stripAppBoundPrefix([]byte(plain), host)), true, nil
+	return string(stripAppBoundPrefix([]byte(plain), host)), nil
 }

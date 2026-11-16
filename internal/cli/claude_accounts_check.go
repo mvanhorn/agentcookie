@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/chromepaths"
@@ -36,11 +37,13 @@ type claudeAccountsEnv struct {
 // account" and stops working for that profile.
 func checkClaudeAccounts(sinkCfg *config.SinkConfig) Check {
 	root := chromepaths.ChromeProfileRoot()
+	// One Keychain read for the whole check, however many profiles.
+	decryptKey := sync.OnceValues(func() ([]byte, error) { return getChromeDecryptKey("chrome") })
 	return checkClaudeAccountsWith(claudeAccountsEnv{
 		accounts:          func() ([]chrome.ClaudeExtAccount, []error) { return chrome.ClaudeProfileAccounts(root) },
 		cookieReadAllowed: safeStorageReadAllowed(sinkCfg),
 		cookieOrg: func(profile string) (string, error) {
-			return claudeCookieOrg(root, profile)
+			return claudeCookieOrg(root, profile, decryptKey)
 		},
 		labels: func() map[string]string { return chromeProfileLabels(root) },
 	})
@@ -129,16 +132,12 @@ func checkClaudeAccountsWith(e claudeAccountsEnv) Check {
 
 // claudeCookieOrg reads the org of a profile's claude.ai web session from
 // its lastActiveOrg cookie. Only that cookie is decrypted.
-func claudeCookieOrg(root, profile string) (string, error) {
-	dir := filepath.Join(root, profile)
-	path := filepath.Join(dir, "Network", "Cookies")
-	if _, err := os.Stat(path); err != nil {
-		path = filepath.Join(dir, "Cookies")
-	}
+func claudeCookieOrg(root, profile string, decryptKey func() ([]byte, error)) (string, error) {
+	path := chromepaths.ProfileCookiesDB(filepath.Join(root, profile))
 	if _, err := os.Stat(path); err != nil {
 		return "", nil // no cookie store: not signed in anywhere
 	}
-	key, err := getChromeDecryptKey("chrome")
+	key, err := decryptKey()
 	if err != nil {
 		if chrome.IsKeychainLocked(err) {
 			return "", errors.New("keychain locked")

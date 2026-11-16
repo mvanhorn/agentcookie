@@ -40,7 +40,12 @@ func DefaultProfileDir() string {
 // CookiesDB returns the SQLite path for the Default profile's cookies.
 // Checks Network/Cookies first (Chrome 96+), then falls back to Cookies.
 func CookiesDB() string {
-	profileDir := DefaultProfileDir()
+	return ProfileCookiesDB(DefaultProfileDir())
+}
+
+// ProfileCookiesDB returns the cookies SQLite path inside profileDir:
+// Network/Cookies when it exists (Chrome 96+), else Cookies.
+func ProfileCookiesDB(profileDir string) string {
 	networkCookies := filepath.Join(profileDir, "Network", "Cookies")
 	if info, err := os.Stat(networkCookies); err == nil && !info.IsDir() {
 		return networkCookies

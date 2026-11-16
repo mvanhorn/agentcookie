@@ -142,21 +142,38 @@ func skipLevelDBFile(name string) bool {
 // (Chrome holds the live store's lock) and reads accountUuid from the copy.
 // The copy may hold login data, so it is removed before returning.
 func readClaudeAccount(store string) (string, error) {
+	var account string
+	err := withCopiedStore(store, func(db *leveldb.DB) error {
+		var err error
+		account, err = readAccountUUID(db)
+		return err
+	})
+	return account, err
+}
+
+// withCopiedStore copies the extension's LevelDB into a private temp dir
+// (Chrome holds the live store's lock), opens the copy read-only, and runs
+// fn on it. The copy may hold login data, so it is removed before returning.
+func withCopiedStore(store string, fn func(*leveldb.DB) error) error {
 	tmp, err := os.MkdirTemp("", claudeExtTempPrefix)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer os.RemoveAll(tmp)
 
 	if err := copyLevelDB(store, tmp); err != nil {
-		return "", err
+		return err
 	}
 	db, err := leveldb.OpenFile(tmp, &opt.Options{ReadOnly: true, ErrorIfMissing: true})
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer db.Close()
+	return fn(db)
+}
 
+// readAccountUUID returns the signed-in Claude account, or "" when signed out.
+func readAccountUUID(db *leveldb.DB) (string, error) {
 	raw, err := db.Get([]byte("accountUuid"), nil)
 	if err == leveldb.ErrNotFound {
 		return "", nil
@@ -262,44 +279,27 @@ func ClaudeProfileAccounts(root string) ([]ClaudeExtAccount, []error) {
 }
 
 func readClaudeExtAccount(store string) (ClaudeExtAccount, error) {
-	tmp, err := os.MkdirTemp("", claudeExtTempPrefix)
-	if err != nil {
-		return ClaudeExtAccount{}, err
-	}
-	defer os.RemoveAll(tmp)
-	if err := copyLevelDB(store, tmp); err != nil {
-		return ClaudeExtAccount{}, err
-	}
-	db, err := leveldb.OpenFile(tmp, &opt.Options{ReadOnly: true, ErrorIfMissing: true})
-	if err != nil {
-		return ClaudeExtAccount{}, err
-	}
-	defer db.Close()
-
 	var acct ClaudeExtAccount
-	raw, err := db.Get([]byte("accountUuid"), nil)
-	if err == leveldb.ErrNotFound {
-		return acct, nil
-	}
-	if err != nil {
-		return acct, err
-	}
-	if err := json.Unmarshal(raw, &acct.AccountUUID); err != nil {
-		return acct, fmt.Errorf("accountUuid is not a JSON string: %w", err)
-	}
-	raw, err = db.Get([]byte("tokenOrg"), nil)
-	if err == leveldb.ErrNotFound {
-		return acct, nil
-	}
-	if err != nil {
-		return acct, err
-	}
-	var org struct {
-		UUID string `json:"uuid"`
-	}
-	if err := json.Unmarshal(raw, &org); err != nil {
-		return acct, fmt.Errorf("tokenOrg is not a JSON object: %w", err)
-	}
-	acct.TokenOrg = org.UUID
-	return acct, nil
+	err := withCopiedStore(store, func(db *leveldb.DB) error {
+		var err error
+		if acct.AccountUUID, err = readAccountUUID(db); err != nil || acct.AccountUUID == "" {
+			return err
+		}
+		raw, err := db.Get([]byte("tokenOrg"), nil)
+		if err == leveldb.ErrNotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var org struct {
+			UUID string `json:"uuid"`
+		}
+		if err := json.Unmarshal(raw, &org); err != nil {
+			return fmt.Errorf("tokenOrg is not a JSON object: %w", err)
+		}
+		acct.TokenOrg = org.UUID
+		return nil
+	})
+	return acct, err
 }
