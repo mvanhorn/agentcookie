@@ -103,23 +103,27 @@ func ChromeStatus(root string) (int, bool, string) {
 	if strings.ContainsAny(stat, "TUD") {
 		return 0, false, fmt.Sprintf("Chrome PID %d is stopped or unresponsive", pid)
 	}
-	if host, local := lockIsLocal(lockHost, pid, root); !local {
+	if host, local, lsofErr := lockIsLocal(lockHost, pid, root); !local {
+		if lsofErr != nil {
+			return 0, false, fmt.Sprintf("Chrome's lock host %q does not match this machine (%q) and checking PID %d's open files failed: %v", lockHost, host, pid, lsofErr)
+		}
 		return 0, false, fmt.Sprintf("Chrome's lock host %q does not match this machine (%q)", lockHost, host)
 	}
 	return pid, true, ""
 }
 
-// lockIsLocal also returns the local hostname it compared against, for the
-// caller's reason text.
-func lockIsLocal(lockHost string, pid int, root string) (string, bool) {
+// lockIsLocal also returns the local hostname it compared against and any
+// lsof failure, for the caller's reason text.
+func lockIsLocal(lockHost string, pid int, root string) (string, bool, error) {
 	host, err := localHostname()
 	if err == nil && sameHost(lockHost, host) {
-		return host, true
+		return host, true, nil
 	}
 	if bonjour, err := bonjourHostname(); err == nil && sameHost(lockHost, bonjour) {
-		return host, true
+		return host, true, nil
 	}
-	return host, holdsFilesUnder(pid, root)
+	held, err := holdsFilesUnder(pid, root)
+	return host, held, err
 }
 
 // sameHost compares the first DNS label of two hostnames, ignoring case, so
@@ -134,25 +138,26 @@ func sameHost(a, b string) bool {
 }
 
 // holdsFilesUnder reports whether pid has any file open inside root.
-func holdsFilesUnder(pid int, root string) bool {
+func holdsFilesUnder(pid int, root string) (bool, error) {
 	out, err := lsofNames(pid)
 	if err != nil {
-		return false
+		return false, err
 	}
 	prefix := "n" + filepath.Clean(root) + string(filepath.Separator)
 	for line := range strings.SplitSeq(out, "\n") {
 		if strings.HasPrefix(line, prefix) {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // ProfileLoaded reports whether Chrome pid has files open inside the given
 // profile directory, which is what "the profile is loaded" looks like from
 // outside Chrome.
 func ProfileLoaded(pid int, root, profile string) bool {
-	return holdsFilesUnder(pid, filepath.Join(root, profile))
+	held, _ := holdsFilesUnder(pid, filepath.Join(root, profile))
+	return held
 }
 
 // LoadProfileWindowless asks the running Chrome to load profile without

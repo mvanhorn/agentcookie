@@ -53,7 +53,8 @@ func TestClaudeAccountsCheck(t *testing.T) {
 				e.cookieOrg = func(string) (string, error) { return orgEsper, nil }
 			},
 			severity: SeverityWarn,
-			want:     []string{"Default (mvanhorn@gmail.com)", "uses a different Claude account", "Profile 1"},
+			want:     []string{"Default (mvanhorn@gmail.com): Claude in Chrome uses a different Claude account", "which is the account Claude in Chrome uses in Profile 1 (Person 1)"},
+			notWant:  []string{"likely"},
 		},
 		{
 			name: "lone org difference is a likely mismatch",
@@ -68,6 +69,34 @@ func TestClaudeAccountsCheck(t *testing.T) {
 			severity: SeverityWarn,
 			want:     []string{"Default", "likely uses a different Claude account"},
 			notWant:  []string{"Profile 1 (Person 1): Claude in Chrome"},
+		},
+		{
+			// One account in two orgs: the other profile holds that org under
+			// the same account, so it is not proof of a different account.
+			name: "same account in another org is only a likely mismatch",
+			mod: func(e *claudeAccountsEnv) {
+				e.accounts = func() ([]chrome.ClaudeExtAccount, []error) {
+					return []chrome.ClaudeExtAccount{
+						{Profile: "Default", AccountUUID: "acct-esper", TokenOrg: orgOther},
+						{Profile: "Profile 1", AccountUUID: "acct-esper", TokenOrg: orgEsper},
+					}, nil
+				}
+				e.cookieOrg = func(string) (string, error) { return orgEsper, nil }
+			},
+			severity: SeverityWarn,
+			want:     []string{"Default (mvanhorn@gmail.com): Claude in Chrome likely uses a different Claude account"},
+			notWant:  []string{"which is the account"},
+		},
+		{
+			name: "unreadable store is named when another profile reads",
+			mod: func(e *claudeAccountsEnv) {
+				e.accounts = func() ([]chrome.ClaudeExtAccount, []error) {
+					return []chrome.ClaudeExtAccount{{Profile: "Profile 1", AccountUUID: "acct-esper", TokenOrg: orgEsper}},
+						[]error{errors.New("Default: leveldb corrupt")}
+				}
+			},
+			severity: SeverityOK,
+			want:     []string{"matches claude.ai: Profile 1", "not compared: Default: leveldb corrupt"},
 		},
 		{
 			name: "skip_chrome_sqlite never reads cookies",

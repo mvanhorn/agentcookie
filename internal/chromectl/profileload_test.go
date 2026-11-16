@@ -20,6 +20,7 @@ type fakeHost struct {
 	bonjour  string
 	psOut    map[int]string // pid -> "STAT COMM"
 	lsofOut  string
+	lsofErr  error
 	senderFn func(ctx context.Context, bin string, args []string) *exec.Cmd
 }
 
@@ -49,7 +50,7 @@ func (f fakeHost) install(t *testing.T) {
 		}
 		return out, nil
 	}
-	lsofNames = func(int) (string, error) { return f.lsofOut, nil }
+	lsofNames = func(int) (string, error) { return f.lsofOut, f.lsofErr }
 	if f.senderFn != nil {
 		senderCommand = f.senderFn
 	}
@@ -159,6 +160,21 @@ func TestChromeStatus_ReasonNamesBothHosts(t *testing.T) {
 	}
 	if !strings.Contains(reason, "other-mac.local") || !strings.Contains(reason, "MacBook-Pro-10.localdomain") {
 		t.Fatalf("reason %q must name the lock host and the local host", reason)
+	}
+}
+
+func TestChromeStatus_ReasonNamesLsofFailure(t *testing.T) {
+	f := liveChrome()
+	f.lock = "other-mac.local-764"
+	f.host = "MacBook-Pro-10.localdomain"
+	f.lsofErr = errors.New("lsof timed out")
+	f.install(t)
+	_, ok, reason := ChromeStatus(testRoot)
+	if ok {
+		t.Fatal("want not running")
+	}
+	if !strings.Contains(reason, "lsof timed out") {
+		t.Fatalf("reason %q must name the lsof failure, not only the host mismatch", reason)
 	}
 }
 

@@ -79,14 +79,19 @@ func checkClaudeAccountsWith(e claudeAccountsEnv) Check {
 	}
 
 	// Which profile's extension holds each org, for naming a cross match.
-	extOrgProfile := map[string]string{}
+	extOrgAccount := map[string]chrome.ClaudeExtAccount{}
 	for _, a := range accounts {
 		if a.TokenOrg != "" {
-			extOrgProfile[a.TokenOrg] = a.Profile
+			extOrgAccount[a.TokenOrg] = a
 		}
 	}
 
 	var ok, mismatched, skipped []string
+	// A store that failed to read may be the profile on the wrong account,
+	// so it is named rather than dropped. Errors already carry the profile.
+	for _, err := range errs {
+		skipped = append(skipped, err.Error())
+	}
 	for _, a := range accounts {
 		name := label(a.Profile)
 		if a.TokenOrg == "" {
@@ -102,8 +107,11 @@ func checkClaudeAccountsWith(e claudeAccountsEnv) Check {
 		case org == a.TokenOrg:
 			ok = append(ok, name)
 		default:
-			if other, found := extOrgProfile[org]; found && other != a.Profile {
-				mismatched = append(mismatched, fmt.Sprintf("%s: Claude in Chrome uses a different Claude account than this profile's claude.ai login, which is the account Claude in Chrome uses in %s", name, label(other)))
+			// Confirmed only when another profile's extension holds that org
+			// under a different account; the same account in another org is
+			// not proof.
+			if other, found := extOrgAccount[org]; found && other.Profile != a.Profile && other.AccountUUID != a.AccountUUID {
+				mismatched = append(mismatched, fmt.Sprintf("%s: Claude in Chrome uses a different Claude account than this profile's claude.ai login, which is the account Claude in Chrome uses in %s", name, label(other.Profile)))
 			} else {
 				// One account can belong to several orgs, so a lone
 				// difference is not proof.
