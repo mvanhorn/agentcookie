@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,8 @@ type fakeKeepalive struct {
 	qualify   []chrome.ClaudeProfile
 	qualCalls int
 	running   bool
+	reason    string
+	logs      []string
 	loaded    map[string]bool
 	loadErr   error
 	loadsTo   map[string]bool // a load of this profile marks it loaded
@@ -50,8 +53,13 @@ func (f *fakeKeepalive) loop() *keepaliveLoop {
 			f.qualCalls++
 			return f.qualify, nil
 		},
-		ChromePID: func(string) (int, bool) { return 764, f.running },
-		Loaded:    func(_ int, _ string, p string) bool { return f.loaded[p] },
+		ChromePID: func(string) (int, bool, string) {
+			if !f.running {
+				return 0, false, f.reason
+			}
+			return 764, true, ""
+		},
+		Loaded: func(_ int, _ string, p string) bool { return f.loaded[p] },
 		Load: func(_ context.Context, p string) error {
 			f.loads = append(f.loads, p)
 			if f.loadErr != nil {
@@ -65,7 +73,9 @@ func (f *fakeKeepalive) loop() *keepaliveLoop {
 		Notify:      func(title, body string) { f.notes = append(f.notes, body) },
 		Now:         func() time.Time { return f.now },
 		PausedUntil: func(p string) time.Time { return f.paused[p] },
-		Logf:        func(string, ...any) {},
+		Logf: func(format string, a ...any) {
+			f.logs = append(f.logs, fmt.Sprintf(format, a...))
+		},
 	})
 }
 
@@ -385,7 +395,7 @@ func TestCheckProfileKeepalive(t *testing.T) {
 		qualify:   func() ([]chrome.ClaudeProfile, []error) { return twoAccounts(), nil },
 		installed: func() bool { return true },
 		optedOut:  func() bool { return false },
-		chromePID: func() (int, bool) { return 764, true },
+		chromePID: func() (int, bool, string) { return 764, true, "" },
 		loaded:    func(int, string) bool { return true },
 	}
 	cases := []struct {
@@ -401,7 +411,9 @@ func TestCheckProfileKeepalive(t *testing.T) {
 			e.qualify = func() ([]chrome.ClaudeProfile, []error) { return nil, []error{errors.New("operation not permitted")} }
 		}, SeverityWarn},
 		{"turned off", func(e *profileKeepaliveCheckEnv) { e.optedOut = func() bool { return true } }, SeveritySkipped},
-		{"chrome closed", func(e *profileKeepaliveCheckEnv) { e.chromePID = func() (int, bool) { return 0, false } }, SeveritySkipped},
+		{"chrome closed", func(e *profileKeepaliveCheckEnv) {
+			e.chromePID = func() (int, bool, string) { return 0, false, "no Chrome SingletonLock" }
+		}, SeveritySkipped},
 		{"agent missing", func(e *profileKeepaliveCheckEnv) { e.installed = func() bool { return false } }, SeverityWarn},
 		{"profile unloaded", func(e *profileKeepaliveCheckEnv) { e.loaded = func(_ int, p string) bool { return p == "Default" } }, SeverityWarn},
 	}
@@ -423,9 +435,9 @@ func TestKeepalive_ChromeQuitMidTickStopsSending(t *testing.T) {
 	l := f.loop()
 	f.loaded = map[string]bool{}
 	calls := 0
-	l.d.ChromePID = func(string) (int, bool) {
+	l.d.ChromePID = func(string) (int, bool, string) {
 		calls++
-		return 764, calls <= 2 // running for the tick's check and the first send only
+		return 764, calls <= 2, "" // running for the tick's check and the first send only
 	}
 	l.tick(context.Background())
 	if strings.Join(f.loads, ",") != "Default" {
@@ -518,5 +530,49 @@ func TestKeepaliveEnable_UnreadableStoreIsAnError(t *testing.T) {
 	}
 	if len(*installs) != 0 {
 		t.Fatalf("nothing may be installed, got %v", *installs)
+	}
+}
+
+func detectionLogs(logs []string) []string {
+	var out []string
+	for _, l := range logs {
+		if strings.HasPrefix(l, "Chrome ") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// When the keep-alive stops seeing Chrome it says so once, with the reason,
+// instead of going quiet; when Chrome comes back it says so once.
+func TestKeepalive_LogsChromeDetectionTransitionsOnce(t *testing.T) {
+	f := newFakeKeepalive()
+	l := f.loop()
+	ctx := context.Background()
+
+	l.tick(ctx)
+	if got := detectionLogs(f.logs); len(got) != 0 {
+		t.Fatalf("steady running Chrome must not log detection lines, got %v", got)
+	}
+
+	f.running = false
+	f.reason = `Chrome's lock host "a.local" does not match this machine ("a.localdomain")`
+	for range 3 {
+		f.advance(keepaliveTick)
+		l.tick(ctx)
+	}
+	got := detectionLogs(f.logs)
+	if len(got) != 1 || !strings.Contains(got[0], "not detected") || !strings.Contains(got[0], "a.localdomain") {
+		t.Fatalf("want one not-detected line naming the reason, got %v", got)
+	}
+
+	f.running = true
+	f.advance(keepaliveTick)
+	l.tick(ctx)
+	f.advance(keepaliveTick)
+	l.tick(ctx)
+	got = detectionLogs(f.logs)
+	if len(got) != 2 || !strings.Contains(got[1], "detected") || strings.Contains(got[1], "not detected") {
+		t.Fatalf("want one detected line after recovery, got %v", got)
 	}
 }
