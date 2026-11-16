@@ -5,7 +5,10 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"database/sql"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -104,15 +107,10 @@ WHERE host_key LIKE ?`
 		); err != nil {
 			return nil, fmt.Errorf("scan row: %w", err)
 		}
-		plain, err := decryptValue(encryptedValue, key)
+		c.Value, err = decryptCookieValue(encryptedValue, key, c.HostKey, c.Name)
 		if err != nil {
-			return nil, fmt.Errorf("decrypt %s/%s: %w", c.HostKey, c.Name, err)
+			return nil, err
 		}
-		// Chrome 127+ on macOS embeds a 32-byte host-bound prefix in the
-		// plaintext. Strip it so downstream consumers (CDP, dumps, fixtures)
-		// see only the real cookie value.
-		stripped := stripAppBoundPrefix([]byte(plain), c.HostKey)
-		c.Value = string(stripped)
 		cookies = append(cookies, c)
 	}
 	if err := rows.Err(); err != nil {
@@ -151,4 +149,61 @@ func decryptValue(encrypted, key []byte) (string, error) {
 		return "", fmt.Errorf("invalid PKCS#7 padding byte %d", pad)
 	}
 	return string(pt[:len(pt)-pad]), nil
+}
+
+// ReadCookieValue returns the value of one cookie, chosen by host pattern
+// (a SQL LIKE pattern, as for ReadCookiesForHost) and exact name. Only that
+// row is decrypted, so the host's other cookies are never decrypted and
+// cannot fail the read. When several rows match, the most recently used
+// wins. ok is false when no row matches. Safe to call while Chrome runs: it
+// reads a private copy of the database and its Cookies-wal, so committed
+// rows still in the WAL (after an unclean Chrome exit, say) are seen.
+func ReadCookieValue(dbPath, hostPattern, name string, key []byte) (value string, ok bool, err error) {
+	dir, err := os.MkdirTemp("", "agentcookie-cookies-")
+	if err != nil {
+		return "", false, fmt.Errorf("copy cookies db: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	copyPath := filepath.Join(dir, "Cookies")
+	if err := copyFile(dbPath, copyPath); err != nil {
+		return "", false, fmt.Errorf("copy cookies db: %w", err)
+	}
+	if err := copyFile(dbPath+"-wal", copyPath+"-wal"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", false, fmt.Errorf("copy cookies wal: %w", err)
+	}
+
+	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?mode=ro", copyPath))
+	if err != nil {
+		return "", false, fmt.Errorf("open cookies db: %w", err)
+	}
+	defer db.Close()
+	var (
+		host string
+		enc  []byte
+	)
+	err = db.QueryRow(`SELECT host_key, encrypted_value FROM cookies
+WHERE host_key LIKE ? AND name = ?
+ORDER BY last_access_utc DESC LIMIT 1`, hostPattern, name).Scan(&host, &enc)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("query cookie %s: %w", name, err)
+	}
+	v, err := decryptCookieValue(enc, key, host, name)
+	if err != nil {
+		return "", false, err
+	}
+	return v, true, nil
+}
+
+// decryptCookieValue decrypts one cookie's encrypted_value. Chrome 127+ on
+// macOS embeds a 32-byte host-bound prefix in the plaintext; it is stripped
+// so callers (CDP, dumps, fixtures) see only the real cookie value.
+func decryptCookieValue(enc, key []byte, host, name string) (string, error) {
+	plain, err := decryptValue(enc, key)
+	if err != nil {
+		return "", fmt.Errorf("decrypt %s/%s: %w", host, name, err)
+	}
+	return string(stripAppBoundPrefix([]byte(plain), host)), nil
 }

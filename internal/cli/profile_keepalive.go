@@ -110,7 +110,7 @@ func init() {
 type keepaliveDeps struct {
 	Root        string
 	Qualify     func(root string) ([]chrome.ClaudeProfile, []error)
-	ChromePID   func(root string) (int, bool)
+	ChromePID   func(root string) (pid int, running bool, reason string)
 	Loaded      func(pid int, root, profile string) bool
 	Load        func(ctx context.Context, profile string) error
 	Notify      func(title, body string)
@@ -133,7 +133,10 @@ type keepaliveLoop struct {
 	gateAt   time.Time
 	gateErrs string
 	idleLogd bool
-	state    map[string]*keepaliveProfileState
+	// chromeDown is set once a tick fails to find Chrome, so the log says
+	// once when the keep-alive stops seeing Chrome and once when it is back.
+	chromeDown bool
+	state      map[string]*keepaliveProfileState
 }
 
 func newKeepaliveLoop(d keepaliveDeps) *keepaliveLoop {
@@ -144,7 +147,7 @@ func liveKeepaliveLoop() *keepaliveLoop {
 	return newKeepaliveLoop(keepaliveDeps{
 		Root:      chromepaths.ChromeProfileRoot(),
 		Qualify:   chrome.QualifyingClaudeProfiles,
-		ChromePID: chromectl.RunningChromePID,
+		ChromePID: chromectl.ChromeStatus,
 		Loaded:    chromectl.ProfileLoaded,
 		Load: func(ctx context.Context, profile string) error {
 			return chromectl.LoadProfileWindowless(ctx, profile, keepaliveSendDeadline)
@@ -205,9 +208,17 @@ func (l *keepaliveLoop) tick(ctx context.Context) {
 	}
 	l.idleLogd = false
 
-	pid, ok := l.d.ChromePID(l.d.Root)
+	pid, ok, reason := l.d.ChromePID(l.d.Root)
 	if !ok {
+		if !l.chromeDown {
+			l.d.Logf("Chrome not detected, waiting: %s", reason)
+			l.chromeDown = true
+		}
 		return
+	}
+	if l.chromeDown {
+		l.d.Logf("Chrome detected again (pid %d)", pid)
+		l.chromeDown = false
 	}
 	for _, p := range l.gate {
 		st := l.state[p.Profile]
@@ -237,7 +248,7 @@ func (l *keepaliveLoop) tick(ctx context.Context) {
 		}
 		// Chrome may have quit since the check above; a send with no
 		// browser to hand off to would start one.
-		if again, ok := l.d.ChromePID(l.d.Root); !ok || again != pid {
+		if again, ok, _ := l.d.ChromePID(l.d.Root); !ok || again != pid {
 			return
 		}
 		l.d.Logf("loading %s", p.Profile)
@@ -405,7 +416,7 @@ type profileKeepaliveCheckEnv struct {
 	qualify   func() ([]chrome.ClaudeProfile, []error)
 	installed func() bool
 	optedOut  func() bool
-	chromePID func() (int, bool)
+	chromePID func() (pid int, running bool, reason string)
 	loaded    func(pid int, profile string) bool
 }
 
@@ -417,7 +428,7 @@ func checkProfileKeepalive() Check {
 		},
 		installed: func() bool { return launchd.IsInstalled(launchd.Spec{Role: launchd.RoleProfileKeepalive}) },
 		optedOut:  keepaliveOptedOut,
-		chromePID: func() (int, bool) { return chromectl.RunningChromePID(root) },
+		chromePID: func() (int, bool, string) { return chromectl.ChromeStatus(root) },
 		loaded:    func(pid int, p string) bool { return chromectl.ProfileLoaded(pid, root, p) },
 	})
 }
@@ -447,9 +458,9 @@ func checkProfileKeepaliveWith(e profileKeepaliveCheckEnv) Check {
 			Remediation: "run `agentcookie profile-keepalive enable`",
 		}
 	}
-	pid, ok := e.chromePID()
+	pid, ok, reason := e.chromePID()
 	if !ok {
-		return Check{Name: name, Severity: SeveritySkipped, Detail: "Chrome is not running"}
+		return Check{Name: name, Severity: SeveritySkipped, Detail: "Chrome not detected: " + reason}
 	}
 	var missing []string
 	for _, p := range profiles {

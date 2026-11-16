@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Claude in Chrome on two accounts: the keep-alive survives a hostname change, and doctor names a profile on the wrong account
+
+- After a network change, macOS can report the Mac's hostname as `MacBook-Pro.localdomain` while Chrome's lock still says `MacBook-Pro.local`. agentcookie then treated Chrome as not running, so `profile-keepalive` stopped reloading profiles without saying so, and Claude in Chrome dropped for the profile that unloaded. Chrome is now recognized by the first part of the hostname, the Mac's Bonjour name, or, failing both, by the lock's process being Chrome with files open in the profile folder.
+- `profile-keepalive` logs one line when it stops seeing Chrome, with the reason, and one line when Chrome is back. Doctor's keep-alive line shows the same reason.
+- New doctor line, "Claude in Chrome accounts": for each Chrome profile it compares the Claude account Claude in Chrome uses with the profile's claude.ai login, and warns when they differ, naming the profile and how to fix it. This is the case where the side panel says "Claude in Chrome uses a different account". Only the `lastActiveOrg` cookie is decrypted, the keep-alive still reads only the extension's account id, and `skip_chrome_sqlite` turns the claude.ai comparison off.
+
 ### cmux with more than one browser profile: the sync tab no longer splits your pane
 
 - With several cmux browser profiles, agentcookie opens its tab in the Default profile with `cmux browser open`, because a plain new tab uses whichever profile was used last. That command adds a split pane, so the tab is now moved into the workspace's active pane as a background tab, which closes the split.

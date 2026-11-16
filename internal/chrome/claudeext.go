@@ -142,21 +142,38 @@ func skipLevelDBFile(name string) bool {
 // (Chrome holds the live store's lock) and reads accountUuid from the copy.
 // The copy may hold login data, so it is removed before returning.
 func readClaudeAccount(store string) (string, error) {
+	var account string
+	err := withCopiedStore(store, func(db *leveldb.DB) error {
+		var err error
+		account, err = readAccountUUID(db)
+		return err
+	})
+	return account, err
+}
+
+// withCopiedStore copies the extension's LevelDB into a private temp dir
+// (Chrome holds the live store's lock), opens the copy read-only, and runs
+// fn on it. The copy may hold login data, so it is removed before returning.
+func withCopiedStore(store string, fn func(*leveldb.DB) error) error {
 	tmp, err := os.MkdirTemp("", claudeExtTempPrefix)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer os.RemoveAll(tmp)
 
 	if err := copyLevelDB(store, tmp); err != nil {
-		return "", err
+		return err
 	}
 	db, err := leveldb.OpenFile(tmp, &opt.Options{ReadOnly: true, ErrorIfMissing: true})
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer db.Close()
+	return fn(db)
+}
 
+// readAccountUUID returns the signed-in Claude account, or "" when signed out.
+func readAccountUUID(db *leveldb.DB) (string, error) {
 	raw, err := db.Get([]byte("accountUuid"), nil)
 	if err == leveldb.ErrNotFound {
 		return "", nil
@@ -211,4 +228,89 @@ func CleanupClaudeExtTemp() {
 	for _, m := range matches {
 		_ = os.RemoveAll(m)
 	}
+}
+
+// ClaudeExtAccount is one Chrome profile's Claude in Chrome sign-in: the
+// Claude account and the org its token was issued for.
+type ClaudeExtAccount struct {
+	Profile     string
+	AccountUUID string
+	TokenOrg    string // empty when the extension has not stored one
+}
+
+// ClaudeProfileAccounts returns every profile under root whose Claude in
+// Chrome extension is signed in, with its account and token org. Unlike
+// QualifyingClaudeProfiles it has no two-account gate, and it is meant for
+// doctor only: the keep-alive keeps reading just the account id. Stores
+// that cannot be read, or profiles that cannot be checked for one, are
+// skipped and their errors returned.
+func ClaudeProfileAccounts(root string) ([]ClaudeExtAccount, []error) {
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, []error{err}
+	}
+	var (
+		found []ClaudeExtAccount
+		errs  []error
+	)
+	for _, e := range entries {
+		if !e.IsDir() || !IsProfileDirName(e.Name()) {
+			continue
+		}
+		store := filepath.Join(root, e.Name(), "Local Extension Settings", ClaudeExtensionID)
+		st, err := os.Stat(store)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			// An unreadable profile is reported, not taken for one
+			// without the extension.
+			errs = append(errs, fmt.Errorf("%s: %w", e.Name(), err))
+			continue
+		}
+		if !st.IsDir() {
+			continue
+		}
+		acct, err := readClaudeExtAccount(store)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", e.Name(), err))
+			continue
+		}
+		if acct.AccountUUID == "" {
+			continue
+		}
+		acct.Profile = e.Name()
+		found = append(found, acct)
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].Profile < found[j].Profile })
+	return found, errs
+}
+
+func readClaudeExtAccount(store string) (ClaudeExtAccount, error) {
+	var acct ClaudeExtAccount
+	err := withCopiedStore(store, func(db *leveldb.DB) error {
+		var err error
+		if acct.AccountUUID, err = readAccountUUID(db); err != nil || acct.AccountUUID == "" {
+			return err
+		}
+		raw, err := db.Get([]byte("tokenOrg"), nil)
+		if err == leveldb.ErrNotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var org struct {
+			UUID string `json:"uuid"`
+		}
+		if err := json.Unmarshal(raw, &org); err != nil {
+			return fmt.Errorf("tokenOrg is not a JSON object: %w", err)
+		}
+		acct.TokenOrg = org.UUID
+		return nil
+	})
+	return acct, err
 }

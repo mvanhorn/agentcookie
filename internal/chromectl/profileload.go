@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,7 +28,14 @@ var (
 		return os.Readlink(filepath.Join(root, "SingletonLock"))
 	}
 	localHostname = os.Hostname
-	psStatComm    = func(pid int) (string, error) {
+	// bonjourHostname is the machine's Bonjour name, which does not change
+	// when the network hands out a different domain.
+	// It is read once per process: the keep-alive checks Chrome every tick.
+	bonjourHostname = sync.OnceValues(func() (string, error) {
+		out, err := probe("/usr/sbin/scutil", "--get", "LocalHostName")
+		return strings.TrimSpace(out), err
+	})
+	psStatComm = func(pid int) (string, error) {
 		out, err := probe("/bin/ps", "-o", "stat=,comm=", "-p", strconv.Itoa(pid))
 		return strings.TrimSpace(out), err
 	}
@@ -52,66 +60,104 @@ func probe(bin string, args ...string) (string, error) {
 }
 
 // RunningChromePID returns the PID of the Google Chrome that owns root, and
-// whether it is safe to hand a profile to. The PID comes from Chrome's
-// SingletonLock ("<host>-<pid>") and is trusted only when the lock was
-// written on this machine, the PID still runs the Chrome binary (a lock left
-// by a crash can point at a PID since reused by another process), and the
-// process is not stopped or stuck in the kernel.
+// whether it is safe to hand a profile to. See ChromeStatus.
 func RunningChromePID(root string) (int, bool) {
+	pid, ok, _ := ChromeStatus(root)
+	return pid, ok
+}
+
+// ChromeStatus is RunningChromePID plus a short reason when Chrome does not
+// count as running. The PID comes from Chrome's SingletonLock
+// ("<host>-<pid>") and is trusted only when the lock belongs to this machine,
+// the PID still runs the Chrome binary (a lock left by a crash can point at a
+// PID since reused by another process), and the process is not stopped or
+// stuck in the kernel.
+//
+// The lock keeps the hostname Chrome saw at launch, while os.Hostname follows
+// the current network, so the two can drift apart (".local" at launch,
+// ".localdomain" later). The lock counts as this machine's when its first DNS
+// label matches the hostname or the Bonjour LocalHostName, or failing that,
+// when its PID is Chrome and has files open under root.
+func ChromeStatus(root string) (int, bool, string) {
 	lock, err := readSingletonLock(root)
 	if err != nil {
-		return 0, false
+		return 0, false, "no Chrome SingletonLock"
 	}
 	i := strings.LastIndex(lock, "-")
 	if i <= 0 {
-		return 0, false
+		return 0, false, fmt.Sprintf("unreadable SingletonLock %q", lock)
 	}
 	pid, err := strconv.Atoi(lock[i+1:])
 	if err != nil || pid <= 0 {
-		return 0, false
+		return 0, false, fmt.Sprintf("unreadable SingletonLock %q", lock)
 	}
-	host, err := localHostname()
-	if err != nil || !sameHost(lock[:i], host) {
-		return 0, false
-	}
+	lockHost := lock[:i]
 	out, err := psStatComm(pid)
 	if err != nil {
-		return 0, false
+		return 0, false, fmt.Sprintf("Chrome PID %d from the lock is not running", pid)
 	}
 	stat, comm, ok := strings.Cut(out, " ")
 	if !ok || strings.TrimSpace(comm) != ChromeBinary {
-		return 0, false
+		return 0, false, fmt.Sprintf("PID %d from the lock is not Google Chrome", pid)
 	}
 	if strings.ContainsAny(stat, "TUD") {
-		return 0, false
+		return 0, false, fmt.Sprintf("Chrome PID %d is stopped or unresponsive", pid)
 	}
-	return pid, true
+	if host, local, lsofErr := lockIsLocal(lockHost, pid, root); !local {
+		if lsofErr != nil {
+			return 0, false, fmt.Sprintf("Chrome's lock host %q does not match this machine (%q) and checking PID %d's open files failed: %v", lockHost, host, pid, lsofErr)
+		}
+		return 0, false, fmt.Sprintf("Chrome's lock host %q does not match this machine (%q)", lockHost, host)
+	}
+	return pid, true, ""
 }
 
-// sameHost compares hostnames ignoring case and a trailing ".local", since
-// Chrome writes the Bonjour name and os.Hostname may not.
+// lockIsLocal also returns the local hostname it compared against and any
+// lsof failure, for the caller's reason text.
+func lockIsLocal(lockHost string, pid int, root string) (string, bool, error) {
+	host, err := localHostname()
+	if err == nil && sameHost(lockHost, host) {
+		return host, true, nil
+	}
+	if bonjour, err := bonjourHostname(); err == nil && sameHost(lockHost, bonjour) {
+		return host, true, nil
+	}
+	held, err := holdsFilesUnder(pid, root)
+	return host, held, err
+}
+
+// sameHost compares the first DNS label of two hostnames, ignoring case, so
+// "MacBook-Pro-10.local" and "MacBook-Pro-10.localdomain" match.
 func sameHost(a, b string) bool {
 	norm := func(s string) string {
-		return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s)), ".local")
+		s = strings.ToLower(strings.TrimSpace(s))
+		label, _, _ := strings.Cut(s, ".")
+		return label
 	}
 	return norm(a) != "" && norm(a) == norm(b)
+}
+
+// holdsFilesUnder reports whether pid has any file open inside root.
+func holdsFilesUnder(pid int, root string) (bool, error) {
+	out, err := lsofNames(pid)
+	if err != nil {
+		return false, err
+	}
+	prefix := "n" + filepath.Clean(root) + string(filepath.Separator)
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // ProfileLoaded reports whether Chrome pid has files open inside the given
 // profile directory, which is what "the profile is loaded" looks like from
 // outside Chrome.
 func ProfileLoaded(pid int, root, profile string) bool {
-	out, err := lsofNames(pid)
-	if err != nil {
-		return false
-	}
-	prefix := "n" + filepath.Join(root, profile) + string(filepath.Separator)
-	for line := range strings.SplitSeq(out, "\n") {
-		if strings.HasPrefix(line, prefix) {
-			return true
-		}
-	}
-	return false
+	held, _ := holdsFilesUnder(pid, filepath.Join(root, profile))
+	return held
 }
 
 // LoadProfileWindowless asks the running Chrome to load profile without
