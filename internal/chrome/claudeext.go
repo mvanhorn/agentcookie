@@ -212,3 +212,94 @@ func CleanupClaudeExtTemp() {
 		_ = os.RemoveAll(m)
 	}
 }
+
+// ClaudeExtAccount is one Chrome profile's Claude in Chrome sign-in: the
+// Claude account and the org its token was issued for.
+type ClaudeExtAccount struct {
+	Profile     string
+	AccountUUID string
+	TokenOrg    string // empty when the extension has not stored one
+}
+
+// ClaudeProfileAccounts returns every profile under root whose Claude in
+// Chrome extension is signed in, with its account and token org. Unlike
+// QualifyingClaudeProfiles it has no two-account gate, and it is meant for
+// doctor only: the keep-alive keeps reading just the account id. Stores
+// that cannot be read are skipped and their errors returned.
+func ClaudeProfileAccounts(root string) ([]ClaudeExtAccount, []error) {
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, []error{err}
+	}
+	var (
+		found []ClaudeExtAccount
+		errs  []error
+	)
+	for _, e := range entries {
+		if !e.IsDir() || !IsProfileDirName(e.Name()) {
+			continue
+		}
+		store := filepath.Join(root, e.Name(), "Local Extension Settings", ClaudeExtensionID)
+		if st, err := os.Stat(store); err != nil || !st.IsDir() {
+			continue
+		}
+		acct, err := readClaudeExtAccount(store)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", e.Name(), err))
+			continue
+		}
+		if acct.AccountUUID == "" {
+			continue
+		}
+		acct.Profile = e.Name()
+		found = append(found, acct)
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].Profile < found[j].Profile })
+	return found, errs
+}
+
+func readClaudeExtAccount(store string) (ClaudeExtAccount, error) {
+	tmp, err := os.MkdirTemp("", claudeExtTempPrefix)
+	if err != nil {
+		return ClaudeExtAccount{}, err
+	}
+	defer os.RemoveAll(tmp)
+	if err := copyLevelDB(store, tmp); err != nil {
+		return ClaudeExtAccount{}, err
+	}
+	db, err := leveldb.OpenFile(tmp, &opt.Options{ReadOnly: true, ErrorIfMissing: true})
+	if err != nil {
+		return ClaudeExtAccount{}, err
+	}
+	defer db.Close()
+
+	var acct ClaudeExtAccount
+	raw, err := db.Get([]byte("accountUuid"), nil)
+	if err == leveldb.ErrNotFound {
+		return acct, nil
+	}
+	if err != nil {
+		return acct, err
+	}
+	if err := json.Unmarshal(raw, &acct.AccountUUID); err != nil {
+		return acct, fmt.Errorf("accountUuid is not a JSON string: %w", err)
+	}
+	raw, err = db.Get([]byte("tokenOrg"), nil)
+	if err == leveldb.ErrNotFound {
+		return acct, nil
+	}
+	if err != nil {
+		return acct, err
+	}
+	var org struct {
+		UUID string `json:"uuid"`
+	}
+	if err := json.Unmarshal(raw, &org); err != nil {
+		return acct, fmt.Errorf("tokenOrg is not a JSON object: %w", err)
+	}
+	acct.TokenOrg = org.UUID
+	return acct, nil
+}

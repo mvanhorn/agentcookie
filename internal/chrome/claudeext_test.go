@@ -208,3 +208,52 @@ func TestQualifyingClaudeProfiles_NoChromeIsNotAnError(t *testing.T) {
 		t.Fatalf("a machine without Chrome must give no profiles and no errors, got %v %v", got, errs)
 	}
 }
+
+// writeClaudeExtTokenOrg adds a tokenOrg value (raw JSON) to a fixture store.
+func writeClaudeExtTokenOrg(t *testing.T, root, profile, raw string) {
+	t.Helper()
+	dir := filepath.Join(root, profile, "Local Extension Settings", ClaudeExtensionID)
+	db, err := leveldb.OpenFile(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Put([]byte("tokenOrg"), []byte(raw), nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClaudeProfileAccounts_ReturnsEverySignedInProfileWithItsOrg(t *testing.T) {
+	useTempDir(t)
+	root := t.TempDir()
+	writeClaudeExtFixture(t, root, "Default", "acct-a")
+	writeClaudeExtTokenOrg(t, root, "Default", `{"hybrid":false,"uuid":"org-a"}`)
+	writeClaudeExtFixture(t, root, "Profile 1", "")
+	writeClaudeExtFixture(t, root, "Profile 2", "acct-b")
+
+	got, errs := ClaudeProfileAccounts(root)
+	if len(errs) != 0 {
+		t.Fatalf("errs: %v", errs)
+	}
+	// One signed-in account is enough: no two-account gate here.
+	if len(got) != 2 {
+		t.Fatalf("got %+v, want Default and Profile 2", got)
+	}
+	if got[0].Profile != "Default" || got[0].AccountUUID != "acct-a" || got[0].TokenOrg != "org-a" {
+		t.Errorf("Default: %+v", got[0])
+	}
+	if got[1].Profile != "Profile 2" || got[1].TokenOrg != "" {
+		t.Errorf("Profile 2 without tokenOrg: %+v", got[1])
+	}
+}
+
+func TestClaudeProfileAccounts_UnexpectedTokenOrgShapeIsAnError(t *testing.T) {
+	useTempDir(t)
+	root := t.TempDir()
+	writeClaudeExtFixture(t, root, "Default", "acct-a")
+	writeClaudeExtTokenOrg(t, root, "Default", `"org-a"`)
+	got, errs := ClaudeProfileAccounts(root)
+	if len(got) != 0 || len(errs) != 1 || !strings.Contains(errs[0].Error(), "Default") {
+		t.Fatalf("got %+v errs %v, want one error naming Default", got, errs)
+	}
+}

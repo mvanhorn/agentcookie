@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -151,4 +152,35 @@ func decryptValue(encrypted, key []byte) (string, error) {
 		return "", fmt.Errorf("invalid PKCS#7 padding byte %d", pad)
 	}
 	return string(pt[:len(pt)-pad]), nil
+}
+
+// ReadCookieValue returns the value of one cookie, chosen by host pattern
+// (a SQL LIKE pattern, as for ReadCookiesForHost) and exact name. Only that
+// row is decrypted, so the host's other cookies are never decrypted and
+// cannot fail the read. When several rows match, the most recently used
+// wins. ok is false when no row matches. Safe to call while Chrome runs.
+func ReadCookieValue(dbPath, hostPattern, name string, key []byte) (value string, ok bool, err error) {
+	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?mode=ro&immutable=1", dbPath))
+	if err != nil {
+		return "", false, fmt.Errorf("open cookies db: %w", err)
+	}
+	defer db.Close()
+	var (
+		host string
+		enc  []byte
+	)
+	err = db.QueryRow(`SELECT host_key, encrypted_value FROM cookies
+WHERE host_key LIKE ? AND name = ?
+ORDER BY last_access_utc DESC LIMIT 1`, hostPattern, name).Scan(&host, &enc)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("query cookie %s: %w", name, err)
+	}
+	plain, err := decryptValue(enc, key)
+	if err != nil {
+		return "", false, fmt.Errorf("decrypt %s/%s: %w", host, name, err)
+	}
+	return string(stripAppBoundPrefix([]byte(plain), host)), true, nil
 }

@@ -100,6 +100,10 @@ type doctorDeps struct {
 	// ProfileKeepalive reports the Chrome profile keep-alive. nil skips the
 	// check (tests, Linux).
 	ProfileKeepalive func() Check
+
+	// ClaudeAccounts compares each Chrome profile's Claude in Chrome account
+	// with its claude.ai login. nil skips the check (tests, Linux).
+	ClaudeAccounts func(sinkCfg *config.SinkConfig) Check
 }
 
 var doctorCmd = &cobra.Command{
@@ -150,6 +154,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	}
 	if !config.IsLinux() {
 		deps.ProfileKeepalive = checkProfileKeepalive
+		deps.ClaudeAccounts = checkClaudeAccounts
 		deps.LoginItems = func() Check {
 			return checkLoginItems(loginItemsEnv{
 				home:         home,
@@ -378,6 +383,12 @@ func buildReport(d doctorDeps) DoctorReport {
 	// 13c. Chrome profile keep-alive. WARN at worst, for the same reason.
 	if d.ProfileKeepalive != nil {
 		checks = append(checks, d.ProfileKeepalive())
+	}
+
+	// 13d. Claude in Chrome accounts. WARN at worst: a profile whose
+	// extension and claude.ai login are different accounts.
+	if d.ClaudeAccounts != nil {
+		checks = append(checks, d.ClaudeAccounts(sinkCfg))
 	}
 
 	// 14. Cookie delivery (v0.13 universal cookie delivery) -- sink role
