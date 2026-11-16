@@ -242,7 +242,8 @@ type ClaudeExtAccount struct {
 // Chrome extension is signed in, with its account and token org. Unlike
 // QualifyingClaudeProfiles it has no two-account gate, and it is meant for
 // doctor only: the keep-alive keeps reading just the account id. Stores
-// that cannot be read are skipped and their errors returned.
+// that cannot be read, or profiles that cannot be checked for one, are
+// skipped and their errors returned.
 func ClaudeProfileAccounts(root string) ([]ClaudeExtAccount, []error) {
 	entries, err := os.ReadDir(root)
 	if errors.Is(err, os.ErrNotExist) {
@@ -260,7 +261,17 @@ func ClaudeProfileAccounts(root string) ([]ClaudeExtAccount, []error) {
 			continue
 		}
 		store := filepath.Join(root, e.Name(), "Local Extension Settings", ClaudeExtensionID)
-		if st, err := os.Stat(store); err != nil || !st.IsDir() {
+		st, err := os.Stat(store)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			// An unreadable profile is reported, not taken for one
+			// without the extension.
+			errs = append(errs, fmt.Errorf("%s: %w", e.Name(), err))
+			continue
+		}
+		if !st.IsDir() {
 			continue
 		}
 		acct, err := readClaudeExtAccount(store)

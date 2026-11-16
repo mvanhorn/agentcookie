@@ -142,8 +142,10 @@ func checkClaudeAccountsWith(e claudeAccountsEnv) Check {
 // its lastActiveOrg cookie. Only that cookie is decrypted.
 func claudeCookieOrg(root, profile string, decryptKey func() ([]byte, error)) (string, error) {
 	path := chromepaths.ProfileCookiesDB(filepath.Join(root, profile))
-	if _, err := os.Stat(path); err != nil {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		return "", nil // no cookie store: not signed in anywhere
+	} else if err != nil {
+		return "", fmt.Errorf("could not read the claude.ai login: %w", err)
 	}
 	key, err := decryptKey()
 	if err != nil {

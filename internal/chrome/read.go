@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -153,9 +155,24 @@ func decryptValue(encrypted, key []byte) (string, error) {
 // (a SQL LIKE pattern, as for ReadCookiesForHost) and exact name. Only that
 // row is decrypted, so the host's other cookies are never decrypted and
 // cannot fail the read. When several rows match, the most recently used
-// wins. ok is false when no row matches. Safe to call while Chrome runs.
+// wins. ok is false when no row matches. Safe to call while Chrome runs: it
+// reads a private copy of the database and its Cookies-wal, so committed
+// rows still in the WAL (after an unclean Chrome exit, say) are seen.
 func ReadCookieValue(dbPath, hostPattern, name string, key []byte) (value string, ok bool, err error) {
-	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?mode=ro&immutable=1", dbPath))
+	dir, err := os.MkdirTemp("", "agentcookie-cookies-")
+	if err != nil {
+		return "", false, fmt.Errorf("copy cookies db: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	copyPath := filepath.Join(dir, "Cookies")
+	if err := copyFile(dbPath, copyPath); err != nil {
+		return "", false, fmt.Errorf("copy cookies db: %w", err)
+	}
+	if err := copyFile(dbPath+"-wal", copyPath+"-wal"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", false, fmt.Errorf("copy cookies wal: %w", err)
+	}
+
+	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?mode=ro", copyPath))
 	if err != nil {
 		return "", false, fmt.Errorf("open cookies db: %w", err)
 	}

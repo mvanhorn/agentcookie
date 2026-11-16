@@ -257,3 +257,26 @@ func TestClaudeProfileAccounts_UnexpectedTokenOrgShapeIsAnError(t *testing.T) {
 		t.Fatalf("got %+v errs %v, want one error naming Default", got, errs)
 	}
 }
+
+func TestClaudeProfileAccounts_UnreadableProfileIsAnError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	useTempDir(t)
+	root := t.TempDir()
+	writeClaudeExtFixture(t, root, "Default", "acct-a")
+	writeClaudeExtFixture(t, root, "Profile 1", "acct-b")
+	locked := filepath.Join(root, "Profile 1", "Local Extension Settings")
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+
+	got, errs := ClaudeProfileAccounts(root)
+	if len(got) != 1 || got[0].Profile != "Default" {
+		t.Fatalf("got %+v, want only Default", got)
+	}
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "Profile 1") {
+		t.Fatalf("errs %v, want one error naming Profile 1", errs)
+	}
+}
