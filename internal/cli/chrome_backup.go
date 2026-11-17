@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -82,6 +83,12 @@ var chromeBackupListCmd = &cobra.Command{
 			if s.Keep {
 				note = append(note, "kept")
 			}
+			for _, p := range s.Profiles {
+				if len(p.Notes) > 0 || len(p.Errors) > 0 {
+					note = append(note, "damaged")
+					break
+				}
+			}
 			if s.Reason != "" && s.Reason != "scheduled" {
 				note = append(note, s.Reason)
 			}
@@ -129,6 +136,14 @@ profile in the snapshot.`,
 			}
 			if !found {
 				return fmt.Errorf("chrome-backup restore: no snapshot %q; see `agentcookie chrome-backup list`", chromeBackupFrom)
+			}
+		}
+		for _, p := range pick.Profiles {
+			if len(chromeBackupProfiles) > 0 && !slices.Contains(chromeBackupProfiles, p.Dir) {
+				continue
+			}
+			for _, n := range append(append([]string{}, p.Errors...), p.Notes...) {
+				fmt.Printf("warning: snapshot %s, %s: %s\n", pick.ID, p.Dir, n)
 			}
 		}
 		safety, err := chromebackup.Take(root, dir, time.Now(), true, "before restore")
@@ -230,6 +245,9 @@ func printSnapshotProfiles(s chromebackup.Snapshot) {
 		for _, e := range p.Errors {
 			fmt.Printf("    could not copy %s\n", e)
 		}
+		for _, n := range p.Notes {
+			fmt.Printf("    warning: %s\n", n)
+		}
 	}
 }
 
@@ -263,7 +281,10 @@ func keepaliveBackup(logf func(string, ...any), notifyf func(title, body string)
 		logf("chrome backup: %s %s taken", kind, res.Taken.ID)
 		for _, p := range res.Taken.Profiles {
 			for _, e := range p.Errors {
-				logf("chrome backup: %s: %s", p.Dir, e)
+				logf("chrome backup: %s: could not copy %s", p.Dir, e)
+			}
+			for _, n := range p.Notes {
+				logf("chrome backup: %s: warning: %s", p.Dir, n)
 			}
 		}
 		if len(res.Warnings) == 0 {
