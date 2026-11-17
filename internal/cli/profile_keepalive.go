@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/chromectl"
 	"github.com/mvanhorn/agentcookie/internal/chromepaths"
+	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/launchd"
 	"github.com/mvanhorn/agentcookie/internal/notify"
 )
@@ -31,7 +34,21 @@ const (
 	// takes a few seconds at most.
 	keepaliveSendDeadline = 10 * time.Second
 	keepaliveNotifyAfter  = 3
+	// keepaliveStaleAfter is how long the process must have run before a
+	// permission error on the Chrome folder is blamed on a stale process
+	// (macOS can stop honoring a long-running process's data-access grant,
+	// for example after its binary is replaced) and the keep-alive exits
+	// so launchd starts a fresh one. A fresh process that hits the same
+	// error keeps running and logs it instead of restarting in a loop.
+	keepaliveStaleAfter = 10 * time.Minute
+	// keepaliveAccountsEvery spaces the claude.ai login comparison, which
+	// decrypts one cookie per profile.
+	keepaliveAccountsEvery = 10 * time.Minute
 )
+
+// errKeepaliveRestart asks launchd for a fresh keep-alive process: the job
+// restarts on a non-zero exit.
+var errKeepaliveRestart = errors.New("profile-keepalive: restarting for a fresh process")
 
 var profileKeepaliveCmd = &cobra.Command{
 	Use:   "profile-keepalive",
@@ -117,6 +134,13 @@ type keepaliveDeps struct {
 	Now         func() time.Time
 	PausedUntil func(profile string) time.Time
 	Logf        func(format string, a ...any)
+	// BinaryChanged reports that the agentcookie binary on disk is no
+	// longer the one this process started from.
+	BinaryChanged func() bool
+	// AccountMismatches lists profiles whose claude.ai login is confirmed
+	// to be the account another profile's Claude in Chrome uses. Nil
+	// skips the comparison.
+	AccountMismatches func() []string
 }
 
 type keepaliveProfileState struct {
@@ -137,10 +161,17 @@ type keepaliveLoop struct {
 	// once when the keep-alive stops seeing Chrome and once when it is back.
 	chromeDown bool
 	state      map[string]*keepaliveProfileState
+	startedAt  time.Time
+	// restart, once set, ends run with errKeepaliveRestart.
+	restart error
+	// accountsAt and mismatchKey track the claude.ai login comparison;
+	// mismatchKey is the last reported mismatch set, "" when none.
+	accountsAt  time.Time
+	mismatchKey string
 }
 
 func newKeepaliveLoop(d keepaliveDeps) *keepaliveLoop {
-	return &keepaliveLoop{d: d, state: map[string]*keepaliveProfileState{}}
+	return &keepaliveLoop{d: d, state: map[string]*keepaliveProfileState{}, startedAt: d.Now()}
 }
 
 func liveKeepaliveLoop() *keepaliveLoop {
@@ -162,6 +193,8 @@ func liveKeepaliveLoop() *keepaliveLoop {
 		Logf: func(format string, a ...any) {
 			fmt.Fprintf(os.Stderr, time.Now().Format(time.RFC3339)+" profile-keepalive: "+format+"\n", a...)
 		},
+		BinaryChanged:     executableChangedSinceStart(),
+		AccountMismatches: liveClaudeAccountMismatches,
 	})
 }
 
@@ -170,6 +203,9 @@ func (l *keepaliveLoop) run(ctx context.Context) error {
 	defer t.Stop()
 	for {
 		l.tick(ctx)
+		if l.restart != nil {
+			return l.restart
+		}
 		select {
 		case <-ctx.Done():
 			return nil
@@ -195,6 +231,16 @@ func (l *keepaliveLoop) tick(ctx context.Context) {
 			l.gateErrs = joined
 		}
 		l.gate, l.gateAt = gate, now
+		if l.d.BinaryChanged != nil && l.d.BinaryChanged() {
+			l.d.Logf("the agentcookie binary changed on disk; exiting so launchd starts the new one")
+			l.restart = errKeepaliveRestart
+			return
+		}
+		if permissionDenied(errs) && now.Sub(l.startedAt) >= keepaliveStaleAfter {
+			l.d.Logf("macOS refused access to the Chrome folder after %s running; exiting so launchd starts a fresh process", now.Sub(l.startedAt).Round(time.Minute))
+			l.restart = errKeepaliveRestart
+			return
+		}
 	}
 	if len(l.gate) == 0 {
 		if !l.idleLogd {
@@ -207,6 +253,7 @@ func (l *keepaliveLoop) tick(ctx context.Context) {
 		return
 	}
 	l.idleLogd = false
+	l.checkAccounts(now)
 
 	pid, ok, reason := l.d.ChromePID(l.d.Root)
 	if !ok {
@@ -477,4 +524,99 @@ func checkProfileKeepaliveWith(e profileKeepaliveCheckEnv) Check {
 		}
 	}
 	return Check{Name: name, Severity: SeverityOK, Detail: "all profiles loaded"}
+}
+
+// checkAccounts compares each profile's claude.ai login with its Claude in
+// Chrome account every keepaliveAccountsEvery. It notifies once when a
+// confirmed mismatch appears or changes, and logs when it clears. A
+// mismatch shows in the side panel as "Claude in Chrome uses a different
+// account" and nothing else tells the user.
+func (l *keepaliveLoop) checkAccounts(now time.Time) {
+	if l.d.AccountMismatches == nil {
+		return
+	}
+	if !l.accountsAt.IsZero() && now.Sub(l.accountsAt) < keepaliveAccountsEvery {
+		return
+	}
+	l.accountsAt = now
+	mismatches := l.d.AccountMismatches()
+	key := strings.Join(mismatches, "\n")
+	if key == l.mismatchKey {
+		return
+	}
+	l.mismatchKey = key
+	if key == "" {
+		l.d.Logf("Claude in Chrome accounts match claude.ai again")
+		return
+	}
+	for _, m := range mismatches {
+		l.d.Logf("account mismatch: %s", m)
+	}
+	l.d.Notify("agentcookie", "A Chrome profile's claude.ai login is on the other Claude account, so Claude in Chrome shows \"uses a different account\" there. Sign that profile's claude.ai back into its own account. Details: `agentcookie doctor`.")
+}
+
+// permissionDenied reports whether any error is a permission refusal.
+func permissionDenied(errs []error) bool {
+	for _, err := range errs {
+		if errors.Is(err, fs.ErrPermission) {
+			return true
+		}
+	}
+	return false
+}
+
+// executableChangedSinceStart snapshots this process's binary and returns
+// a check that reports when the file at that path is replaced. Without a
+// readable binary it never reports a change.
+func executableChangedSinceStart() func() bool {
+	path, err := os.Executable()
+	if err != nil {
+		return func() bool { return false }
+	}
+	start, err := os.Stat(path)
+	if err != nil {
+		return func() bool { return false }
+	}
+	return func() bool {
+		cur, err := os.Stat(path)
+		if err != nil {
+			return false // mid-replace or removed: check again next time
+		}
+		return !os.SameFile(start, cur) || !cur.ModTime().Equal(start.ModTime()) || cur.Size() != start.Size()
+	}
+}
+
+// liveClaudeAccountMismatches runs the doctor's account comparison and
+// returns only confirmed mismatches, so an account that belongs to several
+// orgs never raises a false alarm. It honors skip_chrome_sqlite.
+func liveClaudeAccountMismatches() []string {
+	var sinkCfg *config.SinkConfig
+	if s, err := config.LoadSink(common.ConfigDir); err == nil {
+		sinkCfg = s
+	}
+	if !safeStorageReadAllowed(sinkCfg) {
+		return nil
+	}
+	root := chromepaths.ChromeProfileRoot()
+	accounts, errs := chrome.ClaudeProfileAccounts(root)
+	if len(accounts) == 0 {
+		return nil
+	}
+	decryptKey := sync.OnceValues(func() ([]byte, error) { return getChromeDecryptKey("chrome") })
+	e := claudeAccountsEnv{
+		accounts:          func() ([]chrome.ClaudeExtAccount, []error) { return accounts, errs },
+		cookieReadAllowed: true,
+		cookieOrg: func(profile string) (string, error) {
+			return claudeCookieOrg(root, profile, decryptKey)
+		},
+	}
+	labels := chromeProfileLabels(root)
+	label := func(profile string) string {
+		if l := labels[profile]; l != "" {
+			return profile + " (" + l + ")"
+		}
+		return profile
+	}
+	_, confirmed, _, _ := compareClaudeAccounts(e, accounts, errs, label)
+	return confirmed
 }
