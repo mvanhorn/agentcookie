@@ -36,6 +36,7 @@ type fakeKeepalive struct {
 	mismatches []string
 	incomplete bool
 	mmCalls    int
+	backups    []time.Time
 }
 
 func newFakeKeepalive() *fakeKeepalive {
@@ -87,6 +88,7 @@ func (f *fakeKeepalive) loop() *keepaliveLoop {
 			f.mmCalls++
 			return f.mismatches, !f.incomplete
 		},
+		Backup: func(now time.Time) { f.backups = append(f.backups, now) },
 	})
 }
 
@@ -736,5 +738,23 @@ func TestKeepaliveRunArgs(t *testing.T) {
 	}
 	if got := strings.Join(keepaliveRunArgs("/custom/dir"), " "); got != "run --config-dir /custom/dir" {
 		t.Fatalf("custom config dir: args = %q", got)
+	}
+}
+
+func TestKeepalive_BackupCheckedEveryFiveMinutesEvenWhenIdle(t *testing.T) {
+	f := newFakeKeepalive()
+	f.qualify = nil // idle: no profiles to keep alive
+	f.running = false
+	l := f.loop()
+	for range 20 { // five minutes of 15s ticks
+		l.tick(context.Background())
+		f.advance(15 * time.Second)
+	}
+	if len(f.backups) != 1 {
+		t.Fatalf("backup checked %d times in five minutes, want 1", len(f.backups))
+	}
+	l.tick(context.Background())
+	if len(f.backups) != 2 {
+		t.Fatalf("backup check must repeat after five minutes, got %d", len(f.backups))
 	}
 }

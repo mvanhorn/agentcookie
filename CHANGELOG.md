@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Hourly Chrome profile backups, and a one-step restore
+
+A Chrome profile can lose its cookies, extensions and sign-in in one go (a force quit at the wrong moment, a reset Preferences file). The profile keep-alive now snapshots every profile hourly into `~/.agentcookie/chrome-backups`: cookies, Preferences, Secure Preferences, bookmarks, autofill, Local State and the extension list, plus History and extension storage once a day. It keeps 24 hours of hourly snapshots and 7 days of dailies. When a profile drops to under half its cookies or extensions between snapshots, it posts a notification and keeps the earlier snapshot for 30 days. New commands: `agentcookie chrome-backup now | list | restore`. Restore refuses while Chrome runs, saves the current state first, and lists Web Store links for extensions Chrome will need to reinstall.
+
 ### The profile keep-alive heals itself and tells you when a profile drifts to the other account
 
 - When the agentcookie binary is replaced on disk, the keep-alive exits within a minute so launchd starts the new one. This works however the binary got updated, not only through `install-beta.sh`.
