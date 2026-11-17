@@ -193,3 +193,20 @@ func LoadProfileWindowless(ctx context.Context, profile string, deadline time.Du
 		return ErrSenderTimeout
 	}
 }
+
+// ChromeProcessRunning reports whether any Google Chrome browser process
+// exists, whatever its state: a stopped or hung Chrome still holds its
+// profile files open. Helper processes have other names and do not count.
+func ChromeProcessRunning() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := exec.CommandContext(ctx, "/usr/bin/pgrep", "-x", filepath.Base(ChromeBinary)).Run()
+	if err == nil {
+		return true, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("chromectl: check for Chrome: %w", err)
+}

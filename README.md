@@ -389,6 +389,19 @@ While it is on, closing a profile's windows does not cut Claude in Chrome's acce
 
 If the Claude side panel says "Claude in Chrome uses a different account", that profile's claude.ai login and its Claude in Chrome sign-in are two different Claude accounts. `agentcookie doctor` names the profile on its "Claude in Chrome accounts" line. To fix it, open that profile, sign out of claude.ai and back in with the account Claude in Chrome uses (or sign Claude in Chrome into the claude.ai account), then click Reload in the side panel.
 
+### Chrome profile backups
+
+While the keep-alive runs, it snapshots every Chrome profile once an hour into `~/.agentcookie/chrome-backups`: cookies, Preferences, Secure Preferences, bookmarks, autofill, Local State (profile names) and the installed extension list. Once a day the snapshot also holds History and extension storage. It keeps the last 24 hours, then one a day for 7 days, about 400 MB for two profiles. When a profile loses most of its cookies or extensions between two snapshots, a notification says so and the snapshot from before is kept for 30 days.
+
+```bash
+agentcookie chrome-backup list       # snapshots, with cookie and extension counts
+agentcookie chrome-backup now        # take one now
+agentcookie chrome-backup restore    # quit Chrome first; restores the last snapshot before a wipe
+agentcookie chrome-backup restore --from 20261117T202837Z --profile "Profile 1"
+```
+
+A restore first saves the current state as a new snapshot, so it can be undone. It prints Chrome Web Store links for extensions whose files are gone, since Chrome drops those on launch.
+
 ## Fan out to multiple sinks
 
 One source can push the same cookies and secrets to several sinks. A source push reads and filters your cookies once, then seals and POSTs to each sink independently with that sink's own paired key. A sink that is down or unreachable is isolated: it fails on its own while the other sinks still receive the payload.

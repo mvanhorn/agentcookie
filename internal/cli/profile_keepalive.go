@@ -37,6 +37,9 @@ const (
 	// keepaliveAccountsEvery spaces the claude.ai login comparison, which
 	// decrypts one cookie per profile.
 	keepaliveAccountsEvery = 10 * time.Minute
+	// keepaliveBackupCheckEvery spaces the check for a due Chrome backup;
+	// the backup itself runs hourly.
+	keepaliveBackupCheckEvery = 5 * time.Minute
 )
 
 // errKeepaliveRestart asks launchd for a fresh keep-alive process: the job
@@ -136,6 +139,8 @@ type keepaliveDeps struct {
 	// store), so a missing mismatch is not proof it cleared. Nil skips the
 	// comparison.
 	AccountMismatches func() (mismatches []string, complete bool)
+	// Backup takes a Chrome profile snapshot when one is due. Nil skips it.
+	Backup func(now time.Time)
 }
 
 type keepaliveProfileState struct {
@@ -168,6 +173,7 @@ type keepaliveLoop struct {
 	// mismatchKey is the last reported mismatch set, "" when none.
 	accountsAt  time.Time
 	mismatchKey string
+	backupAt    time.Time
 }
 
 func newKeepaliveLoop(d keepaliveDeps) *keepaliveLoop {
@@ -175,7 +181,7 @@ func newKeepaliveLoop(d keepaliveDeps) *keepaliveLoop {
 }
 
 func liveKeepaliveLoop() *keepaliveLoop {
-	return newKeepaliveLoop(keepaliveDeps{
+	d := keepaliveDeps{
 		Root:      chromepaths.ChromeProfileRoot(),
 		Qualify:   chrome.QualifyingClaudeProfiles,
 		ChromePID: chromectl.ChromeStatus,
@@ -195,7 +201,9 @@ func liveKeepaliveLoop() *keepaliveLoop {
 		},
 		BinaryChanged:     executableChangedSinceStart(),
 		AccountMismatches: liveClaudeAccountMismatches,
-	})
+	}
+	d.Backup = keepaliveBackup(d.Logf, d.Notify)
+	return newKeepaliveLoop(d)
 }
 
 func (l *keepaliveLoop) run(ctx context.Context) error {
@@ -216,6 +224,11 @@ func (l *keepaliveLoop) run(ctx context.Context) error {
 
 func (l *keepaliveLoop) tick(ctx context.Context) {
 	now := l.d.Now()
+	// Backups run whether or not any profile needs keeping alive.
+	if l.d.Backup != nil && (l.backupAt.IsZero() || now.Sub(l.backupAt) >= keepaliveBackupCheckEvery) {
+		l.backupAt = now
+		l.d.Backup(now)
+	}
 	if l.gateAt.IsZero() || now.Sub(l.gateAt) >= keepaliveGateEvery {
 		gate, errs := l.d.Qualify(l.d.Root)
 		msgs := make([]string, 0, len(errs))
