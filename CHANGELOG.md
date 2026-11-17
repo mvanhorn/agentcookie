@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Upgrades restart every agentcookie job, not just the main one
+
+Re-running `install-beta.sh` on a healthy install restarted only the source or sink daemon. The profile keep-alive and cmux-sync jobs kept running the old process after their binary was replaced. On macOS that stale process can lose its access to the Chrome profile folder ("operation not permitted"), so the keep-alive stopped loading profiles and Claude in Chrome showed as disconnected until someone restarted it by hand. The installer now also restarts every other loaded `dev.agentcookie.*` job that runs the same binary, on both the healthy re-run path and after the wizard.
+
 ### Claude in Chrome on two accounts: the keep-alive survives a hostname change, and doctor names a profile on the wrong account
 
 - After a network change, macOS can report the Mac's hostname as `MacBook-Pro.localdomain` while Chrome's lock still says `MacBook-Pro.local`. agentcookie then treated Chrome as not running, so `profile-keepalive` stopped reloading profiles without saying so, and Claude in Chrome dropped for the profile that unloaded. Chrome is now recognized by the first part of the hostname, the Mac's Bonjour name, or, failing both, by the lock's process being Chrome with files open in the profile folder.
