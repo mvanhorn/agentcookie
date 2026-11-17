@@ -442,20 +442,20 @@ restart_healthy_install() {
 }
 
 # restart_companion_jobs ROLE TARGET
-# Restart every other loaded dev.agentcookie.* job (profile-keepalive,
-# cmux-sync, ...) that runs TARGET, so none keeps running the old process
-# after its binary was replaced. A stale process outlives the upgrade and
+# Restart every other loaded persistent agentcookie service (source, sink,
+# cmux-sync, profile-keepalive; the same roles `services refresh` manages)
+# that runs TARGET, so none keeps running the old process after its binary
+# was replaced. Temporary jobs such as dev.agentcookie.oneshot.* are never
+# touched: a restart would kill and repeat their work. A stale process outlives the upgrade and
 # can lose its macOS data-access grant (for example to the Chrome profile
 # folder), failing quietly until someone restarts it. Jobs running another
 # binary are left alone. Failures are warnings, never fatal.
 restart_companion_jobs() {
   local role="$1" target="$2"
-  local own_label plist label service loaded loaded_prog
-  own_label="$(launchagent_label "$role")"
-  for plist in "$HOME"/Library/LaunchAgents/dev.agentcookie.*.plist; do
-    [[ -f "$plist" ]] || continue
-    label="$(basename "$plist" .plist)"
-    [[ "$label" == "$own_label" ]] && continue
+  local other label service loaded loaded_prog
+  for other in source sink cmux-sync profile-keepalive; do
+    [[ "$other" == "$role" ]] && continue
+    label="$(launchagent_label "$other")"
     service="gui/$(id -u)/$label"
     loaded="$(launchctl print "$service" 2>/dev/null)" || continue
     loaded_prog="$(loaded_program "$loaded")"
