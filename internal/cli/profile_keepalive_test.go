@@ -34,6 +34,7 @@ type fakeKeepalive struct {
 	qualErrs   []error
 	binChanged bool
 	mismatches []string
+	incomplete bool
 	mmCalls    int
 }
 
@@ -82,9 +83,9 @@ func (f *fakeKeepalive) loop() *keepaliveLoop {
 			f.logs = append(f.logs, fmt.Sprintf(format, a...))
 		},
 		BinaryChanged: func() bool { return f.binChanged },
-		AccountMismatches: func() []string {
+		AccountMismatches: func() ([]string, bool) {
 			f.mmCalls++
-			return f.mismatches
+			return f.mismatches, !f.incomplete
 		},
 	})
 }
@@ -614,20 +615,31 @@ func TestKeepalive_RunReturnsRestartError(t *testing.T) {
 	}
 }
 
-func TestKeepalive_PermissionErrorRestartsOnlyAStaleProcess(t *testing.T) {
+func TestKeepalive_PermissionErrorRestartsOnlyAfterAccess(t *testing.T) {
+	denied := []error{&fs.PathError{Op: "open", Path: "/root", Err: fs.ErrPermission}}
+	f := newFakeKeepalive()
+	l := f.loop()
+	l.tick(context.Background()) // reads fine: this process had access
+
+	f.qualify, f.qualErrs = nil, denied
+	f.advance(keepaliveGateEvery)
+	l.tick(context.Background())
+	if !errors.Is(l.restart, errKeepaliveRestart) {
+		t.Fatalf("restart = %v, want errKeepaliveRestart when a process loses access it had", l.restart)
+	}
+}
+
+func TestKeepalive_PermissionDeniedFromStartNeverRestarts(t *testing.T) {
 	f := newFakeKeepalive()
 	f.qualify = nil
 	f.qualErrs = []error{&fs.PathError{Op: "open", Path: "/root", Err: fs.ErrPermission}}
 	l := f.loop()
-
-	l.tick(context.Background())
-	if l.restart != nil {
-		t.Fatalf("a fresh process must not restart on a permission error")
+	for range 30 {
+		l.tick(context.Background())
+		f.advance(keepaliveGateEvery)
 	}
-	f.advance(keepaliveStaleAfter)
-	l.tick(context.Background())
-	if !errors.Is(l.restart, errKeepaliveRestart) {
-		t.Fatalf("restart = %v, want errKeepaliveRestart for a long-running process refused by macOS", l.restart)
+	if l.restart != nil {
+		t.Fatalf("a process refused from the start must not restart in a loop, got %v", l.restart)
 	}
 }
 
@@ -636,7 +648,8 @@ func TestKeepalive_OtherReadErrorsNeverRestart(t *testing.T) {
 	f.qualify = nil
 	f.qualErrs = []error{errors.New("Profile 1: corrupt store")}
 	l := f.loop()
-	f.advance(keepaliveStaleAfter + time.Hour)
+	l.tick(context.Background())
+	f.advance(time.Hour)
 	l.tick(context.Background())
 	if l.restart != nil {
 		t.Fatalf("a non-permission error must not restart, got %v", l.restart)
@@ -691,5 +704,37 @@ func TestExecutableChangedSinceStart(t *testing.T) {
 	// The test binary itself is the executable; it does not change mid-test.
 	if executableChangedSinceStart()() {
 		t.Fatalf("an untouched binary must not report a change")
+	}
+}
+
+func TestKeepalive_IncompleteComparisonKeepsWarning(t *testing.T) {
+	f := newFakeKeepalive()
+	l := f.loop()
+	f.mismatches = []string{"Default: uses the account Profile 1 uses"}
+	l.tick(context.Background())
+
+	// The Keychain locks: nothing compared, so nothing is known to match.
+	f.mismatches, f.incomplete = nil, true
+	f.advance(keepaliveAccountsEvery)
+	l.tick(context.Background())
+	if strings.Contains(strings.Join(f.logs, "\n"), "match claude.ai again") {
+		t.Fatalf("an incomplete comparison must not clear the warning, logs = %v", f.logs)
+	}
+
+	// Unlocked again with the same mismatch: no second notification.
+	f.mismatches, f.incomplete = []string{"Default: uses the account Profile 1 uses"}, false
+	f.advance(keepaliveAccountsEvery)
+	l.tick(context.Background())
+	if len(f.notes) != 1 {
+		t.Fatalf("the same unresolved mismatch must notify once, notes = %v", f.notes)
+	}
+}
+
+func TestKeepaliveRunArgs(t *testing.T) {
+	if got := strings.Join(keepaliveRunArgs(defaultConfigDir()), " "); got != "run" {
+		t.Fatalf("default config dir: args = %q, want run", got)
+	}
+	if got := strings.Join(keepaliveRunArgs("/custom/dir"), " "); got != "run --config-dir /custom/dir" {
+		t.Fatalf("custom config dir: args = %q", got)
 	}
 }

@@ -34,13 +34,6 @@ const (
 	// takes a few seconds at most.
 	keepaliveSendDeadline = 10 * time.Second
 	keepaliveNotifyAfter  = 3
-	// keepaliveStaleAfter is how long the process must have run before a
-	// permission error on the Chrome folder is blamed on a stale process
-	// (macOS can stop honoring a long-running process's data-access grant,
-	// for example after its binary is replaced) and the keep-alive exits
-	// so launchd starts a fresh one. A fresh process that hits the same
-	// error keeps running and logs it instead of restarting in a loop.
-	keepaliveStaleAfter = 10 * time.Minute
 	// keepaliveAccountsEvery spaces the claude.ai login comparison, which
 	// decrypts one cookie per profile.
 	keepaliveAccountsEvery = 10 * time.Minute
@@ -138,9 +131,11 @@ type keepaliveDeps struct {
 	// longer the one this process started from.
 	BinaryChanged func() bool
 	// AccountMismatches lists profiles whose claude.ai login is confirmed
-	// to be the account another profile's Claude in Chrome uses. Nil
-	// skips the comparison.
-	AccountMismatches func() []string
+	// to be the account another profile's Claude in Chrome uses. complete
+	// is false when a read failed (a locked Keychain, an unreadable
+	// store), so a missing mismatch is not proof it cleared. Nil skips the
+	// comparison.
+	AccountMismatches func() (mismatches []string, complete bool)
 }
 
 type keepaliveProfileState struct {
@@ -161,7 +156,12 @@ type keepaliveLoop struct {
 	// once when the keep-alive stops seeing Chrome and once when it is back.
 	chromeDown bool
 	state      map[string]*keepaliveProfileState
-	startedAt  time.Time
+	// hadAccess is set once a gate check reads the Chrome folder with no
+	// permission error. Losing access afterwards means this process went
+	// stale (macOS can stop honoring a long-running process's data-access
+	// grant, for example after its binary is replaced); a process refused
+	// from the start keeps running and logs instead of restarting in a loop.
+	hadAccess bool
 	// restart, once set, ends run with errKeepaliveRestart.
 	restart error
 	// accountsAt and mismatchKey track the claude.ai login comparison;
@@ -171,7 +171,7 @@ type keepaliveLoop struct {
 }
 
 func newKeepaliveLoop(d keepaliveDeps) *keepaliveLoop {
-	return &keepaliveLoop{d: d, state: map[string]*keepaliveProfileState{}, startedAt: d.Now()}
+	return &keepaliveLoop{d: d, state: map[string]*keepaliveProfileState{}}
 }
 
 func liveKeepaliveLoop() *keepaliveLoop {
@@ -236,8 +236,11 @@ func (l *keepaliveLoop) tick(ctx context.Context) {
 			l.restart = errKeepaliveRestart
 			return
 		}
-		if permissionDenied(errs) && now.Sub(l.startedAt) >= keepaliveStaleAfter {
-			l.d.Logf("macOS refused access to the Chrome folder after %s running; exiting so launchd starts a fresh process", now.Sub(l.startedAt).Round(time.Minute))
+		switch {
+		case !permissionDenied(errs):
+			l.hadAccess = true
+		case l.hadAccess:
+			l.d.Logf("macOS stopped allowing access to the Chrome folder; exiting so launchd starts a fresh process")
 			l.restart = errKeepaliveRestart
 			return
 		}
@@ -432,7 +435,7 @@ func enableProfileKeepalive(fromWizard, quiet bool) error {
 		Role:       launchd.RoleProfileKeepalive,
 		BinaryPath: binPath,
 		LogDir:     logDir,
-		ExtraArgs:  []string{"run"},
+		ExtraArgs:  keepaliveRunArgs(common.ConfigDir),
 	}); err != nil {
 		return fmt.Errorf("install profile-keepalive launch agent: %w", err)
 	}
@@ -539,9 +542,11 @@ func (l *keepaliveLoop) checkAccounts(now time.Time) {
 		return
 	}
 	l.accountsAt = now
-	mismatches := l.d.AccountMismatches()
+	mismatches, complete := l.d.AccountMismatches()
 	key := strings.Join(mismatches, "\n")
-	if key == l.mismatchKey {
+	if key == l.mismatchKey || (key == "" && !complete) {
+		// An incomplete comparison never clears a warning: the mismatch may
+		// still be there in the profile that could not be read.
 		return
 	}
 	l.mismatchKey = key
@@ -589,25 +594,30 @@ func executableChangedSinceStart() func() bool {
 // liveClaudeAccountMismatches runs the doctor's account comparison and
 // returns only confirmed mismatches, so an account that belongs to several
 // orgs never raises a false alarm. It honors skip_chrome_sqlite.
-func liveClaudeAccountMismatches() []string {
+func liveClaudeAccountMismatches() ([]string, bool) {
 	var sinkCfg *config.SinkConfig
 	if s, err := config.LoadSink(common.ConfigDir); err == nil {
 		sinkCfg = s
 	}
 	if !safeStorageReadAllowed(sinkCfg) {
-		return nil
+		return nil, true
 	}
 	root := chromepaths.ChromeProfileRoot()
 	accounts, errs := chrome.ClaudeProfileAccounts(root)
 	if len(accounts) == 0 {
-		return nil
+		return nil, len(errs) == 0
 	}
+	complete := len(errs) == 0
 	decryptKey := sync.OnceValues(func() ([]byte, error) { return getChromeDecryptKey("chrome") })
 	e := claudeAccountsEnv{
 		accounts:          func() ([]chrome.ClaudeExtAccount, []error) { return accounts, errs },
 		cookieReadAllowed: true,
 		cookieOrg: func(profile string) (string, error) {
-			return claudeCookieOrg(root, profile, decryptKey)
+			org, err := claudeCookieOrg(root, profile, decryptKey)
+			if err != nil {
+				complete = false
+			}
+			return org, err
 		},
 	}
 	labels := chromeProfileLabels(root)
@@ -618,5 +628,16 @@ func liveClaudeAccountMismatches() []string {
 		return profile
 	}
 	_, confirmed, _, _ := compareClaudeAccounts(e, accounts, errs, label)
-	return confirmed
+	return confirmed, complete
+}
+
+// keepaliveRunArgs are the job's arguments after the role. A non-default
+// --config-dir is passed through so the job reads the same settings (such
+// as skip_chrome_sqlite) as the command that installed it.
+func keepaliveRunArgs(configDir string) []string {
+	args := []string{"run"}
+	if configDir != "" && configDir != defaultConfigDir() {
+		args = append(args, "--config-dir", configDir)
+	}
+	return args
 }
