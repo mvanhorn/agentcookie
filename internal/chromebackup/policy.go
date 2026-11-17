@@ -79,6 +79,14 @@ func Warnings(prev, cur Manifest) []string {
 // Unfinished snapshot folders older than an hour go too. It returns the
 // removed IDs.
 func Prune(dir string, now time.Time) ([]string, error) {
+	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	unlock, err := lockDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	snaps, err := List(dir)
 	if err != nil {
 		return nil, err
@@ -202,7 +210,7 @@ func Restore(s Snapshot, root string, profiles []string, localState bool) ([]str
 				if err := gunzipFile(filepath.Join(src, f+".gz"), filepath.Join(dst, f)); err != nil {
 					return done, fmt.Errorf("%s/%s: %w", p.Dir, f, err)
 				}
-				if sqliteFiles[f] {
+				if sqliteFiles[filepath.Base(f)] {
 					for _, side := range []string{"-wal", "-journal", "-shm"} {
 						if err := os.Remove(filepath.Join(dst, f+side)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 							return done, err

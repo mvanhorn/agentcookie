@@ -20,9 +20,12 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3" // registers the sqlite3 driver
+
+	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 )
 
 // idLayout names a snapshot folder; it sorts by time.
@@ -40,8 +43,8 @@ var (
 	HeavyDirs  = []string{"Local Extension Settings"}
 )
 
-// sqliteFiles are SQLite databases: copied with their -wal and compacted so
-// the snapshot holds every committed row.
+// sqliteFiles are SQLite databases, by base name: copied with their -wal
+// and compacted so the snapshot holds every committed row.
 var sqliteFiles = map[string]bool{"Cookies": true, "Web Data": true, "History": true}
 
 var profileDirRE = regexp.MustCompile(`^(Default|Profile \d+)$`)
@@ -55,12 +58,20 @@ type Extension struct {
 
 // Profile is what a snapshot recorded about one profile.
 type Profile struct {
-	Dir        string      `json:"dir"`
-	Name       string      `json:"name,omitempty"`
+	Dir  string `json:"dir"`
+	Name string `json:"name,omitempty"`
+	// Cookies is the cookie count: 0 when the profile has no cookie
+	// database, -1 when it could not be read.
 	Cookies    int         `json:"cookies"`
 	Extensions []Extension `json:"extensions"`
-	Files      []string    `json:"files"`
-	Errors     []string    `json:"errors,omitempty"`
+	// Files are paths relative to the profile folder; a trailing "/" marks
+	// a folder.
+	Files  []string `json:"files"`
+	Errors []string `json:"errors,omitempty"`
+	// Notes are problems that did not stop a file being copied: a database
+	// that failed its integrity check (stored as-is with its -wal), or
+	// counts that could not be read from a damaged file.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // Manifest describes one snapshot.
@@ -87,27 +98,42 @@ func Dir() string {
 
 // Take writes a snapshot of every profile under root into dir. heavy adds
 // HeavyFiles and HeavyDirs. A file that fails to copy is recorded in the
-// profile's Errors and does not stop the others.
+// profile's Errors and does not stop the others. A root with no profiles
+// still gets a snapshot, so a vanished profile shows up as a wipe and a
+// restore can still save the current state first.
+//
+// Snapshots are serialized across processes with a lock file in dir, and
+// each one stages in its own folder.
 func Take(root, dir string, now time.Time, heavy bool, reason string) (Snapshot, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return Snapshot{}, fmt.Errorf("chromebackup: %w", err)
+	}
+	unlock, err := lockDir(dir)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer unlock()
 	profiles, err := profileDirs(root)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if len(profiles) == 0 {
-		return Snapshot{}, fmt.Errorf("chromebackup: no Chrome profiles under %s", root)
-	}
 	names := profileNames(root)
-	id := now.UTC().Format(idLayout)
-	final := filepath.Join(dir, id)
-	if _, err := os.Stat(final); err == nil {
-		return Snapshot{}, fmt.Errorf("chromebackup: snapshot %s already exists", id)
+	// A snapshot already taken this second (a restore right after the
+	// scheduled one) moves this one to the next free second.
+	at := now.UTC().Truncate(time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, at.Format(idLayout))); errors.Is(err, fs.ErrNotExist) {
+			break
+		}
+		at = at.Add(time.Second)
 	}
-	tmp := final + ".partial"
-	_ = os.RemoveAll(tmp)
-	if err := os.MkdirAll(tmp, 0o700); err != nil {
+	id := at.Format(idLayout)
+	final := filepath.Join(dir, id)
+	tmp, err := os.MkdirTemp(dir, id+".*.partial")
+	if err != nil {
 		return Snapshot{}, fmt.Errorf("chromebackup: %w", err)
 	}
-	m := Manifest{ID: id, Taken: now.UTC(), Heavy: heavy, Reason: reason}
+	m := Manifest{ID: id, Taken: at, Heavy: heavy, Reason: reason, Profiles: []Profile{}}
 	if err := gzipFile(filepath.Join(root, "Local State"), filepath.Join(tmp, "Local State.gz")); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		_ = os.RemoveAll(tmp)
 		return Snapshot{}, fmt.Errorf("chromebackup: Local State: %w", err)
@@ -134,16 +160,37 @@ func snapshotProfile(root, snap, dir, name string, heavy bool) Profile {
 		p.Errors = append(p.Errors, err.Error())
 		return p
 	}
-	files := append([]string{}, LightFiles...)
+	// Newer Chrome keeps cookies in Network/Cookies.
+	cookiesRel, _ := filepath.Rel(src, chromepaths.ProfileCookiesDB(src))
+	files := []string{}
+	for _, f := range LightFiles {
+		if f == "Cookies" {
+			f = cookiesRel
+		}
+		files = append(files, f)
+	}
 	if heavy {
 		files = append(files, HeavyFiles...)
 	}
 	for _, f := range files {
+		in, out := filepath.Join(src, f), filepath.Join(dst, f+".gz")
+		if err := os.MkdirAll(filepath.Dir(out), 0o700); err != nil {
+			p.Errors = append(p.Errors, fmt.Sprintf("%s: %v", f, err))
+			continue
+		}
 		var err error
-		if sqliteFiles[f] {
-			err = copySQLite(filepath.Join(src, f), filepath.Join(dst, f+".gz"))
+		if sqliteFiles[filepath.Base(f)] {
+			var raw bool
+			raw, err = copySQLite(in, out)
+			if err == nil && raw {
+				p.Notes = append(p.Notes, f+": failed its integrity check; stored as-is")
+				if _, statErr := os.Stat(filepath.Join(dst, f+"-wal.gz")); statErr == nil {
+					p.Files = append(p.Files, f, f+"-wal")
+					continue
+				}
+			}
 		} else {
-			err = gzipFile(filepath.Join(src, f), filepath.Join(dst, f+".gz"))
+			err = gzipFile(in, out)
 		}
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
@@ -165,14 +212,17 @@ func snapshotProfile(root, snap, dir, name string, heavy bool) Profile {
 			}
 		}
 	}
-	if n, err := countCookies(filepath.Join(src, "Cookies")); err == nil {
+	switch n, err := countCookies(filepath.Join(src, cookiesRel)); {
+	case err == nil:
 		p.Cookies = n
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		p.Errors = append(p.Errors, fmt.Sprintf("count cookies: %v", err))
+	case errors.Is(err, fs.ErrNotExist):
+		p.Cookies = 0 // no cookie database at all counts as none
+	default:
+		p.Notes = append(p.Notes, fmt.Sprintf("count cookies: %v", err))
 	}
 	exts, err := Extensions(filepath.Join(src, "Preferences"), filepath.Join(src, "Secure Preferences"))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		p.Errors = append(p.Errors, fmt.Sprintf("extensions: %v", err))
+		p.Notes = append(p.Notes, fmt.Sprintf("extensions: %v", err))
 	}
 	p.Extensions = exts
 	if p.Extensions == nil {
@@ -181,7 +231,8 @@ func snapshotProfile(root, snap, dir, name string, heavy bool) Profile {
 	return p
 }
 
-// profileDirs lists the profile folders under root that have Preferences.
+// profileDirs lists the profile folders under root that have Preferences or
+// a cookie database.
 func profileDirs(root string) ([]string, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -192,8 +243,12 @@ func profileDirs(root string) ([]string, error) {
 		if !e.IsDir() || !profileDirRE.MatchString(e.Name()) {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(root, e.Name(), "Preferences")); err == nil {
-			out = append(out, e.Name())
+		p := filepath.Join(root, e.Name())
+		for _, f := range []string{filepath.Join(p, "Preferences"), chromepaths.ProfileCookiesDB(p)} {
+			if _, err := os.Stat(f); err == nil {
+				out = append(out, e.Name())
+				break
+			}
 		}
 	}
 	sort.Strings(out)
@@ -324,25 +379,104 @@ func countCookies(path string) (int, error) {
 
 // copySQLite copies a live SQLite database and its -wal to a private
 // folder, folds the WAL in with VACUUM INTO, checks the result, and stores
-// it gzipped at dst.
-func copySQLite(src, dst string) error {
+// it gzipped at dst (dst minus ".gz" plus "-wal.gz" for a raw WAL).
+//
+// Chrome holds its databases in exclusive locking mode, so SQLite's online
+// backup cannot read them. Instead the copy is retried until neither file
+// changed while it was copied: a checkpoint that moves rows from the WAL
+// into the database between the two copies would otherwise lose them.
+//
+// A copy that fails its integrity check on every try is stored as-is with
+// its -wal (raw is true), so nothing is left out of the snapshot.
+func copySQLite(src, dst string) (raw bool, err error) {
 	if _, err := os.Stat(src); err != nil {
-		return err
+		return false, err
 	}
 	dir, err := os.MkdirTemp("", "agentcookie-backup-")
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer os.RemoveAll(dir)
 	cp := filepath.Join(dir, "db")
-	if err := copyWithWAL(src, cp); err != nil {
-		return err
+	var lastErr error
+	checkFailed := false
+	for range copyTries {
+		_ = os.Remove(cp + "-wal")
+		stable, err := copyWithWALStable(src, cp)
+		if err != nil {
+			return false, err
+		}
+		if !stable {
+			lastErr, checkFailed = errors.New("the database kept changing while it was copied"), false
+			time.Sleep(copyRetryWait)
+			continue
+		}
+		out := filepath.Join(dir, "vacuumed")
+		_ = os.Remove(out)
+		if err := vacuumInto(cp, out); err != nil {
+			lastErr, checkFailed = err, true
+			time.Sleep(copyRetryWait)
+			continue
+		}
+		return false, gzipFile(out, dst)
 	}
-	out := filepath.Join(dir, "vacuumed")
-	if err := vacuumInto(cp, out); err != nil {
-		return err
+	if !checkFailed {
+		return false, lastErr
 	}
-	return gzipFile(out, dst)
+	// The last copy did not change while it was copied but fails its check
+	// or cannot be opened: keep it raw.
+	if err := gzipFile(cp, dst); err != nil {
+		return false, err
+	}
+	if err := gzipFile(cp+"-wal", strings.TrimSuffix(dst, ".gz")+"-wal.gz"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+	return true, nil
+}
+
+var (
+	copyTries     = 5
+	copyRetryWait = 500 * time.Millisecond
+	errIntegrity  = errors.New("copy failed its integrity check")
+)
+
+// copyWithWALStable copies src and src-wal to dst and reports whether both
+// files were unchanged (size and modification time) across the copy.
+func copyWithWALStable(src, dst string) (bool, error) {
+	before := fileStamps(src, src+"-wal")
+	if err := copyWithWAL(src, dst); err != nil {
+		return false, err
+	}
+	return before == fileStamps(src, src+"-wal"), nil
+}
+
+func fileStamps(paths ...string) string {
+	var b strings.Builder
+	for _, p := range paths {
+		if info, err := os.Stat(p); err == nil {
+			fmt.Fprintf(&b, "%d:%d;", info.Size(), info.ModTime().UnixNano())
+		} else {
+			b.WriteString("-;")
+		}
+	}
+	return b.String()
+}
+
+// lockDir takes an exclusive lock on dir/.lock, waiting for another
+// snapshot or prune to finish.
+func lockDir(dir string) (func(), error) {
+	f, err := os.OpenFile(filepath.Join(dir, ".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("chromebackup: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("chromebackup: lock: %w", err)
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		f.Close()
+	}, nil
 }
 
 func vacuumInto(src, dst string) error {
@@ -356,7 +490,7 @@ func vacuumInto(src, dst string) error {
 		return fmt.Errorf("check copy: %w", err)
 	}
 	if ok != "ok" {
-		return fmt.Errorf("copy failed its integrity check: %s", ok)
+		return fmt.Errorf("%w: %s", errIntegrity, ok)
 	}
 	if _, err := db.Exec("VACUUM INTO ?", dst); err != nil {
 		return fmt.Errorf("compact copy: %w", err)
@@ -425,6 +559,9 @@ func gunzipFile(src, dst string) error {
 		return fmt.Errorf("%s: %w", filepath.Base(src), err)
 	}
 	defer zr.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return err
+	}
 	tmp := dst + ".agentcookie-restore"
 	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {

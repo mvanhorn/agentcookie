@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -105,8 +106,8 @@ newest one when no wipe was detected. Without --profile it restores every
 profile in the snapshot.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		root := chromepaths.ChromeProfileRoot()
-		if pid, running, _ := chromectl.ChromeStatus(root); running {
-			return fmt.Errorf("chrome-backup restore: Chrome is running (pid %d); quit it with Cmd+Q and run this again", pid)
+		if err := requireChromeQuit(); err != nil {
+			return err
 		}
 		dir := chromebackup.Dir()
 		snaps, err := chromebackup.List(dir)
@@ -135,7 +136,14 @@ profile in the snapshot.`,
 			return fmt.Errorf("chrome-backup restore: could not save the current state first, so nothing was restored: %w", err)
 		}
 		_ = chromebackup.MarkKeep(safety)
+		if bad := incompleteFor(safety, chromeBackupProfiles); len(bad) > 0 {
+			return fmt.Errorf("chrome-backup restore: the current state could not be fully saved, so nothing was restored:\n  %s", strings.Join(bad, "\n  "))
+		}
 		fmt.Printf("saved the current state as %s\n", safety.ID)
+		// Chrome may have been started while the current state was saved.
+		if err := requireChromeQuit(); err != nil {
+			return err
+		}
 		done, err := chromebackup.Restore(pick, root, chromeBackupProfiles, chromeBackupLocalState || len(chromeBackupProfiles) == 0)
 		for _, f := range done {
 			fmt.Printf("restored %s\n", f)
@@ -157,6 +165,39 @@ func init() {
 	chromeBackupRestoreCmd.Flags().StringSliceVar(&chromeBackupProfiles, "profile", nil, `profile folder to restore, e.g. "Profile 1" (repeatable; default all)`)
 	chromeBackupRestoreCmd.Flags().BoolVar(&chromeBackupLocalState, "local-state", false, "also restore Local State (profile names); always on without --profile")
 	chromeBackupCmd.AddCommand(chromeBackupNowCmd, chromeBackupListCmd, chromeBackupRestoreCmd)
+}
+
+// requireChromeQuit fails unless no Chrome browser process exists. It
+// checks the process list, not Chrome's lock: a stopped or hung Chrome
+// still has the files open.
+func requireChromeQuit() error {
+	running, err := chromectl.ChromeProcessRunning()
+	if err != nil {
+		return fmt.Errorf("chrome-backup restore: %w", err)
+	}
+	if running {
+		return errors.New("chrome-backup restore: Chrome is running; quit it with Cmd+Q (or Force Quit if it hangs) and run this again")
+	}
+	return nil
+}
+
+// incompleteFor lists the copy errors in a snapshot for the profiles a
+// restore will replace (all when profiles is empty).
+func incompleteFor(s chromebackup.Snapshot, profiles []string) []string {
+	want := map[string]bool{}
+	for _, p := range profiles {
+		want[p] = true
+	}
+	var out []string
+	for _, p := range s.Profiles {
+		if len(want) > 0 && !want[p.Dir] {
+			continue
+		}
+		for _, e := range p.Errors {
+			out = append(out, p.Dir+": "+e)
+		}
+	}
+	return out
 }
 
 // missingExtensions lists Web Store links for extensions the snapshot had

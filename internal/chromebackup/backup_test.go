@@ -298,3 +298,119 @@ func TestExtensionsReadsBothPrefsFiles(t *testing.T) {
 		t.Fatalf("Extensions = %+v, %v", got, err)
 	}
 }
+
+func TestNetworkCookiesPathIsBackedUpAndRestored(t *testing.T) {
+	root, dir := newRoot(t), t.TempDir()
+	p1 := filepath.Join(root, "Profile 1")
+	if err := os.MkdirAll(filepath.Join(p1, "Network"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(filepath.Join(p1, "Cookies"))
+	writeCookies(t, filepath.Join(p1, "Network", "Cookies"), 400)
+	s, err := Take(root, dir, t0, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := s.Profiles[1]
+	if got.Cookies != 400 || got.Files[0] != filepath.Join("Network", "Cookies") {
+		t.Fatalf("Profile 1 = %+v", got)
+	}
+	writeCookies(t, filepath.Join(p1, "Network", "Cookies"), 1)
+	if _, err := Restore(s, root, []string{"Profile 1"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := countCookies(filepath.Join(p1, "Network", "Cookies")); n != 400 {
+		t.Fatalf("restored %d cookies, want 400", n)
+	}
+}
+
+func TestDeletedCookieDatabaseCountsAsAWipe(t *testing.T) {
+	root, dir := newRoot(t), t.TempDir()
+	if _, err := RunDue(root, dir, t0); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(filepath.Join(root, "Default", "Cookies"))
+	res, err := RunDue(root, dir, t0.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Taken.Profiles[0].Cookies != 0 || len(res.Warnings) != 1 || res.Good == nil {
+		t.Fatalf("result = %+v, profile = %+v", res, res.Taken.Profiles[0])
+	}
+}
+
+func TestVanishedProfilesStillSnapshotAndRestore(t *testing.T) {
+	root, dir := newRoot(t), t.TempDir()
+	if _, err := RunDue(root, dir, t0); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"Default", "Profile 1"} {
+		_ = os.RemoveAll(filepath.Join(root, p))
+	}
+	res, err := RunDue(root, dir, t0.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("snapshot of an empty Chrome folder failed: %v", err)
+	}
+	if len(res.Warnings) != 2 {
+		t.Fatalf("warnings = %q", res.Warnings)
+	}
+	if _, err := Restore(*res.Good, root, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := countCookies(filepath.Join(root, "Default", "Cookies")); n != 300 {
+		t.Fatalf("Default cookies = %d after restore", n)
+	}
+}
+
+func TestSnapshotsInTheSameSecondGetTheirOwnFolders(t *testing.T) {
+	root, dir := newRoot(t), t.TempDir()
+	done := make(chan Snapshot, 2)
+	for range 2 {
+		go func() {
+			s, err := Take(root, dir, t0, false, "")
+			if err != nil {
+				t.Error(err)
+			}
+			done <- s
+		}()
+	}
+	a, b := <-done, <-done
+	if a.ID == b.ID {
+		t.Fatalf("both snapshots are %s", a.ID)
+	}
+	snaps, _ := List(dir)
+	if len(snaps) != 2 {
+		t.Fatalf("listed %d snapshots", len(snaps))
+	}
+	for _, s := range snaps {
+		if len(s.Profiles) != 2 || len(s.Profiles[0].Errors) != 0 {
+			t.Fatalf("snapshot %s = %+v", s.ID, s.Profiles)
+		}
+	}
+}
+
+func TestDamagedDatabaseIsStoredAsIs(t *testing.T) {
+	root, dir := newRoot(t), t.TempDir()
+	copyRetryWait = 0
+	bad := filepath.Join(root, "Default", "Cookies")
+	if err := os.WriteFile(bad, []byte("not a database at all"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Take(root, dir, t0, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := s.Profiles[0]
+	if len(d.Errors) != 0 || len(d.Notes) == 0 || d.Files[0] != "Cookies" {
+		t.Fatalf("Default = %+v", d)
+	}
+	if err := os.WriteFile(bad, []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(s, root, []string{"Default"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(bad); string(b) != "not a database at all" {
+		t.Fatalf("restored %q", b)
+	}
+}
