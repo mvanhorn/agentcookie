@@ -78,47 +78,8 @@ func checkClaudeAccountsWith(e claudeAccountsEnv) Check {
 		}
 	}
 
-	// Which profile's extension holds each org, for naming a cross match.
-	extOrgAccount := map[string]chrome.ClaudeExtAccount{}
-	for _, a := range accounts {
-		if a.TokenOrg != "" {
-			extOrgAccount[a.TokenOrg] = a
-		}
-	}
-
-	var ok, mismatched, skipped []string
-	// A store that failed to read may be the profile on the wrong account,
-	// so it is named rather than dropped. Errors already carry the profile.
-	for _, err := range errs {
-		skipped = append(skipped, err.Error())
-	}
-	for _, a := range accounts {
-		name := label(a.Profile)
-		if a.TokenOrg == "" {
-			skipped = append(skipped, name+": Claude in Chrome has not stored its org")
-			continue
-		}
-		org, err := e.cookieOrg(a.Profile)
-		switch {
-		case err != nil:
-			skipped = append(skipped, name+": "+err.Error())
-		case org == "":
-			skipped = append(skipped, name+": not signed in to claude.ai")
-		case org == a.TokenOrg:
-			ok = append(ok, name)
-		default:
-			// Confirmed only when another profile's extension holds that org
-			// under a different account; the same account in another org is
-			// not proof.
-			if other, found := extOrgAccount[org]; found && other.Profile != a.Profile && other.AccountUUID != a.AccountUUID {
-				mismatched = append(mismatched, fmt.Sprintf("%s: Claude in Chrome uses a different Claude account than this profile's claude.ai login, which is the account Claude in Chrome uses in %s", name, label(other.Profile)))
-			} else {
-				// One account can belong to several orgs, so a lone
-				// difference is not proof.
-				mismatched = append(mismatched, name+": Claude in Chrome likely uses a different Claude account than this profile's claude.ai login")
-			}
-		}
-	}
+	ok, confirmed, likely, skipped := compareClaudeAccounts(e, accounts, errs, label)
+	mismatched := append(append([]string{}, confirmed...), likely...)
 
 	var parts []string
 	if len(mismatched) > 0 {
@@ -191,4 +152,54 @@ func chromeProfileLabels(root string) map[string]string {
 		}
 	}
 	return out
+}
+
+// compareClaudeAccounts sorts each profile's Claude in Chrome sign-in by
+// how it compares with that profile's claude.ai login. confirmed lists
+// profiles whose claude.ai login is the account another profile's
+// extension uses; likely lists other org differences, which are not proof
+// because one account can belong to several orgs.
+func compareClaudeAccounts(e claudeAccountsEnv, accounts []chrome.ClaudeExtAccount, errs []error, label func(string) string) (ok, confirmed, likely, skipped []string) {
+	// Which profile's extension holds each org, for naming a cross match.
+	extOrgAccount := map[string]chrome.ClaudeExtAccount{}
+	for _, a := range accounts {
+		if a.TokenOrg != "" {
+			extOrgAccount[a.TokenOrg] = a
+		}
+	}
+
+	// A store that failed to read may be the profile on the wrong account,
+	// so it is named rather than dropped. Errors already carry the profile.
+	for _, err := range errs {
+		skipped = append(skipped, err.Error())
+	}
+	for _, a := range accounts {
+		name := label(a.Profile)
+		if a.TokenOrg == "" {
+			skipped = append(skipped, name+": Claude in Chrome has not stored its org")
+			continue
+		}
+		org, err := e.cookieOrg(a.Profile)
+		switch {
+		case err != nil:
+			skipped = append(skipped, name+": "+err.Error())
+		case org == "":
+			skipped = append(skipped, name+": not signed in to claude.ai")
+		case org == a.TokenOrg:
+			ok = append(ok, name)
+		default:
+			// Confirmed only when another profile's extension holds that org
+			// under a different account; the same account in another org is
+			// not proof.
+			if other, found := extOrgAccount[org]; found && other.Profile != a.Profile && other.AccountUUID != a.AccountUUID {
+				confirmed = append(confirmed, fmt.Sprintf("%s: Claude in Chrome uses a different Claude account than this profile's claude.ai login, which is the account Claude in Chrome uses in %s", name, label(other.Profile)))
+			} else {
+				// One account can belong to several orgs, so a lone
+				// difference is not proof.
+				likely = append(likely, name+": Claude in Chrome likely uses a different Claude account than this profile's claude.ai login")
+			}
+		}
+	}
+
+	return ok, confirmed, likely, skipped
 }

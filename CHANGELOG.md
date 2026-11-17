@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### The profile keep-alive heals itself and tells you when a profile drifts to the other account
+
+- When the agentcookie binary is replaced on disk, the keep-alive exits within a minute so launchd starts the new one. This works however the binary got updated, not only through `install-beta.sh`.
+- When macOS refuses the keep-alive access to the Chrome folder after it has run for 10 minutes or more, the keep-alive exits so launchd starts a fresh process. Before this, a stale keep-alive logged the error once, went idle, and Claude in Chrome stayed disconnected until someone restarted it.
+- Every 10 minutes the keep-alive compares each profile's claude.ai login with its Claude in Chrome account, the same comparison as `agentcookie doctor`. When a profile's login is confirmed to be the account another profile's Claude in Chrome uses, it posts one macOS notification, and it logs when the mismatch clears. "Likely" mismatches never notify, because one account can belong to several orgs. The comparison is skipped when `skip_chrome_sqlite` is set.
+
 ### Upgrades restart every agentcookie job, not just the main one
 
 Re-running `install-beta.sh` on a healthy install restarted only the source or sink daemon. The profile keep-alive and cmux-sync jobs kept running the old process after their binary was replaced. On macOS that stale process can lose its access to the Chrome profile folder ("operation not permitted"), so the keep-alive stopped loading profiles and Claude in Chrome showed as disconnected until someone restarted it by hand. The installer now also restarts every other loaded `dev.agentcookie.*` job that runs the same binary, on both the healthy re-run path and after the wizard.

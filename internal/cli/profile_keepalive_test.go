@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,18 +19,23 @@ import (
 // qualify, whether Chrome runs, which profiles are loaded, and what each
 // load does.
 type fakeKeepalive struct {
-	now       time.Time
-	qualify   []chrome.ClaudeProfile
-	qualCalls int
-	running   bool
-	reason    string
-	logs      []string
-	loaded    map[string]bool
-	loadErr   error
-	loadsTo   map[string]bool // a load of this profile marks it loaded
-	loads     []string
-	notes     []string
-	paused    map[string]time.Time
+	now        time.Time
+	qualify    []chrome.ClaudeProfile
+	qualCalls  int
+	running    bool
+	reason     string
+	logs       []string
+	loaded     map[string]bool
+	loadErr    error
+	loadsTo    map[string]bool // a load of this profile marks it loaded
+	loads      []string
+	notes      []string
+	paused     map[string]time.Time
+	qualErrs   []error
+	binChanged bool
+	mismatches []string
+	incomplete bool
+	mmCalls    int
 }
 
 func newFakeKeepalive() *fakeKeepalive {
@@ -51,7 +57,7 @@ func (f *fakeKeepalive) loop() *keepaliveLoop {
 		Root: "/root",
 		Qualify: func(string) ([]chrome.ClaudeProfile, []error) {
 			f.qualCalls++
-			return f.qualify, nil
+			return f.qualify, f.qualErrs
 		},
 		ChromePID: func(string) (int, bool, string) {
 			if !f.running {
@@ -75,6 +81,11 @@ func (f *fakeKeepalive) loop() *keepaliveLoop {
 		PausedUntil: func(p string) time.Time { return f.paused[p] },
 		Logf: func(format string, a ...any) {
 			f.logs = append(f.logs, fmt.Sprintf(format, a...))
+		},
+		BinaryChanged: func() bool { return f.binChanged },
+		AccountMismatches: func() ([]string, bool) {
+			f.mmCalls++
+			return f.mismatches, !f.incomplete
 		},
 	})
 }
@@ -574,5 +585,156 @@ func TestKeepalive_LogsChromeDetectionTransitionsOnce(t *testing.T) {
 	got = detectionLogs(f.logs)
 	if len(got) != 2 || !strings.Contains(got[1], "detected") || strings.Contains(got[1], "not detected") {
 		t.Fatalf("want one detected line after recovery, got %v", got)
+	}
+}
+
+func TestKeepalive_RestartsWhenBinaryChanges(t *testing.T) {
+	f := newFakeKeepalive()
+	l := f.loop()
+	l.tick(context.Background())
+	if l.restart != nil {
+		t.Fatalf("unchanged binary must not restart")
+	}
+	f.binChanged = true
+	f.advance(time.Minute)
+	l.tick(context.Background())
+	if !errors.Is(l.restart, errKeepaliveRestart) {
+		t.Fatalf("restart = %v, want errKeepaliveRestart after the binary changed", l.restart)
+	}
+	if len(f.loads) != 0 {
+		t.Fatalf("a restarting loop must not load profiles, loads = %v", f.loads)
+	}
+}
+
+func TestKeepalive_RunReturnsRestartError(t *testing.T) {
+	f := newFakeKeepalive()
+	f.binChanged = true
+	err := f.loop().run(context.Background())
+	if !errors.Is(err, errKeepaliveRestart) {
+		t.Fatalf("run = %v, want errKeepaliveRestart so launchd restarts the job", err)
+	}
+}
+
+func TestKeepalive_PermissionErrorRestartsOnlyAfterAccess(t *testing.T) {
+	denied := []error{&fs.PathError{Op: "open", Path: "/root", Err: fs.ErrPermission}}
+	f := newFakeKeepalive()
+	l := f.loop()
+	l.tick(context.Background()) // reads fine: this process had access
+
+	f.qualify, f.qualErrs = nil, denied
+	f.advance(keepaliveGateEvery)
+	l.tick(context.Background())
+	if !errors.Is(l.restart, errKeepaliveRestart) {
+		t.Fatalf("restart = %v, want errKeepaliveRestart when a process loses access it had", l.restart)
+	}
+}
+
+func TestKeepalive_PermissionDeniedFromStartNeverRestarts(t *testing.T) {
+	f := newFakeKeepalive()
+	f.qualify = nil
+	f.qualErrs = []error{&fs.PathError{Op: "open", Path: "/root", Err: fs.ErrPermission}}
+	l := f.loop()
+	for range 30 {
+		l.tick(context.Background())
+		f.advance(keepaliveGateEvery)
+	}
+	if l.restart != nil {
+		t.Fatalf("a process refused from the start must not restart in a loop, got %v", l.restart)
+	}
+}
+
+func TestKeepalive_OtherReadErrorsNeverRestart(t *testing.T) {
+	f := newFakeKeepalive()
+	f.qualify = nil
+	f.qualErrs = []error{errors.New("Profile 1: corrupt store")}
+	l := f.loop()
+	l.tick(context.Background())
+	f.advance(time.Hour)
+	l.tick(context.Background())
+	if l.restart != nil {
+		t.Fatalf("a non-permission error must not restart, got %v", l.restart)
+	}
+}
+
+func TestKeepalive_NotifiesOnceForAccountMismatch(t *testing.T) {
+	f := newFakeKeepalive()
+	l := f.loop()
+	f.mismatches = []string{"Default: uses the account Profile 1 uses"}
+
+	l.tick(context.Background())
+	if len(f.notes) != 1 || !strings.Contains(f.notes[0], "other Claude account") {
+		t.Fatalf("notes = %v, want one mismatch notification", f.notes)
+	}
+	f.advance(keepaliveAccountsEvery)
+	l.tick(context.Background())
+	if len(f.notes) != 1 {
+		t.Fatalf("the same mismatch must not notify again, notes = %v", f.notes)
+	}
+	f.mismatches = nil
+	f.advance(keepaliveAccountsEvery)
+	l.tick(context.Background())
+	if !strings.Contains(strings.Join(f.logs, "\n"), "match claude.ai again") {
+		t.Fatalf("clearing must be logged, logs = %v", f.logs)
+	}
+	f.mismatches = []string{"Default: uses the account Profile 1 uses"}
+	f.advance(keepaliveAccountsEvery)
+	l.tick(context.Background())
+	if len(f.notes) != 2 {
+		t.Fatalf("a mismatch that comes back must notify again, notes = %v", f.notes)
+	}
+}
+
+func TestKeepalive_AccountCheckIsSpaced(t *testing.T) {
+	f := newFakeKeepalive()
+	l := f.loop()
+	l.tick(context.Background())
+	f.advance(keepaliveTick)
+	l.tick(context.Background())
+	if f.mmCalls != 1 {
+		t.Fatalf("account comparison ran %d times within %s, want 1", f.mmCalls, keepaliveAccountsEvery)
+	}
+	f.advance(keepaliveAccountsEvery)
+	l.tick(context.Background())
+	if f.mmCalls != 2 {
+		t.Fatalf("account comparison ran %d times, want 2 after %s", f.mmCalls, keepaliveAccountsEvery)
+	}
+}
+
+func TestExecutableChangedSinceStart(t *testing.T) {
+	// The test binary itself is the executable; it does not change mid-test.
+	if executableChangedSinceStart()() {
+		t.Fatalf("an untouched binary must not report a change")
+	}
+}
+
+func TestKeepalive_IncompleteComparisonKeepsWarning(t *testing.T) {
+	f := newFakeKeepalive()
+	l := f.loop()
+	f.mismatches = []string{"Default: uses the account Profile 1 uses"}
+	l.tick(context.Background())
+
+	// The Keychain locks: nothing compared, so nothing is known to match.
+	f.mismatches, f.incomplete = nil, true
+	f.advance(keepaliveAccountsEvery)
+	l.tick(context.Background())
+	if strings.Contains(strings.Join(f.logs, "\n"), "match claude.ai again") {
+		t.Fatalf("an incomplete comparison must not clear the warning, logs = %v", f.logs)
+	}
+
+	// Unlocked again with the same mismatch: no second notification.
+	f.mismatches, f.incomplete = []string{"Default: uses the account Profile 1 uses"}, false
+	f.advance(keepaliveAccountsEvery)
+	l.tick(context.Background())
+	if len(f.notes) != 1 {
+		t.Fatalf("the same unresolved mismatch must notify once, notes = %v", f.notes)
+	}
+}
+
+func TestKeepaliveRunArgs(t *testing.T) {
+	if got := strings.Join(keepaliveRunArgs(defaultConfigDir()), " "); got != "run" {
+		t.Fatalf("default config dir: args = %q, want run", got)
+	}
+	if got := strings.Join(keepaliveRunArgs("/custom/dir"), " "); got != "run --config-dir /custom/dir" {
+		t.Fatalf("custom config dir: args = %q", got)
 	}
 }
