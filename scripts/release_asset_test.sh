@@ -412,8 +412,17 @@ done
 cat > "$stubs/launchctl" <<'STUB'
 #!/usr/bin/env bash
 echo "launchctl $*" >> "$STUB_LOG"
+# Per-job overrides under $STUB_LC_DIR: LABEL.print replaces the print
+# output ("unloaded" means not loaded); LABEL.kickfail fails its kickstart.
+lc_job="${2##*/}"
+[[ "$1" == "kickstart" ]] && lc_job="${3##*/}"
 case "$1" in
   print)
+    if [[ -n "${STUB_LC_DIR:-}" && -f "$STUB_LC_DIR/$lc_job.print" ]]; then
+      [[ "$(cat "$STUB_LC_DIR/$lc_job.print")" != "unloaded" ]] || exit 113
+      cat "$STUB_LC_DIR/$lc_job.print"
+      exit 0
+    fi
     [[ "${STUB_LC_LOADED:-1}" == "1" ]] || exit 113
     printf '%s = {\n\tstate = %s\n' "$2" "${STUB_LC_STATE:-running}"
     [[ -z "${STUB_LC_PROGRAM:-}" ]] || printf '\tprogram = %s\n' "$STUB_LC_PROGRAM"
@@ -424,7 +433,9 @@ case "$1" in
     fi
     printf '}\n'
     ;;
-  kickstart) exit "${STUB_LC_KICK_EXIT:-0}" ;;
+  kickstart)
+    [[ -z "${STUB_LC_DIR:-}" || ! -f "$STUB_LC_DIR/$lc_job.kickfail" ]] || exit 1
+    exit "${STUB_LC_KICK_EXIT:-0}" ;;
 esac
 STUB
 cat > "$flow/pkg/agentcookie_0.0.0_darwin_universal/agentcookie" <<'STUB'
@@ -456,7 +467,7 @@ new_box() {
   local name="$1" r
   shift
   box="$flow/$name"
-  mkdir -p "$box/home/.config/agentcookie" "$box/home/Library/LaunchAgents" "$box/bin"
+  mkdir -p "$box/home/.config/agentcookie" "$box/home/Library/LaunchAgents" "$box/bin" "$box/lc"
   : > "$box/calls.log"
   for r in "$@"; do
     printf 'peer:\n  hostname: peerhost\n' > "$box/home/.config/agentcookie/$r.yaml"
@@ -492,7 +503,7 @@ PLIST
 run_installer() {
   run_exit=0
   env -u AGENTCOOKIE_INSTALL_BETA_LIB_ONLY \
-    HOME="$box/home" PATH="$stubs:$PATH" STUB_LOG="$box/calls.log" \
+    HOME="$box/home" PATH="$stubs:$PATH" STUB_LOG="$box/calls.log" STUB_LC_DIR="$box/lc" \
     bash "$ROOT/scripts/install-beta.sh" --tarball "$flow/ac.tar.gz" --bin-dir "$box/bin" "$@" \
     < /dev/null > "$box/out" 2>&1 || run_exit=$?
 }
@@ -606,6 +617,69 @@ expect_wizard "kickstart fails"
 new_box notrunning source
 STUB_LC_STATE=waiting run_installer --as source --peer peerhost
 expect_wizard "agent not running after restart"
+
+# --- companion jobs restart on the new binary ---
+# lc_loaded LABEL PROGRAM [ARGS...] : the stub reports LABEL loaded and
+# running PROGRAM (with ARGS when it starts through the launcher).
+lc_loaded() {
+  local label="$1" program="$2" a
+  shift 2
+  {
+    printf 'gui/%s/%s = {\n\tstate = running\n\tprogram = %s\n' "$uid" "$label" "$program"
+    if [[ $# -gt 0 ]]; then
+      printf '\targuments = {\n'
+      for a in "$@"; do printf '\t\t%s\n' "$a"; done
+      printf '\t}\n'
+    fi
+    printf '}\n'
+  } > "$box/lc/$label.print"
+}
+kicked() { called "launchctl kickstart -k gui/$uid/dev.agentcookie.$1"; }
+
+# healthy path: direct and wrapped companions on the target restart; a
+# companion on another binary, an unloaded one and a oneshot job do not.
+new_box companions source
+app_launcher="$box/home/Applications/agentcookie.app/Contents/MacOS/agentcookie-launcher"
+lc_loaded dev.agentcookie.source "$box/bin/agentcookie"
+lc_loaded dev.agentcookie.cmux-sync "$box/bin/agentcookie"
+lc_loaded dev.agentcookie.profile-keepalive "$app_launcher" "$app_launcher" "$box/bin/agentcookie" profile-keepalive run
+lc_loaded dev.agentcookie.sink "/old/agentcookie"
+lc_loaded dev.agentcookie.oneshot.keychain "$box/bin/agentcookie"
+write_plist oneshot.keychain "$box/bin/agentcookie"
+run_installer --as source
+expect_healthy "companions" source
+kicked cmux-sync || fail "companions: direct cmux-sync on the target must restart"
+kicked profile-keepalive || fail "companions: wrapped profile-keepalive on the target must restart"
+if kicked sink; then fail "companions: a job on another binary must not restart"; fi
+if kicked oneshot.keychain; then fail "companions: oneshot jobs must not restart"; fi
+
+# an unloaded companion is skipped, not an error.
+new_box companionunloaded source
+lc_loaded dev.agentcookie.source "$box/bin/agentcookie"
+echo unloaded > "$box/lc/dev.agentcookie.profile-keepalive.print"
+run_installer --as source
+expect_healthy "unloaded companion" source
+if kicked profile-keepalive; then fail "unloaded companion: must not kickstart"; fi
+
+# a failed companion restart warns and the healthy install still succeeds.
+new_box companionkickfail source
+lc_loaded dev.agentcookie.source "$box/bin/agentcookie"
+lc_loaded dev.agentcookie.profile-keepalive "$box/bin/agentcookie"
+: > "$box/lc/dev.agentcookie.profile-keepalive.kickfail"
+run_installer --as source
+expect_healthy "companion kickstart fails" source
+said "kickstart -k gui/$uid/dev.agentcookie.profile-keepalive failed" || fail "companion kickstart fails: no warning"
+
+# wizard path: companions on the target restart after the wizard.
+new_box companionwizard source
+lc_loaded dev.agentcookie.source "/old/agentcookie"
+lc_loaded dev.agentcookie.cmux-sync "$box/bin/agentcookie"
+run_installer --as source --peer peerhost
+expect_wizard "companions after wizard"
+if ! awk '/^agentcookie wizard install/ {w=1} /launchctl kickstart -k .*dev\.agentcookie\.cmux-sync/ {exit !w} END {exit !w}' "$box/calls.log" || ! kicked cmux-sync; then
+  fail "companions after wizard: cmux-sync must restart after the wizard"
+fi
+if kicked source; then fail "companions after wizard: the role's own job is the wizard's to restart"; fi
 
 # Role mismatch: --as sink on a source-only box runs the wizard.
 new_box rolemismatch source
