@@ -19,14 +19,12 @@ import (
 )
 
 var (
-	profileSyncFrom    string
-	profileSyncTo      string
-	profileSyncBrowser string
-	profileSyncDryRun  bool
-	profileSyncExclude []string
-	profileSyncVerbose bool
-	// profileSyncAllowSignout acknowledges that closing or writing the target
-	// may sign it out of its device-bound sites.
+	profileSyncFrom         string
+	profileSyncTo           string
+	profileSyncBrowser      string
+	profileSyncDryRun       bool
+	profileSyncExclude      []string
+	profileSyncVerbose      bool
 	profileSyncAllowSignout bool
 )
 
@@ -225,7 +223,6 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// fileHolder is a process that has a file open, as lsof reports it.
 type fileHolder struct {
 	PID     int
 	Command string

@@ -5,9 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -59,16 +60,9 @@ func BoundSessionSites(profileDir string) ([]string, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read device-bound session store: %w", err)
 	}
-	sites := make([]string, 0, len(seen))
-	for s := range seen {
-		sites = append(sites, s)
-	}
-	sort.Strings(sites)
-	return sites, nil
+	return slices.Sorted(maps.Keys(seen)), nil
 }
 
-// boundSessionSite turns a store key ("https://claude.ai") into its host
-// ("claude.ai"), dropping the scheme, any port, and any path.
 func boundSessionSite(key string) string {
 	_, rest, found := strings.Cut(key, "://")
 	if !found {
