@@ -237,7 +237,7 @@ func TestRunProfileSync_DryRunReportsBoundSitesWithoutFlag(t *testing.T) {
 		t.Fatalf("dry run: %v", err)
 	}
 	out := f.out.String()
-	if !strings.Contains(out, "claude.ai") || !strings.Contains(out, "dry-run; nothing written") {
+	if !strings.Contains(out, "claude.ai") || !strings.Contains(out, "a real run needs --allow-signout") || !strings.Contains(out, "dry-run; nothing written") {
 		t.Fatalf("dry run output: %s", out)
 	}
 }
@@ -249,5 +249,24 @@ func TestRunProfileSync_NoBoundSessionsAddsNothing(t *testing.T) {
 	}
 	if strings.Contains(f.out.String(), "sign") {
 		t.Fatalf("unexpected sign-out output: %s", f.out.String())
+	}
+}
+
+func TestRunProfileSync_ReopenedBeforeWriteStops(t *testing.T) {
+	f := newProfileSyncFixture(t)
+	calls := 0
+	profileSyncHolders = func(string) ([]fileHolder, error) {
+		calls++
+		if calls == 1 {
+			return agentcookieHolders, nil
+		}
+		return append([]fileHolder{chromeHolder}, agentcookieHolders...), nil
+	}
+	err := runProfileSync(profileSyncCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "reopened") || !strings.Contains(err.Error(), "pid 15699") {
+		t.Fatalf("want a stop naming the Chrome holder that reopened the target, got %v", err)
+	}
+	if got := f.targetHosts(); len(got) != 0 {
+		t.Fatalf("wrote after the target was reopened: %v", got)
 	}
 }
