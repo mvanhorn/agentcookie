@@ -152,6 +152,9 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("%s; %s. Rerun with --allow-signout once you accept signing back in to them", signout, next)
 	}
+	if signout != "" && !profileSyncDryRun {
+		fmt.Fprintf(cmd.ErrOrStderr(), "agentcookie profile-sync: %s; going ahead because of --allow-signout\n", signout)
+	}
 	if open && !profileSyncDryRun {
 		return fmt.Errorf("profile %q is open (held by %s); close every window of that profile (Chrome may take a few seconds to let go) and run again. If the profile keep-alive is on, it keeps the profile loaded with no window: run `agentcookie profile-keepalive pause --profile %q`, then open a window of that profile and close it (or quit Chrome), then run again", profileSyncTo, formatHolders(holders), profileSyncTo)
 	}
@@ -206,6 +209,11 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 	if holders, err := profileSyncBlockingHolders(dstPath); err != nil || len(holders) > 0 {
 		if err != nil {
 			return fmt.Errorf("check whether profile %q is open: %w", profileSyncTo, err)
+		}
+		// The reopened profile may have gained device-bound logins while we
+		// planned; closing it again could sign it out of them.
+		if risk := describeSignoutRisk(profileSyncTo, browser.ProfileDir(profileSyncTo)); risk != "" && !profileSyncAllowSignout {
+			return fmt.Errorf("profile %q was reopened while profile-sync was planning (held by %s) and %s; nothing written. Rerun with --allow-signout once you accept signing back in to them", profileSyncTo, formatHolders(holders), risk)
 		}
 		return fmt.Errorf("profile %q was reopened while profile-sync was planning (held by %s); nothing written. Close it and run again", profileSyncTo, formatHolders(holders))
 	}

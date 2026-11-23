@@ -270,3 +270,35 @@ func TestRunProfileSync_ReopenedBeforeWriteStops(t *testing.T) {
 		t.Fatalf("wrote after the target was reopened: %v", got)
 	}
 }
+
+func TestRunProfileSync_ReopenedWithNewBoundSessionsIsGated(t *testing.T) {
+	f := newProfileSyncFixture(t)
+	calls := 0
+	profileSyncHolders = func(string) ([]fileHolder, error) {
+		calls++
+		if calls == 1 {
+			return nil, nil
+		}
+		f.boundSessions("https://claude.ai")
+		return []fileHolder{chromeHolder}, nil
+	}
+	err := runProfileSync(profileSyncCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "reopened") || !strings.Contains(err.Error(), "claude.ai") || !strings.Contains(err.Error(), "--allow-signout") {
+		t.Fatalf("want the reopened refusal to carry the new sign-out risk, got %v", err)
+	}
+	if got := f.targetHosts(); len(got) != 0 {
+		t.Fatalf("wrote after the target was reopened: %v", got)
+	}
+}
+
+func TestRunProfileSync_AllowSignoutStillNamesSites(t *testing.T) {
+	f := newProfileSyncFixture(t)
+	f.boundSessions("https://google.com")
+	profileSyncAllowSignout = true
+	if err := runProfileSync(profileSyncCmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if out := f.out.String(); !strings.Contains(out, "google.com") || !strings.Contains(out, "--allow-signout") {
+		t.Fatalf("accepted risk should still be shown: %s", out)
+	}
+}
