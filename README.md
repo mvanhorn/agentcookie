@@ -387,6 +387,8 @@ agentcookie profile-keepalive disable                     # turn off and keep it
 
 While it is on, closing a profile's windows does not cut Claude in Chrome's access to that profile. Only `disable` does. Pausing only stops reloads; to unload a profile the keep-alive already loaded (before `profile-sync`, say), pause it, then open a window of that profile and close it, or quit Chrome.
 
+Closing a profile can sign it out of sites whose login Chrome binds to that profile (device-bound sessions), such as claude.ai and Google. Losing the claude.ai login disconnects Claude in Chrome in that profile until you sign in again. When the target profile has such logins, `profile-sync` lists them and stops before telling you to close it or writing anything. Rerun with `--allow-signout` once you accept signing back in to those sites. `--dry-run` always shows the list. agentcookie's own background jobs reading the cookie store no longer count as the profile being open.
+
 If the Claude side panel says "Claude in Chrome uses a different account", that profile's claude.ai login and its Claude in Chrome sign-in are two different Claude accounts. `agentcookie doctor` names the profile on its "Claude in Chrome accounts" line. To fix it, open that profile, sign out of claude.ai and back in with the account Claude in Chrome uses (or sign Claude in Chrome into the claude.ai account), then click Reload in the side panel.
 
 ### Chrome profile backups
