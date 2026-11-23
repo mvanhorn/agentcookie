@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### profile-sync runs with agentcookie's jobs up, and warns before a profile loses its claude.ai login
+
+- profile-sync refused to run against a closed profile because agentcookie's own `source` and `cmux-sync` jobs keep its cookie store open for reading. Those no longer count as the profile being open. Chrome, or any other program, still blocks a run, and the message now names each one with its PID.
+- Closing a profile (or reloading it after profile-sync writes) can sign it out of sites whose login Chrome binds to that profile, such as claude.ai and Google. Losing claude.ai disconnects Claude in Chrome in that profile until you sign in again. profile-sync now reads the profile's device-bound sessions, lists those sites, and stops before giving close steps or writing until you rerun with `--allow-signout`. `--dry-run` always shows the list. A profile with no such logins sees no change, and a store that can't be read is treated as having them.
+
 ### Hourly Chrome profile backups, and a one-step restore
 
 A Chrome profile can lose its cookies, extensions and sign-in in one go (a force quit at the wrong moment, a reset Preferences file). The profile keep-alive now snapshots every profile hourly into `~/.agentcookie/chrome-backups`: cookies, Preferences, Secure Preferences, bookmarks, autofill, Local State and the extension list, plus History and extension storage once a day. It keeps 24 hours of hourly snapshots and 7 days of dailies. When a profile drops to under half its cookies or extensions between snapshots, it posts a notification and keeps the earlier snapshot for 30 days. New commands: `agentcookie chrome-backup now | list | restore`. Restore refuses while Chrome runs, saves the current state first, and lists Web Store links for extensions Chrome will need to reinstall.

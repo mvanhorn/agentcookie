@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -17,12 +19,13 @@ import (
 )
 
 var (
-	profileSyncFrom    string
-	profileSyncTo      string
-	profileSyncBrowser string
-	profileSyncDryRun  bool
-	profileSyncExclude []string
-	profileSyncVerbose bool
+	profileSyncFrom         string
+	profileSyncTo           string
+	profileSyncBrowser      string
+	profileSyncDryRun       bool
+	profileSyncExclude      []string
+	profileSyncVerbose      bool
+	profileSyncAllowSignout bool
 )
 
 // profileSyncPasswordFor is the Keychain reader seam; tests stub it.
@@ -56,12 +59,20 @@ skipped; sign into Google in each profile directly.
 
 Chrome only reads a profile's cookie store when the profile loads, so the
 target profile must be closed: close its windows first (profile-sync refuses
-while any process still has the target's cookie store open), then run:
+while any process other than agentcookie itself still has the target's cookie
+store open), then run:
 
   agentcookie profile-sync --to "Profile 1"
   agentcookie profile-sync --to "Profile 1" --dry-run    # show the plan only
 
-The source profile can stay open; it is only read.`,
+The source profile can stay open; it is only read.
+
+Closing a profile can sign it out of sites whose login Chrome binds to that
+profile (device-bound sessions), such as claude.ai and Google. Losing the
+claude.ai login disconnects Claude in Chrome in that profile until you sign in
+again. When the target has such sessions, profile-sync lists them and stops
+before giving close instructions or writing; rerun with --allow-signout once
+you accept signing back in to those sites. --dry-run always shows the list.`,
 	RunE: runProfileSync,
 }
 
@@ -72,6 +83,7 @@ func init() {
 	profileSyncCmd.Flags().BoolVar(&profileSyncDryRun, "dry-run", false, "print what would be copied without writing")
 	profileSyncCmd.Flags().StringSliceVar(&profileSyncExclude, "exclude", nil, "extra registrable domains to never copy (repeatable), e.g. --exclude chase.com")
 	profileSyncCmd.Flags().BoolVar(&profileSyncVerbose, "verbose", false, "list skipped target-owned cookies by host")
+	profileSyncCmd.Flags().BoolVar(&profileSyncAllowSignout, "allow-signout", false, "go ahead although the target has device-bound logins (e.g. claude.ai, Google) that closing it can sign out")
 }
 
 func runProfileSync(cmd *cobra.Command, args []string) error {
@@ -121,13 +133,30 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 
 	// Chrome keeps no SQLite lock on Cookies, and a loaded profile would never
 	// pick up rows written under it (and could later overwrite them). A real
-	// run refuses unless no process holds the target's cookie store open.
-	open, err := profileSyncFileInUse(dstPath)
+	// run refuses unless no process other than agentcookie holds the target's
+	// cookie store open; agentcookie's own daemons only read it.
+	holders, err := profileSyncBlockingHolders(dstPath)
 	if err != nil {
 		return fmt.Errorf("check whether profile %q is open: %w", profileSyncTo, err)
 	}
+	open := len(holders) > 0
+
+	// Closing the target, or reloading it after the write, can end the
+	// sessions Chrome binds to that profile. Name them and stop until the
+	// owner accepts signing back in; a dry run only reports them.
+	signout := describeSignoutRisk(profileSyncTo, browser.ProfileDir(profileSyncTo))
+	if signout != "" && !profileSyncDryRun && !profileSyncAllowSignout {
+		next := "nothing was written"
+		if open {
+			next = "no close steps given yet"
+		}
+		return fmt.Errorf("%s; %s. Rerun with --allow-signout once you accept signing back in to them", signout, next)
+	}
+	if signout != "" && !profileSyncDryRun {
+		fmt.Fprintf(cmd.ErrOrStderr(), "agentcookie profile-sync: %s; going ahead because of --allow-signout\n", signout)
+	}
 	if open && !profileSyncDryRun {
-		return fmt.Errorf("profile %q is open in Chrome; close every window of that profile (Chrome may take a few seconds to let go) and run again. If the profile keep-alive is on, it keeps the profile loaded with no window: run `agentcookie profile-keepalive pause --profile %q`, then open a window of that profile and close it (or quit Chrome), then run again", profileSyncTo, profileSyncTo)
+		return fmt.Errorf("profile %q is open (held by %s); close every window of that profile (Chrome may take a few seconds to let go) and run again. If the profile keep-alive is on, it keeps the profile loaded with no window: run `agentcookie profile-keepalive pause --profile %q`, then open a window of that profile and close it (or quit Chrome), then run again", profileSyncTo, formatHolders(holders), profileSyncTo)
 	}
 
 	// skipDBSC=true: device-bound cookies cannot move between profiles.
@@ -164,6 +193,9 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(out, "  kept target's own: %s\n", h)
 		}
 	}
+	if profileSyncDryRun && signout != "" {
+		fmt.Fprintf(out, "agentcookie profile-sync: %s; a real run needs --allow-signout\n", signout)
+	}
 	if profileSyncDryRun || len(plan.write) == 0 {
 		if profileSyncDryRun {
 			fmt.Fprintln(out, "agentcookie profile-sync: dry-run; nothing written")
@@ -174,11 +206,16 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 	// Re-check right before writing: the profile may have been reopened while
 	// we read and planned. This narrows the window to the write itself; the
 	// first check stays so a dry run against a closed profile reads WAL.
-	if open, err := profileSyncFileInUse(dstPath); err != nil || open {
+	if holders, err := profileSyncBlockingHolders(dstPath); err != nil || len(holders) > 0 {
 		if err != nil {
 			return fmt.Errorf("check whether profile %q is open: %w", profileSyncTo, err)
 		}
-		return fmt.Errorf("profile %q was reopened while profile-sync was planning; nothing written. Close it and run again", profileSyncTo)
+		// The reopened profile may have gained device-bound logins while we
+		// planned; closing it again could sign it out of them.
+		if risk := describeSignoutRisk(profileSyncTo, browser.ProfileDir(profileSyncTo)); risk != "" && !profileSyncAllowSignout {
+			return fmt.Errorf("profile %q was reopened while profile-sync was planning (held by %s) and %s; nothing written. Rerun with --allow-signout once you accept signing back in to them", profileSyncTo, formatHolders(holders), risk)
+		}
+		return fmt.Errorf("profile %q was reopened while profile-sync was planning (held by %s); nothing written. Close it and run again", profileSyncTo, formatHolders(holders))
 	}
 	n, err := chrome.WriteCookiesChromeNative(dstPath, plan.write, key)
 	if err != nil {
@@ -194,19 +231,101 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// profileSyncFileInUse reports whether any process has path open, via lsof.
-// lsof exits 1 with no output when nothing has the file open. A seam so tests
-// do not depend on lsof or a running Chrome.
-var profileSyncFileInUse = func(path string) (bool, error) {
-	out, err := exec.Command("lsof", "-t", "--", path).Output()
+type fileHolder struct {
+	PID     int
+	Command string
+}
+
+// profileSyncHolders lists the processes that have path open, via lsof. lsof
+// exits 1 with no output when nothing has the file open. A seam so tests do
+// not depend on lsof or a running Chrome.
+var profileSyncHolders = func(path string) ([]fileHolder, error) {
+	out, err := exec.Command("lsof", "-F", "pc", "--", path).Output()
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && ee.ExitCode() == 1 && len(out) == 0 {
-			return false, nil
+			return nil, nil
 		}
-		return false, err
+		return nil, err
 	}
-	return len(strings.TrimSpace(string(out))) > 0, nil
+	return parseLsofHolders(string(out)), nil
+}
+
+// parseLsofHolders reads lsof -F pc output: a "p<pid>" line starts each
+// process and a "c<command>" line names it; other field lines are ignored.
+func parseLsofHolders(out string) []fileHolder {
+	var holders []fileHolder
+	for line := range strings.SplitSeq(out, "\n") {
+		if line == "" {
+			continue
+		}
+		switch line[0] {
+		case 'p':
+			pid, err := strconv.Atoi(line[1:])
+			if err != nil {
+				continue
+			}
+			holders = append(holders, fileHolder{PID: pid})
+		case 'c':
+			if n := len(holders); n > 0 {
+				holders[n-1].Command = line[1:]
+			}
+		}
+	}
+	return holders
+}
+
+// blockingHolders drops agentcookie's own processes (this run, and the
+// source / cmux-sync daemons that only read the store) and keeps every other
+// holder, so Chrome or any unknown writer still blocks a run.
+func blockingHolders(holders []fileHolder, self int) []fileHolder {
+	var out []fileHolder
+	for _, h := range holders {
+		if h.PID == self || h.Command == "agentcookie" {
+			continue
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
+func profileSyncBlockingHolders(path string) ([]fileHolder, error) {
+	holders, err := profileSyncHolders(path)
+	if err != nil {
+		return nil, err
+	}
+	return blockingHolders(holders, os.Getpid()), nil
+}
+
+func formatHolders(holders []fileHolder) string {
+	parts := make([]string, 0, len(holders))
+	for _, h := range holders {
+		name := h.Command
+		if name == "" {
+			name = "unknown process"
+		}
+		parts = append(parts, fmt.Sprintf("%s (pid %d)", name, h.PID))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// describeSignoutRisk returns a sentence naming the device-bound sites the
+// profile may be signed out of, or "" when it has none. A store that exists
+// but cannot be read is reported as unknown rather than treated as empty, so
+// a read error never lets a run past the sign-out check.
+func describeSignoutRisk(profile, profileDir string) string {
+	sites, err := chrome.BoundSessionSites(profileDir)
+	if err != nil {
+		return fmt.Sprintf("could not read profile %q's device-bound logins (%v), so closing it may sign it out of sites it is logged into", profile, err)
+	}
+	if len(sites) == 0 {
+		return ""
+	}
+	msg := fmt.Sprintf("profile %q has device-bound logins for %s; closing it can sign it out of them, and you will need to sign in again", profile, strings.Join(sites, ", "))
+	if slices.ContainsFunc(sites, func(s string) bool { return hostInDomains(s, []string{"claude.ai"}) }) {
+		msg += ". Losing the claude.ai login disconnects Claude in Chrome in that profile until you sign in again"
+	}
+	return msg
 }
 
 // profileSyncLock takes an exclusive flock on path, failing fast when another
