@@ -164,16 +164,37 @@ func Take(root, dir string, now time.Time, heavy bool, reason string, extraDirs 
 }
 
 // heavyDirs is HeavyDirs followed by the extra dirs CheckExtraDir accepts.
+// Wider folders go first, and a folder inside one already taken is left
+// out because it is copied with it, so asking for both IndexedDB and one
+// site's IndexedDB copies all of IndexedDB.
 func heavyDirs(extra []string) []string {
-	out := append([]string{}, HeavyDirs...)
+	cands := make([]string, 0, len(extra))
 	for _, d := range extra {
-		d = filepath.Clean(d)
-		if slices.Contains(out, d) || CheckExtraDir(d, out[len(HeavyDirs):]) != nil {
+		cands = append(cands, filepath.Clean(d))
+	}
+	sep := string(filepath.Separator)
+	sort.SliceStable(cands, func(i, j int) bool {
+		return strings.Count(cands[i], sep) < strings.Count(cands[j], sep)
+	})
+	out := append([]string{}, HeavyDirs...)
+	for _, d := range cands {
+		if Covered(d, out) || CheckExtraDir(d, out[len(HeavyDirs):]) != nil {
 			continue
 		}
 		out = append(out, d)
 	}
 	return out
+}
+
+// Covered reports whether folder d is one of dirs or inside one of them.
+func Covered(d string, dirs []string) bool {
+	d = filepath.Clean(d)
+	for _, c := range dirs {
+		if d == c || strings.HasPrefix(d, c+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // builtinPaths are the profile paths every snapshot already keeps.
@@ -216,7 +237,7 @@ func overlaps(a, b string) bool {
 // profile folder. A missing component ends the check.
 func noSymlinks(base, rel string) error {
 	cur := base
-	for _, part := range strings.Split(filepath.Clean(rel), string(filepath.Separator)) {
+	for part := range strings.SplitSeq(filepath.Clean(rel), string(filepath.Separator)) {
 		cur = filepath.Join(cur, part)
 		info, err := os.Lstat(cur)
 		if errors.Is(err, fs.ErrNotExist) {

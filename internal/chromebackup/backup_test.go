@@ -487,8 +487,8 @@ func TestExtraDirsSnapshotAndRestoreNestedIndexedDB(t *testing.T) {
 }
 
 func TestHeavyDirsRejectsPathsOutsideTheProfile(t *testing.T) {
-	got := heavyDirs([]string{"../Default/Cookies", "/etc", ".", "IndexedDB/x/", "IndexedDB/x", "Network", "IndexedDB", "Local Extension Settings/abc"})
-	want := append(append([]string{}, HeavyDirs...), "IndexedDB/x")
+	got := heavyDirs([]string{"../Default/Cookies", "/etc", ".", "IndexedDB/x/", "IndexedDB/x", "Network", "Local Extension Settings/abc", "File System"})
+	want := append(append([]string{}, HeavyDirs...), "File System", "IndexedDB/x")
 	if !slices.Equal(got, want) {
 		t.Fatalf("heavyDirs = %v, want %v", got, want)
 	}
@@ -554,5 +554,18 @@ func TestExtraDirsDoNotFollowSymlinks(t *testing.T) {
 	}
 	if b, err := os.ReadFile(filepath.Join(outside, "x", "secret")); err != nil || string(b) != "s" {
 		t.Fatalf("outside folder touched: %q, %v", b, err)
+	}
+}
+
+// A restore safety copy asked for one site's folder and, from the snapshot
+// being restored, all of IndexedDB keeps the wider folder.
+func TestHeavyDirsKeepsTheWiderFolder(t *testing.T) {
+	got := heavyDirs([]string{"IndexedDB/https_a_0.indexeddb.leveldb", "IndexedDB"})
+	want := append(append([]string{}, HeavyDirs...), "IndexedDB")
+	if !slices.Equal(got, want) {
+		t.Fatalf("heavyDirs = %v, want %v", got, want)
+	}
+	if !Covered("IndexedDB/https_a_0.indexeddb.leveldb", got) || Covered("IndexedDBx", got) {
+		t.Fatal("Covered is wrong")
 	}
 }

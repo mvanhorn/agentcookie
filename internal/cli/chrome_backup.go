@@ -176,7 +176,9 @@ it; a folder the restore created where there was none stays.`,
 			return fmt.Errorf("chrome-backup restore: could not save the current state first, so nothing was restored: %w", err)
 		}
 		_ = chromebackup.MarkKeep(safety)
-		if bad := incompleteFor(safety, chromeBackupProfiles); len(bad) > 0 {
+		bad := incompleteFor(safety, chromeBackupProfiles)
+		bad = append(bad, uncoveredFolders(pick, safety, chromeBackupProfiles)...)
+		if len(bad) > 0 {
 			return fmt.Errorf("chrome-backup restore: the current state could not be fully saved, so nothing was restored:\n  %s", strings.Join(bad, "\n  "))
 		}
 		fmt.Printf("saved the current state as %s\n", safety.ID)
@@ -239,6 +241,25 @@ func appendSnapshotDirs(extra []string, s chromebackup.Snapshot) []string {
 		for _, f := range p.Files {
 			if d, ok := strings.CutSuffix(f, "/"); ok && !slices.Contains(out, d) {
 				out = append(out, d)
+			}
+		}
+	}
+	return out
+}
+
+// uncoveredFolders lists the folders a restore of pick would replace that
+// the safety snapshot was not asked to copy, so undo could not put them
+// back.
+func uncoveredFolders(pick, safety chromebackup.Snapshot, profiles []string) []string {
+	saved := append(append([]string{}, chromebackup.HeavyDirs...), safety.ExtraDirs...)
+	var out []string
+	for _, p := range pick.Profiles {
+		if len(profiles) > 0 && !slices.Contains(profiles, p.Dir) {
+			continue
+		}
+		for _, f := range p.Files {
+			if d, ok := strings.CutSuffix(f, "/"); ok && !chromebackup.Covered(d, saved) {
+				out = append(out, fmt.Sprintf("%s: %s was not saved", p.Dir, d))
 			}
 		}
 	}
