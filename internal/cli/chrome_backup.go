@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -176,7 +177,7 @@ it; a folder the restore created where there was none stays.`,
 			return fmt.Errorf("chrome-backup restore: could not save the current state first, so nothing was restored: %w", err)
 		}
 		_ = chromebackup.MarkKeep(safety)
-		bad := incompleteFor(safety, chromeBackupProfiles)
+		bad := incompleteFor(safety, pick, chromeBackupProfiles)
 		bad = append(bad, uncoveredFolders(pick, safety, chromeBackupProfiles)...)
 		if len(bad) > 0 {
 			return fmt.Errorf("chrome-backup restore: the current state could not be fully saved, so nothing was restored:\n  %s", strings.Join(bad, "\n  "))
@@ -280,23 +281,45 @@ func requireChromeQuit() error {
 	return nil
 }
 
-// incompleteFor lists the copy errors in a snapshot for the profiles a
-// restore will replace (all when profiles is empty).
-func incompleteFor(s chromebackup.Snapshot, profiles []string) []string {
-	want := map[string]bool{}
-	for _, p := range profiles {
-		want[p] = true
+// incompleteFor lists the copy errors in the safety snapshot s that touch
+// what restoring pick would replace, for the given profiles (all when
+// empty). An error on a file or folder pick leaves alone does not count;
+// any other error (the profile folder itself) does.
+func incompleteFor(s, pick chromebackup.Snapshot, profiles []string) []string {
+	replaced := map[string][]string{}
+	for _, p := range pick.Profiles {
+		for _, f := range p.Files {
+			replaced[p.Dir] = append(replaced[p.Dir], strings.TrimSuffix(f, "/"))
+		}
 	}
+	known := append(append(append([]string{}, chromebackup.LightFiles...), filepath.Join("Network", "Cookies")), chromebackup.HeavyFiles...)
+	known = append(append(known, chromebackup.HeavyDirs...), s.ExtraDirs...)
 	var out []string
 	for _, p := range s.Profiles {
-		if len(want) > 0 && !want[p.Dir] {
+		if len(profiles) > 0 && !slices.Contains(profiles, p.Dir) {
 			continue
 		}
 		for _, e := range p.Errors {
+			if path, _, ok := strings.Cut(e, ": "); ok && slices.Contains(known, path) && !touches(path, replaced[p.Dir]) {
+				continue
+			}
 			out = append(out, p.Dir+": "+e)
 		}
 	}
 	return out
+}
+
+// touches reports whether path is one of paths, inside one, or holds one.
+func touches(path string, paths []string) bool {
+	path = filepath.Clean(path)
+	sep := string(filepath.Separator)
+	for _, q := range paths {
+		q = filepath.Clean(q)
+		if path == q || strings.HasPrefix(path, q+sep) || strings.HasPrefix(q, path+sep) {
+			return true
+		}
+	}
+	return false
 }
 
 // missingExtensions lists Web Store links for extensions the snapshot had
