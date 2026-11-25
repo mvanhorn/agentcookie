@@ -723,7 +723,7 @@ func restoreTreeGzip(src, dst string) error {
 		return err
 	}
 	// A fresh staging folder, so no existing sibling is ever removed.
-	tmp, err := os.MkdirTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".agentcookie-restore-")
+	tmp, err := os.MkdirTemp(filepath.Dir(dst), ".agentcookie-restore-")
 	if err != nil {
 		return err
 	}
