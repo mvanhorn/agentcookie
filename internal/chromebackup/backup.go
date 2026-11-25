@@ -163,19 +163,73 @@ func Take(root, dir string, now time.Time, heavy bool, reason string, extraDirs 
 	return Snapshot{Manifest: m, Path: final}, nil
 }
 
-// heavyDirs is HeavyDirs followed by the extra dirs not already in it.
+// heavyDirs is HeavyDirs followed by the extra dirs CheckExtraDir accepts.
 func heavyDirs(extra []string) []string {
 	out := append([]string{}, HeavyDirs...)
 	for _, d := range extra {
 		d = filepath.Clean(d)
-		if d == "." || filepath.IsAbs(d) || d == ".." || strings.HasPrefix(d, ".."+string(filepath.Separator)) {
-			continue // the config loader rejects these; never leave the profile
+		if slices.Contains(out, d) || CheckExtraDir(d, out[len(HeavyDirs):]) != nil {
+			continue
 		}
-		if !slices.Contains(out, d) {
-			out = append(out, d)
-		}
+		out = append(out, d)
 	}
 	return out
+}
+
+// builtinPaths are the profile paths every snapshot already keeps.
+func builtinPaths() []string {
+	out := append([]string{}, LightFiles...)
+	out = append(out, filepath.Join("Network", "Cookies"))
+	out = append(out, HeavyFiles...)
+	return append(out, HeavyDirs...)
+}
+
+// CheckExtraDir reports why d, a folder relative to the profile folder,
+// cannot be an extra dir: it leaves the profile folder, or it holds, sits
+// inside or equals a path a snapshot already keeps or one of others (the
+// extra dirs accepted before it). A folder already in HeavyDirs is fine;
+// it is copied once.
+func CheckExtraDir(d string, others []string) error {
+	d = filepath.Clean(d)
+	if d == "." || filepath.IsAbs(d) || d == ".." || strings.HasPrefix(d, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%q is not inside the profile folder", d)
+	}
+	if slices.Contains(HeavyDirs, d) {
+		return nil
+	}
+	for _, b := range append(builtinPaths(), others...) {
+		if overlaps(d, b) {
+			return fmt.Errorf("%q overlaps %q, which the backup already keeps", d, b)
+		}
+	}
+	return nil
+}
+
+// overlaps reports whether a and b are the same path or one holds the other.
+func overlaps(a, b string) bool {
+	sep := string(filepath.Separator)
+	return a == b || strings.HasPrefix(b, a+sep) || strings.HasPrefix(a, b+sep)
+}
+
+// noSymlinks fails when a folder on the way from base to base/rel,
+// including rel itself, is a symlink, so a copy or restore never leaves the
+// profile folder. A missing component ends the check.
+func noSymlinks(base, rel string) error {
+	cur := base
+	for _, part := range strings.Split(filepath.Clean(rel), string(filepath.Separator)) {
+		cur = filepath.Join(cur, part)
+		info, err := os.Lstat(cur)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a symlink; not followed", cur)
+		}
+	}
+	return nil
 }
 
 func snapshotProfile(root, snap, dir, name string, heavy bool, dirs []string) Profile {
@@ -228,7 +282,10 @@ func snapshotProfile(root, snap, dir, name string, heavy bool, dirs []string) Pr
 	}
 	if heavy {
 		for _, d := range dirs {
-			err := copyTreeGzip(filepath.Join(src, d), filepath.Join(dst, d))
+			err := noSymlinks(src, d)
+			if err == nil {
+				err = copyTreeGzip(filepath.Join(src, d), filepath.Join(dst, d))
+			}
 			switch {
 			case errors.Is(err, fs.ErrNotExist):
 			case err != nil:

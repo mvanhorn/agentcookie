@@ -402,7 +402,7 @@ agentcookie chrome-backup restore    # quit Chrome first; restores the last snap
 agentcookie chrome-backup restore --from 20261117T202837Z --profile "Profile 1"
 ```
 
-To keep folders Chrome may delete by itself, such as a web game's IndexedDB save data (Chrome clears site storage when the disk gets low), list them relative to the profile folder in `~/.config/agentcookie/chrome-backup.yaml`. The daily full snapshot and `chrome-backup now` copy them from every profile that has them. Restoring a snapshot that `chrome-backup list` marks `full` puts them back:
+To keep folders Chrome may delete by itself, such as a web game's IndexedDB save data (Chrome clears site storage when the disk gets low), list them relative to the profile folder in `~/.config/agentcookie/chrome-backup.yaml`. The daily full snapshot and `chrome-backup now` copy them from every profile that has them. Restore puts a folder back only from a snapshot that holds it for that profile: pick one with `--from` whose `manifest.json` lists the folder under that profile's `files`. A folder can't overlap the files the backup already keeps, and a symlinked path is skipped:
 
 ```yaml
 extra_dirs:

@@ -204,6 +204,9 @@ func Restore(s Snapshot, root string, profiles []string, localState bool) ([]str
 		for _, f := range p.Files {
 			src := filepath.Join(s.Path, p.Dir)
 			if d, ok := strings.CutSuffix(f, "/"); ok {
+				if err := noSymlinks(dst, d); err != nil {
+					return done, fmt.Errorf("%s/%s: %w", p.Dir, d, err)
+				}
 				if err := restoreTreeGzip(filepath.Join(src, d), filepath.Join(dst, d)); err != nil {
 					return done, fmt.Errorf("%s/%s: %w", p.Dir, d, err)
 				}

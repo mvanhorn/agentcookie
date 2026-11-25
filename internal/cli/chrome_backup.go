@@ -125,7 +125,12 @@ current state, so a restore can itself be undone.
 
 Without --from it uses the last snapshot before a detected wipe, or the
 newest one when no wipe was detected. Without --profile it restores every
-profile in the snapshot.`,
+profile in the snapshot.
+
+A folder from chrome-backup.yaml's extra_dirs comes back only from a
+snapshot that holds it for that profile (see the manifest.json in the
+snapshot folder). Undoing a restore puts back folders that existed before
+it; a folder the restore created where there was none stays.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		root := chromepaths.ChromeProfileRoot()
 		if err := requireChromeQuit(); err != nil {
@@ -202,13 +207,27 @@ func init() {
 	chromeBackupCmd.AddCommand(chromeBackupNowCmd, chromeBackupListCmd, chromeBackupRestoreCmd)
 }
 
-// chromeBackupExtraDirs reads extra_dirs from chrome-backup.yaml.
+// chromeBackupExtraDirs reads extra_dirs from chrome-backup.yaml. An entry
+// that overlaps what the backup already keeps, or another entry, is an
+// error; the dirs accepted so far are still returned.
 func chromeBackupExtraDirs() ([]string, error) {
 	cfg, err := config.LoadChromeBackup(common.ConfigDir)
 	if err != nil {
 		return nil, err
 	}
-	return cfg.ExtraDirs, nil
+	var ok []string
+	var bad []string
+	for _, d := range cfg.ExtraDirs {
+		if err := chromebackup.CheckExtraDir(d, ok); err != nil {
+			bad = append(bad, err.Error())
+			continue
+		}
+		ok = append(ok, d)
+	}
+	if len(bad) > 0 {
+		return ok, fmt.Errorf("%s: extra_dirs: %s", config.ChromeBackupPath(common.ConfigDir), strings.Join(bad, "; "))
+	}
+	return ok, nil
 }
 
 // appendSnapshotDirs adds the folders the snapshot being restored holds,
@@ -314,7 +333,7 @@ func keepaliveBackup(logf func(string, ...any), notifyf func(title, body string)
 		// bad file still lets the regular snapshot run.
 		extra, err := chromeBackupExtraDirs()
 		if err != nil {
-			logf("chrome backup: %v; extra_dirs skipped", err)
+			logf("chrome backup: %v; those extra_dirs skipped", err)
 		}
 		res, err := chromebackup.RunDue(root, chromebackup.Dir(), now, extra)
 		if err != nil {

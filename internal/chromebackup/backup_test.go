@@ -487,9 +487,72 @@ func TestExtraDirsSnapshotAndRestoreNestedIndexedDB(t *testing.T) {
 }
 
 func TestHeavyDirsRejectsPathsOutsideTheProfile(t *testing.T) {
-	got := heavyDirs([]string{"../Default/Cookies", "/etc", ".", "IndexedDB/x/", "IndexedDB/x"})
+	got := heavyDirs([]string{"../Default/Cookies", "/etc", ".", "IndexedDB/x/", "IndexedDB/x", "Network", "IndexedDB", "Local Extension Settings/abc"})
 	want := append(append([]string{}, HeavyDirs...), "IndexedDB/x")
 	if !slices.Equal(got, want) {
 		t.Fatalf("heavyDirs = %v, want %v", got, want)
+	}
+}
+
+func TestCheckExtraDirRejectsOverlaps(t *testing.T) {
+	for _, d := range []string{"Network", "Network/Cookies", "Bookmarks", "Local Extension Settings/abc", "IndexedDB", "IndexedDB/a/b"} {
+		if err := CheckExtraDir(d, []string{"IndexedDB/a"}); err == nil {
+			t.Errorf("%q: want an overlap error", d)
+		}
+	}
+	for _, d := range []string{"Local Extension Settings", "IndexedDB/b", "File System"} {
+		if err := CheckExtraDir(d, []string{"IndexedDB/a"}); err != nil {
+			t.Errorf("%q: %v", d, err)
+		}
+	}
+}
+
+func TestExtraDirsDoNotFollowSymlinks(t *testing.T) {
+	root, dir := newRoot(t), t.TempDir()
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "x", "secret"), []byte("s"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "Profile 1", "IndexedDB")); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Take(root, dir, t0, true, "", []string{"IndexedDB/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := s.Profiles[1]
+	if slices.Contains(p.Files, "IndexedDB/x/") || len(p.Errors) != 1 || !strings.Contains(p.Errors[0], "symlink") {
+		t.Fatalf("Profile 1 = %+v", p)
+	}
+	if _, err := os.Stat(filepath.Join(s.Path, "Profile 1", "IndexedDB", "x", "secret.gz")); !os.IsNotExist(err) {
+		t.Fatalf("followed the symlink: %v", err)
+	}
+
+	// Restore refuses to write through a symlink that appeared later.
+	real := filepath.Join(root, "Default", "IndexedDB", "x")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "000003.log"), []byte("d"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := Take(root, dir, t0.Add(time.Hour), true, "", []string{"IndexedDB/x"})
+	if err != nil || !slices.Contains(s2.Profiles[0].Files, "IndexedDB/x/") {
+		t.Fatalf("Default = %+v, %v", s2.Profiles[0], err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "Default", "IndexedDB")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "Default", "IndexedDB")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(s2, root, []string{"Default"}, false); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("restore through symlink: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(outside, "x", "secret")); err != nil || string(b) != "s" {
+		t.Fatalf("outside folder touched: %q, %v", b, err)
 	}
 }
