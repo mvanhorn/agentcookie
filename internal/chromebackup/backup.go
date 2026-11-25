@@ -684,7 +684,7 @@ func gunzipFile(src, dst string) error {
 }
 
 // copyTreeGzip copies a folder, gzipping each regular file. LevelDB's LOCK
-// file is skipped.
+// file is skipped. A symlink inside the folder is an error.
 func copyTreeGzip(src, dst string) error {
 	if _, err := os.Stat(src); err != nil {
 		return err
@@ -700,6 +700,11 @@ func copyTreeGzip(src, dst string) error {
 		target := filepath.Join(dst, rel)
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o700)
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			// Not followed, and not silently dropped: a restore replaces
+			// the whole folder, so a skipped link would be lost.
+			return fmt.Errorf("%s is a symlink; not copied", path)
 		}
 		if !d.Type().IsRegular() || d.Name() == "LOCK" {
 			return nil

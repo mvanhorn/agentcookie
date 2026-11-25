@@ -569,3 +569,24 @@ func TestHeavyDirsKeepsTheWiderFolder(t *testing.T) {
 		t.Fatal("Covered is wrong")
 	}
 }
+
+// A link inside a copied folder fails that folder, so a restore's safety
+// copy is incomplete and the restore refuses instead of losing the link.
+func TestSymlinkInsideAFolderIsAnError(t *testing.T) {
+	root, dir := newRoot(t), t.TempDir()
+	idb := filepath.Join(root, "Profile 1", "IndexedDB")
+	if err := os.MkdirAll(filepath.Join(idb, "a"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(idb, "site")); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Take(root, dir, t0, true, "", []string{"IndexedDB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := s.Profiles[1]
+	if slices.Contains(p.Files, "IndexedDB/") || len(p.Errors) != 1 || !strings.Contains(p.Errors[0], "symlink") {
+		t.Fatalf("Profile 1 = %+v", p)
+	}
+}
