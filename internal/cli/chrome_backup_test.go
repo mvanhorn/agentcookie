@@ -47,3 +47,13 @@ func TestUncoveredFolders(t *testing.T) {
 		t.Fatalf("uncovered = %v", got)
 	}
 }
+
+func TestErrorPathPicksTheLongestKnownPath(t *testing.T) {
+	known := []string{"Saves", "Saves: Current", "History"}
+	if got := errorPath("Saves: Current: disk full", known); got != "Saves: Current" {
+		t.Fatalf("errorPath = %q", got)
+	}
+	if got := errorPath("mkdir /x: denied", known); got != "" {
+		t.Fatalf("errorPath = %q", got)
+	}
+}

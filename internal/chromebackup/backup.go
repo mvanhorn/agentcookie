@@ -719,9 +719,15 @@ func copyTreeGzip(src, dst string) error {
 // restoreTreeGzip replaces dst with the gunzipped copy of a tree written by
 // copyTreeGzip.
 func restoreTreeGzip(src, dst string) error {
-	tmp := dst + ".agentcookie-restore"
-	_ = os.RemoveAll(tmp)
-	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return err
+	}
+	// A fresh staging folder, so no existing sibling is ever removed.
+	tmp, err := os.MkdirTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".agentcookie-restore-")
+	if err != nil {
+		return err
+	}
+	err = filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}

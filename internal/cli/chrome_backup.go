@@ -300,13 +300,26 @@ func incompleteFor(s, pick chromebackup.Snapshot, profiles []string) []string {
 			continue
 		}
 		for _, e := range p.Errors {
-			if path, _, ok := strings.Cut(e, ": "); ok && slices.Contains(known, path) && !touches(path, replaced[p.Dir]) {
+			if path := errorPath(e, known); path != "" && !touches(path, replaced[p.Dir]) {
 				continue
 			}
 			out = append(out, p.Dir+": "+e)
 		}
 	}
 	return out
+}
+
+// errorPath returns the known path a snapshot error is about: the longest
+// one the error starts with followed by ": ", since a folder name can hold
+// ": " itself. It returns "" when none matches.
+func errorPath(e string, known []string) string {
+	best := ""
+	for _, k := range known {
+		if strings.HasPrefix(e, k+": ") && len(k) > len(best) {
+			best = k
+		}
+	}
+	return best
 }
 
 // touches reports whether path is one of paths, inside one, or holds one.

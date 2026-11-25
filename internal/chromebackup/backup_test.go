@@ -481,8 +481,8 @@ func TestExtraDirsSnapshotAndRestoreNestedIndexedDB(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(src, "LOCK")); !os.IsNotExist(err) {
 		t.Fatalf("LOCK restored: %v", err)
 	}
-	if _, err := os.Stat(src + ".agentcookie-restore"); !os.IsNotExist(err) {
-		t.Fatalf("restore temp left behind: %v", err)
+	if left, _ := filepath.Glob(filepath.Join(p1, "IndexedDB", ".*agentcookie-restore*")); len(left) != 0 {
+		t.Fatalf("restore temp left behind: %v", left)
 	}
 }
 
