@@ -138,7 +138,8 @@ type Result struct {
 
 // RunDue takes a snapshot if one is due, compares it with the previous
 // one, pins the previous one when the comparison shows a wipe, and prunes.
-func RunDue(root, dir string, now time.Time) (Result, error) {
+// extraDirs go into a heavy snapshot (see Take).
+func RunDue(root, dir string, now time.Time, extraDirs []string) (Result, error) {
 	snaps, err := List(dir)
 	if err != nil {
 		return Result{}, err
@@ -147,7 +148,7 @@ func RunDue(root, dir string, now time.Time) (Result, error) {
 	if !due {
 		return Result{}, nil
 	}
-	s, err := Take(root, dir, now, heavy, "scheduled")
+	s, err := Take(root, dir, now, heavy, "scheduled", extraDirs)
 	if err != nil {
 		return Result{}, err
 	}

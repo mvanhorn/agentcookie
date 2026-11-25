@@ -14,6 +14,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chromebackup"
 	"github.com/mvanhorn/agentcookie/internal/chromectl"
 	"github.com/mvanhorn/agentcookie/internal/chromepaths"
+	"github.com/mvanhorn/agentcookie/internal/config"
 )
 
 var (
@@ -35,15 +36,29 @@ The profile keep-alive takes a snapshot every hour while it runs. When a
 profile loses most of its cookies or extensions between two snapshots, it
 says so in a notification and keeps the snapshot from before.
 
+To also keep folders Chrome can delete on its own, such as a site's
+IndexedDB (Chrome clears site storage when the disk runs low), list them,
+relative to the profile folder, in ~/.config/agentcookie/chrome-backup.yaml:
+
+  extra_dirs:
+    - IndexedDB/https_example.com_0.indexeddb.leveldb
+
+The daily full snapshot copies them from every profile that has them, and
+restore puts them back.
+
 Snapshots never leave this Mac. The last 24 hours are kept, then one a day
 for 7 days.`,
 }
 
 var chromeBackupNowCmd = &cobra.Command{
 	Use:   "now",
-	Short: "Take a snapshot now (with History and extension storage)",
+	Short: "Take a full snapshot now (with History, extension storage and extra_dirs)",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		s, err := chromebackup.Take(chromepaths.ChromeProfileRoot(), chromebackup.Dir(), time.Now(), true, "manual")
+		extra, err := chromeBackupExtraDirs()
+		if err != nil {
+			return err
+		}
+		s, err := chromebackup.Take(chromepaths.ChromeProfileRoot(), chromebackup.Dir(), time.Now(), true, "manual", extra)
 		if err != nil {
 			return err
 		}
@@ -146,7 +161,12 @@ profile in the snapshot.`,
 				fmt.Printf("warning: snapshot %s, %s: %s\n", pick.ID, p.Dir, n)
 			}
 		}
-		safety, err := chromebackup.Take(root, dir, time.Now(), true, "before restore")
+		// Save the extra dirs too: a restore replaces any the snapshot has.
+		extra, err := chromeBackupExtraDirs()
+		if err != nil {
+			return fmt.Errorf("chrome-backup restore: %w", err)
+		}
+		safety, err := chromebackup.Take(root, dir, time.Now(), true, "before restore", appendSnapshotDirs(extra, pick))
 		if err != nil {
 			return fmt.Errorf("chrome-backup restore: could not save the current state first, so nothing was restored: %w", err)
 		}
@@ -180,6 +200,30 @@ func init() {
 	chromeBackupRestoreCmd.Flags().StringSliceVar(&chromeBackupProfiles, "profile", nil, `profile folder to restore, e.g. "Profile 1" (repeatable; default all)`)
 	chromeBackupRestoreCmd.Flags().BoolVar(&chromeBackupLocalState, "local-state", false, "also restore Local State (profile names); always on without --profile")
 	chromeBackupCmd.AddCommand(chromeBackupNowCmd, chromeBackupListCmd, chromeBackupRestoreCmd)
+}
+
+// chromeBackupExtraDirs reads extra_dirs from chrome-backup.yaml.
+func chromeBackupExtraDirs() ([]string, error) {
+	cfg, err := config.LoadChromeBackup(common.ConfigDir)
+	if err != nil {
+		return nil, err
+	}
+	return cfg.ExtraDirs, nil
+}
+
+// appendSnapshotDirs adds the folders the snapshot being restored holds,
+// so the state saved before a restore covers everything it replaces, even
+// a folder since dropped from chrome-backup.yaml.
+func appendSnapshotDirs(extra []string, s chromebackup.Snapshot) []string {
+	out := append([]string{}, extra...)
+	for _, p := range s.Profiles {
+		for _, f := range p.Files {
+			if d, ok := strings.CutSuffix(f, "/"); ok && !slices.Contains(out, d) {
+				out = append(out, d)
+			}
+		}
+	}
+	return out
 }
 
 // requireChromeQuit fails unless no Chrome browser process exists. It
@@ -266,7 +310,13 @@ func humanBytes(n int64) string {
 func keepaliveBackup(logf func(string, ...any), notifyf func(title, body string)) func(now time.Time) {
 	root := chromepaths.ChromeProfileRoot()
 	return func(now time.Time) {
-		res, err := chromebackup.RunDue(root, chromebackup.Dir(), now)
+		// Read each run so an edit applies without restarting the job. A
+		// bad file still lets the regular snapshot run.
+		extra, err := chromeBackupExtraDirs()
+		if err != nil {
+			logf("chrome backup: %v; extra_dirs skipped", err)
+		}
+		res, err := chromebackup.RunDue(root, chromebackup.Dir(), now, extra)
 		if err != nil {
 			logf("chrome backup: %v", err)
 			return

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -76,12 +77,16 @@ type Profile struct {
 
 // Manifest describes one snapshot.
 type Manifest struct {
-	ID       string    `json:"id"`
-	Taken    time.Time `json:"taken"`
-	Heavy    bool      `json:"heavy"`
-	Reason   string    `json:"reason,omitempty"`
-	Keep     bool      `json:"keep,omitempty"`
-	Profiles []Profile `json:"profiles"`
+	ID     string    `json:"id"`
+	Taken  time.Time `json:"taken"`
+	Heavy  bool      `json:"heavy"`
+	Reason string    `json:"reason,omitempty"`
+	Keep   bool      `json:"keep,omitempty"`
+	// ExtraDirs are the owner's extra profile folders (chrome-backup.yaml)
+	// a heavy snapshot was asked to copy. Each profile's Files lists the
+	// ones it had.
+	ExtraDirs []string  `json:"extra_dirs,omitempty"`
+	Profiles  []Profile `json:"profiles"`
 }
 
 // Snapshot is a manifest and the folder it came from.
@@ -97,14 +102,15 @@ func Dir() string {
 }
 
 // Take writes a snapshot of every profile under root into dir. heavy adds
-// HeavyFiles and HeavyDirs. A file that fails to copy is recorded in the
+// HeavyFiles, HeavyDirs and extraDirs (folders relative to each profile
+// folder, such as one site's IndexedDB; a light snapshot ignores them). A file that fails to copy is recorded in the
 // profile's Errors and does not stop the others. A root with no profiles
 // still gets a snapshot, so a vanished profile shows up as a wipe and a
 // restore can still save the current state first.
 //
 // Snapshots are serialized across processes with a lock file in dir, and
 // each one stages in its own folder.
-func Take(root, dir string, now time.Time, heavy bool, reason string) (Snapshot, error) {
+func Take(root, dir string, now time.Time, heavy bool, reason string, extraDirs []string) (Snapshot, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Snapshot{}, fmt.Errorf("chromebackup: %w", err)
 	}
@@ -134,12 +140,17 @@ func Take(root, dir string, now time.Time, heavy bool, reason string) (Snapshot,
 		return Snapshot{}, fmt.Errorf("chromebackup: %w", err)
 	}
 	m := Manifest{ID: id, Taken: at, Heavy: heavy, Reason: reason, Profiles: []Profile{}}
+	dirs := []string{}
+	if heavy {
+		dirs = heavyDirs(extraDirs)
+		m.ExtraDirs = dirs[len(HeavyDirs):]
+	}
 	if err := gzipFile(filepath.Join(root, "Local State"), filepath.Join(tmp, "Local State.gz")); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		_ = os.RemoveAll(tmp)
 		return Snapshot{}, fmt.Errorf("chromebackup: Local State: %w", err)
 	}
 	for _, p := range profiles {
-		m.Profiles = append(m.Profiles, snapshotProfile(root, tmp, p, names[p], heavy))
+		m.Profiles = append(m.Profiles, snapshotProfile(root, tmp, p, names[p], heavy, dirs))
 	}
 	if err := writeManifest(tmp, m); err != nil {
 		_ = os.RemoveAll(tmp)
@@ -152,7 +163,22 @@ func Take(root, dir string, now time.Time, heavy bool, reason string) (Snapshot,
 	return Snapshot{Manifest: m, Path: final}, nil
 }
 
-func snapshotProfile(root, snap, dir, name string, heavy bool) Profile {
+// heavyDirs is HeavyDirs followed by the extra dirs not already in it.
+func heavyDirs(extra []string) []string {
+	out := append([]string{}, HeavyDirs...)
+	for _, d := range extra {
+		d = filepath.Clean(d)
+		if d == "." || filepath.IsAbs(d) || d == ".." || strings.HasPrefix(d, ".."+string(filepath.Separator)) {
+			continue // the config loader rejects these; never leave the profile
+		}
+		if !slices.Contains(out, d) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+func snapshotProfile(root, snap, dir, name string, heavy bool, dirs []string) Profile {
 	p := Profile{Dir: dir, Name: name, Cookies: -1}
 	src := filepath.Join(root, dir)
 	dst := filepath.Join(snap, dir)
@@ -201,7 +227,7 @@ func snapshotProfile(root, snap, dir, name string, heavy bool) Profile {
 		}
 	}
 	if heavy {
-		for _, d := range HeavyDirs {
+		for _, d := range dirs {
 			err := copyTreeGzip(filepath.Join(src, d), filepath.Join(dst, d))
 			switch {
 			case errors.Is(err, fs.ErrNotExist):
