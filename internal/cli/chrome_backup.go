@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -14,6 +15,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chromebackup"
 	"github.com/mvanhorn/agentcookie/internal/chromectl"
 	"github.com/mvanhorn/agentcookie/internal/chromepaths"
+	"github.com/mvanhorn/agentcookie/internal/config"
 )
 
 var (
@@ -35,15 +37,29 @@ The profile keep-alive takes a snapshot every hour while it runs. When a
 profile loses most of its cookies or extensions between two snapshots, it
 says so in a notification and keeps the snapshot from before.
 
+To also keep folders Chrome can delete on its own, such as a site's
+IndexedDB (Chrome clears site storage when the disk runs low), list them,
+relative to the profile folder, in ~/.config/agentcookie/chrome-backup.yaml:
+
+  extra_dirs:
+    - IndexedDB/https_example.com_0.indexeddb.leveldb
+
+The daily full snapshot copies them from every profile that has them, and
+restore puts them back.
+
 Snapshots never leave this Mac. The last 24 hours are kept, then one a day
 for 7 days.`,
 }
 
 var chromeBackupNowCmd = &cobra.Command{
 	Use:   "now",
-	Short: "Take a snapshot now (with History and extension storage)",
+	Short: "Take a full snapshot now (with History, extension storage and extra_dirs)",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		s, err := chromebackup.Take(chromepaths.ChromeProfileRoot(), chromebackup.Dir(), time.Now(), true, "manual")
+		extra, err := chromeBackupExtraDirs()
+		if err != nil {
+			return err
+		}
+		s, err := chromebackup.Take(chromepaths.ChromeProfileRoot(), chromebackup.Dir(), time.Now(), true, "manual", extra)
 		if err != nil {
 			return err
 		}
@@ -110,7 +126,12 @@ current state, so a restore can itself be undone.
 
 Without --from it uses the last snapshot before a detected wipe, or the
 newest one when no wipe was detected. Without --profile it restores every
-profile in the snapshot.`,
+profile in the snapshot.
+
+A folder from chrome-backup.yaml's extra_dirs comes back only from a
+snapshot that holds it for that profile (see the manifest.json in the
+snapshot folder). Undoing a restore puts back folders that existed before
+it; a folder the restore created where there was none stays.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		root := chromepaths.ChromeProfileRoot()
 		if err := requireChromeQuit(); err != nil {
@@ -146,12 +167,19 @@ profile in the snapshot.`,
 				fmt.Printf("warning: snapshot %s, %s: %s\n", pick.ID, p.Dir, n)
 			}
 		}
-		safety, err := chromebackup.Take(root, dir, time.Now(), true, "before restore")
+		// Save the extra dirs too: a restore replaces any the snapshot has.
+		extra, err := chromeBackupExtraDirs()
+		if err != nil {
+			return fmt.Errorf("chrome-backup restore: %w", err)
+		}
+		safety, err := chromebackup.Take(root, dir, time.Now(), true, "before restore", appendSnapshotDirs(extra, pick))
 		if err != nil {
 			return fmt.Errorf("chrome-backup restore: could not save the current state first, so nothing was restored: %w", err)
 		}
 		_ = chromebackup.MarkKeep(safety)
-		if bad := incompleteFor(safety, chromeBackupProfiles); len(bad) > 0 {
+		bad := incompleteFor(safety, pick, chromeBackupProfiles)
+		bad = append(bad, uncoveredFolders(pick, safety, chromeBackupProfiles)...)
+		if len(bad) > 0 {
 			return fmt.Errorf("chrome-backup restore: the current state could not be fully saved, so nothing was restored:\n  %s", strings.Join(bad, "\n  "))
 		}
 		fmt.Printf("saved the current state as %s\n", safety.ID)
@@ -182,6 +210,63 @@ func init() {
 	chromeBackupCmd.AddCommand(chromeBackupNowCmd, chromeBackupListCmd, chromeBackupRestoreCmd)
 }
 
+// chromeBackupExtraDirs reads extra_dirs from chrome-backup.yaml. An entry
+// that overlaps what the backup already keeps, or another entry, is an
+// error; the dirs accepted so far are still returned.
+func chromeBackupExtraDirs() ([]string, error) {
+	cfg, err := config.LoadChromeBackup(common.ConfigDir)
+	if err != nil {
+		return nil, err
+	}
+	var ok []string
+	var bad []string
+	for _, d := range cfg.ExtraDirs {
+		if err := chromebackup.CheckExtraDir(d, ok); err != nil {
+			bad = append(bad, err.Error())
+			continue
+		}
+		ok = append(ok, d)
+	}
+	if len(bad) > 0 {
+		return ok, fmt.Errorf("%s: extra_dirs: %s", config.ChromeBackupPath(common.ConfigDir), strings.Join(bad, "; "))
+	}
+	return ok, nil
+}
+
+// appendSnapshotDirs adds the folders the snapshot being restored holds,
+// so the state saved before a restore covers everything it replaces, even
+// a folder since dropped from chrome-backup.yaml.
+func appendSnapshotDirs(extra []string, s chromebackup.Snapshot) []string {
+	out := append([]string{}, extra...)
+	for _, p := range s.Profiles {
+		for _, f := range p.Files {
+			if d, ok := strings.CutSuffix(f, "/"); ok && !slices.Contains(out, d) {
+				out = append(out, d)
+			}
+		}
+	}
+	return out
+}
+
+// uncoveredFolders lists the folders a restore of pick would replace that
+// the safety snapshot was not asked to copy, so undo could not put them
+// back.
+func uncoveredFolders(pick, safety chromebackup.Snapshot, profiles []string) []string {
+	saved := append(append([]string{}, chromebackup.HeavyDirs...), safety.ExtraDirs...)
+	var out []string
+	for _, p := range pick.Profiles {
+		if len(profiles) > 0 && !slices.Contains(profiles, p.Dir) {
+			continue
+		}
+		for _, f := range p.Files {
+			if d, ok := strings.CutSuffix(f, "/"); ok && !chromebackup.Covered(d, saved) {
+				out = append(out, fmt.Sprintf("%s: %s was not saved", p.Dir, d))
+			}
+		}
+	}
+	return out
+}
+
 // requireChromeQuit fails unless no Chrome browser process exists. It
 // checks the process list, not Chrome's lock: a stopped or hung Chrome
 // still has the files open.
@@ -196,23 +281,58 @@ func requireChromeQuit() error {
 	return nil
 }
 
-// incompleteFor lists the copy errors in a snapshot for the profiles a
-// restore will replace (all when profiles is empty).
-func incompleteFor(s chromebackup.Snapshot, profiles []string) []string {
-	want := map[string]bool{}
-	for _, p := range profiles {
-		want[p] = true
+// incompleteFor lists the copy errors in the safety snapshot s that touch
+// what restoring pick would replace, for the given profiles (all when
+// empty). An error on a file or folder pick leaves alone does not count;
+// any other error (the profile folder itself) does.
+func incompleteFor(s, pick chromebackup.Snapshot, profiles []string) []string {
+	replaced := map[string][]string{}
+	for _, p := range pick.Profiles {
+		for _, f := range p.Files {
+			replaced[p.Dir] = append(replaced[p.Dir], strings.TrimSuffix(f, "/"))
+		}
 	}
+	known := append(append(append([]string{}, chromebackup.LightFiles...), filepath.Join("Network", "Cookies")), chromebackup.HeavyFiles...)
+	known = append(append(known, chromebackup.HeavyDirs...), s.ExtraDirs...)
 	var out []string
 	for _, p := range s.Profiles {
-		if len(want) > 0 && !want[p.Dir] {
+		if len(profiles) > 0 && !slices.Contains(profiles, p.Dir) {
 			continue
 		}
 		for _, e := range p.Errors {
+			if path := errorPath(e, known); path != "" && !touches(path, replaced[p.Dir]) {
+				continue
+			}
 			out = append(out, p.Dir+": "+e)
 		}
 	}
 	return out
+}
+
+// errorPath returns the known path a snapshot error is about: the longest
+// one the error starts with followed by ": ", since a folder name can hold
+// ": " itself. It returns "" when none matches.
+func errorPath(e string, known []string) string {
+	best := ""
+	for _, k := range known {
+		if strings.HasPrefix(e, k+": ") && len(k) > len(best) {
+			best = k
+		}
+	}
+	return best
+}
+
+// touches reports whether path is one of paths, inside one, or holds one.
+func touches(path string, paths []string) bool {
+	path = filepath.Clean(path)
+	sep := string(filepath.Separator)
+	for _, q := range paths {
+		q = filepath.Clean(q)
+		if path == q || strings.HasPrefix(path, q+sep) || strings.HasPrefix(q, path+sep) {
+			return true
+		}
+	}
+	return false
 }
 
 // missingExtensions lists Web Store links for extensions the snapshot had
@@ -266,7 +386,13 @@ func humanBytes(n int64) string {
 func keepaliveBackup(logf func(string, ...any), notifyf func(title, body string)) func(now time.Time) {
 	root := chromepaths.ChromeProfileRoot()
 	return func(now time.Time) {
-		res, err := chromebackup.RunDue(root, chromebackup.Dir(), now)
+		// Read each run so an edit applies without restarting the job. A
+		// bad file still lets the regular snapshot run.
+		extra, err := chromeBackupExtraDirs()
+		if err != nil {
+			logf("chrome backup: %v; those extra_dirs skipped", err)
+		}
+		res, err := chromebackup.RunDue(root, chromebackup.Dir(), now, extra)
 		if err != nil {
 			logf("chrome backup: %v", err)
 			return

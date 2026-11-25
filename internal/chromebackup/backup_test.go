@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -84,7 +85,7 @@ var t0 = time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
 
 func TestTakeRecordsCountsAndFiles(t *testing.T) {
 	root, dir := newRoot(t), t.TempDir()
-	s, err := Take(root, dir, t0, true, "manual")
+	s, err := Take(root, dir, t0, true, "manual", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +114,7 @@ func TestTakeRecordsCountsAndFiles(t *testing.T) {
 
 func TestLightSnapshotSkipsHeavyParts(t *testing.T) {
 	root, dir := newRoot(t), t.TempDir()
-	s, err := Take(root, dir, t0, false, "")
+	s, err := Take(root, dir, t0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +127,7 @@ func TestLightSnapshotSkipsHeavyParts(t *testing.T) {
 
 func TestRestorePutsWipedProfileBack(t *testing.T) {
 	root, dir := newRoot(t), t.TempDir()
-	s, err := Take(root, dir, t0, true, "")
+	s, err := Take(root, dir, t0, true, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +166,7 @@ func TestRestorePutsWipedProfileBack(t *testing.T) {
 
 func TestRestoreUnknownProfileFails(t *testing.T) {
 	root, dir := newRoot(t), t.TempDir()
-	s, _ := Take(root, dir, t0, false, "")
+	s, _ := Take(root, dir, t0, false, "", nil)
 	if _, err := Restore(s, root, []string{"Profile 7"}, false); err == nil {
 		t.Fatal("want an error for a profile the snapshot lacks")
 	}
@@ -213,14 +214,14 @@ func TestPlan(t *testing.T) {
 
 func TestRunDuePinsTheGoodSnapshotOnWipe(t *testing.T) {
 	root, dir := newRoot(t), t.TempDir()
-	if _, err := RunDue(root, dir, t0); err != nil {
+	if _, err := RunDue(root, dir, t0, nil); err != nil {
 		t.Fatal(err)
 	}
-	if res, _ := RunDue(root, dir, t0.Add(10*time.Minute)); res.Taken != nil {
+	if res, _ := RunDue(root, dir, t0.Add(10*time.Minute), nil); res.Taken != nil {
 		t.Fatal("took a snapshot before one was due")
 	}
 	writeCookies(t, filepath.Join(root, "Default", "Cookies"), 2)
-	res, err := RunDue(root, dir, t0.Add(time.Hour))
+	res, err := RunDue(root, dir, t0.Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +308,7 @@ func TestNetworkCookiesPathIsBackedUpAndRestored(t *testing.T) {
 	}
 	_ = os.Remove(filepath.Join(p1, "Cookies"))
 	writeCookies(t, filepath.Join(p1, "Network", "Cookies"), 400)
-	s, err := Take(root, dir, t0, false, "")
+	s, err := Take(root, dir, t0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,11 +327,11 @@ func TestNetworkCookiesPathIsBackedUpAndRestored(t *testing.T) {
 
 func TestDeletedCookieDatabaseCountsAsAWipe(t *testing.T) {
 	root, dir := newRoot(t), t.TempDir()
-	if _, err := RunDue(root, dir, t0); err != nil {
+	if _, err := RunDue(root, dir, t0, nil); err != nil {
 		t.Fatal(err)
 	}
 	_ = os.Remove(filepath.Join(root, "Default", "Cookies"))
-	res, err := RunDue(root, dir, t0.Add(time.Hour))
+	res, err := RunDue(root, dir, t0.Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,13 +342,13 @@ func TestDeletedCookieDatabaseCountsAsAWipe(t *testing.T) {
 
 func TestVanishedProfilesStillSnapshotAndRestore(t *testing.T) {
 	root, dir := newRoot(t), t.TempDir()
-	if _, err := RunDue(root, dir, t0); err != nil {
+	if _, err := RunDue(root, dir, t0, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range []string{"Default", "Profile 1"} {
 		_ = os.RemoveAll(filepath.Join(root, p))
 	}
-	res, err := RunDue(root, dir, t0.Add(time.Hour))
+	res, err := RunDue(root, dir, t0.Add(time.Hour), nil)
 	if err != nil {
 		t.Fatalf("snapshot of an empty Chrome folder failed: %v", err)
 	}
@@ -367,7 +368,7 @@ func TestSnapshotsInTheSameSecondGetTheirOwnFolders(t *testing.T) {
 	done := make(chan Snapshot, 2)
 	for range 2 {
 		go func() {
-			s, err := Take(root, dir, t0, false, "")
+			s, err := Take(root, dir, t0, false, "", nil)
 			if err != nil {
 				t.Error(err)
 			}
@@ -396,7 +397,7 @@ func TestDamagedDatabaseIsStoredAsIs(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("not a database at all"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Take(root, dir, t0, false, "")
+	s, err := Take(root, dir, t0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,5 +413,180 @@ func TestDamagedDatabaseIsStoredAsIs(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(bad); string(b) != "not a database at all" {
 		t.Fatalf("restored %q", b)
+	}
+}
+
+// TestExtraDirsSnapshotAndRestoreNestedIndexedDB covers an owner-listed
+// IndexedDB origin folder: copied only into a heavy snapshot, recorded in
+// the manifest, and put back by Restore after Chrome deletes it.
+func TestExtraDirsSnapshotAndRestoreNestedIndexedDB(t *testing.T) {
+	root, dir := newRoot(t), t.TempDir()
+	const idb = "IndexedDB/https_play.example.com_0.indexeddb.leveldb"
+	p1 := filepath.Join(root, "Profile 1")
+	src := filepath.Join(p1, idb)
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"000005.ldb": "league", "MANIFEST-000001": "m", "CURRENT": "MANIFEST-000001\n", "LOCK": "", "sub/blob": "nested"} {
+		if err := os.WriteFile(filepath.Join(src, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	extra := []string{idb, "Local Extension Settings"}
+
+	light, err := Take(root, dir, t0, false, "", extra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(light.ExtraDirs) != 0 || slices.Contains(light.Profiles[1].Files, idb+"/") {
+		t.Fatalf("light snapshot copied extra dirs: %+v", light.Manifest)
+	}
+
+	s, err := Take(root, dir, t0.Add(time.Hour), true, "", extra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(s.ExtraDirs, ","); got != idb {
+		t.Fatalf("manifest extra_dirs = %q, want %q (HeavyDirs entry deduped)", got, idb)
+	}
+	if loaded, err := Load(s.Path); err != nil || strings.Join(loaded.ExtraDirs, ",") != idb {
+		t.Fatalf("reloaded manifest = %+v, %v", loaded.Manifest, err)
+	}
+	if !slices.Contains(s.Profiles[1].Files, idb+"/") {
+		t.Fatalf("Profile 1 files = %v", s.Profiles[1].Files)
+	}
+	if slices.Contains(s.Profiles[0].Files, idb+"/") || len(s.Profiles[0].Errors) != 0 {
+		t.Fatalf("Default lacks the folder but got %+v", s.Profiles[0])
+	}
+	if _, err := os.Stat(filepath.Join(s.Path, "Profile 1", idb, "LOCK.gz")); !os.IsNotExist(err) {
+		t.Fatalf("LOCK was copied: %v", err)
+	}
+
+	// Chrome's quota eviction deletes the whole origin folder.
+	if err := os.RemoveAll(filepath.Join(p1, "IndexedDB")); err != nil {
+		t.Fatal(err)
+	}
+	done, err := Restore(s, root, []string{"Profile 1"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(done, filepath.Join("Profile 1", idb+"/")) {
+		t.Fatalf("restored %v", done)
+	}
+	for name, want := range map[string]string{"000005.ldb": "league", "CURRENT": "MANIFEST-000001\n", "sub/blob": "nested"} {
+		if b, err := os.ReadFile(filepath.Join(src, name)); err != nil || string(b) != want {
+			t.Fatalf("%s = %q, %v", name, b, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(src, "LOCK")); !os.IsNotExist(err) {
+		t.Fatalf("LOCK restored: %v", err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(p1, "IndexedDB", ".*agentcookie-restore*")); len(left) != 0 {
+		t.Fatalf("restore temp left behind: %v", left)
+	}
+}
+
+func TestHeavyDirsRejectsPathsOutsideTheProfile(t *testing.T) {
+	got := heavyDirs([]string{"../Default/Cookies", "/etc", ".", "IndexedDB/x/", "IndexedDB/x", "Network", "Local Extension Settings/abc", "File System"})
+	want := append(append([]string{}, HeavyDirs...), "File System", "IndexedDB/x")
+	if !slices.Equal(got, want) {
+		t.Fatalf("heavyDirs = %v, want %v", got, want)
+	}
+}
+
+func TestCheckExtraDirRejectsOverlaps(t *testing.T) {
+	for _, d := range []string{"Network", "Network/Cookies", "Bookmarks", "Local Extension Settings/abc", "IndexedDB", "IndexedDB/a/b"} {
+		if err := CheckExtraDir(d, []string{"IndexedDB/a"}); err == nil {
+			t.Errorf("%q: want an overlap error", d)
+		}
+	}
+	for _, d := range []string{"Local Extension Settings", "IndexedDB/b", "File System"} {
+		if err := CheckExtraDir(d, []string{"IndexedDB/a"}); err != nil {
+			t.Errorf("%q: %v", d, err)
+		}
+	}
+}
+
+func TestExtraDirsDoNotFollowSymlinks(t *testing.T) {
+	root, dir := newRoot(t), t.TempDir()
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "x", "secret"), []byte("s"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "Profile 1", "IndexedDB")); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Take(root, dir, t0, true, "", []string{"IndexedDB/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := s.Profiles[1]
+	if slices.Contains(p.Files, "IndexedDB/x/") || len(p.Errors) != 1 || !strings.Contains(p.Errors[0], "symlink") {
+		t.Fatalf("Profile 1 = %+v", p)
+	}
+	if _, err := os.Stat(filepath.Join(s.Path, "Profile 1", "IndexedDB", "x", "secret.gz")); !os.IsNotExist(err) {
+		t.Fatalf("followed the symlink: %v", err)
+	}
+
+	// Restore refuses to write through a symlink that appeared later.
+	real := filepath.Join(root, "Default", "IndexedDB", "x")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "000003.log"), []byte("d"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := Take(root, dir, t0.Add(time.Hour), true, "", []string{"IndexedDB/x"})
+	if err != nil || !slices.Contains(s2.Profiles[0].Files, "IndexedDB/x/") {
+		t.Fatalf("Default = %+v, %v", s2.Profiles[0], err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "Default", "IndexedDB")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "Default", "IndexedDB")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(s2, root, []string{"Default"}, false); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("restore through symlink: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(outside, "x", "secret")); err != nil || string(b) != "s" {
+		t.Fatalf("outside folder touched: %q, %v", b, err)
+	}
+}
+
+// A restore safety copy asked for one site's folder and, from the snapshot
+// being restored, all of IndexedDB keeps the wider folder.
+func TestHeavyDirsKeepsTheWiderFolder(t *testing.T) {
+	got := heavyDirs([]string{"IndexedDB/https_a_0.indexeddb.leveldb", "IndexedDB"})
+	want := append(append([]string{}, HeavyDirs...), "IndexedDB")
+	if !slices.Equal(got, want) {
+		t.Fatalf("heavyDirs = %v, want %v", got, want)
+	}
+	if !Covered("IndexedDB/https_a_0.indexeddb.leveldb", got) || Covered("IndexedDBx", got) {
+		t.Fatal("Covered is wrong")
+	}
+}
+
+// A link inside a copied folder fails that folder, so a restore's safety
+// copy is incomplete and the restore refuses instead of losing the link.
+func TestSymlinkInsideAFolderIsAnError(t *testing.T) {
+	root, dir := newRoot(t), t.TempDir()
+	idb := filepath.Join(root, "Profile 1", "IndexedDB")
+	if err := os.MkdirAll(filepath.Join(idb, "a"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(idb, "site")); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Take(root, dir, t0, true, "", []string{"IndexedDB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := s.Profiles[1]
+	if slices.Contains(p.Files, "IndexedDB/") || len(p.Errors) != 1 || !strings.Contains(p.Errors[0], "symlink") {
+		t.Fatalf("Profile 1 = %+v", p)
 	}
 }

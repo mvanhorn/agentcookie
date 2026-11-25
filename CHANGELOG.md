@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Chrome backups can keep a site's IndexedDB
+
+Chrome deletes a site's stored data, such as a browser game's saves in IndexedDB, when free disk space runs low. A new `~/.config/agentcookie/chrome-backup.yaml` lists extra folders, relative to each profile folder, under `extra_dirs`. The daily full snapshot and `agentcookie chrome-backup now` copy them, the manifest records them, and `chrome-backup restore` puts them back (still only with Chrome quit). Without the file nothing changes.
+
 ### profile-sync runs with agentcookie's jobs up, and warns before a profile loses its claude.ai login
 
 - profile-sync refused to run against a closed profile because agentcookie's own `source` and `cmux-sync` jobs keep its cookie store open for reading. Those no longer count as the profile being open. Chrome, or any other program, still blocks a run, and the message now names each one with its PID.

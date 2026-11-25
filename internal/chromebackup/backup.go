@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -76,12 +77,16 @@ type Profile struct {
 
 // Manifest describes one snapshot.
 type Manifest struct {
-	ID       string    `json:"id"`
-	Taken    time.Time `json:"taken"`
-	Heavy    bool      `json:"heavy"`
-	Reason   string    `json:"reason,omitempty"`
-	Keep     bool      `json:"keep,omitempty"`
-	Profiles []Profile `json:"profiles"`
+	ID     string    `json:"id"`
+	Taken  time.Time `json:"taken"`
+	Heavy  bool      `json:"heavy"`
+	Reason string    `json:"reason,omitempty"`
+	Keep   bool      `json:"keep,omitempty"`
+	// ExtraDirs are the owner's extra profile folders (chrome-backup.yaml)
+	// a heavy snapshot was asked to copy. Each profile's Files lists the
+	// ones it had.
+	ExtraDirs []string  `json:"extra_dirs,omitempty"`
+	Profiles  []Profile `json:"profiles"`
 }
 
 // Snapshot is a manifest and the folder it came from.
@@ -97,14 +102,15 @@ func Dir() string {
 }
 
 // Take writes a snapshot of every profile under root into dir. heavy adds
-// HeavyFiles and HeavyDirs. A file that fails to copy is recorded in the
+// HeavyFiles, HeavyDirs and extraDirs (folders relative to each profile
+// folder, such as one site's IndexedDB; a light snapshot ignores them). A file that fails to copy is recorded in the
 // profile's Errors and does not stop the others. A root with no profiles
 // still gets a snapshot, so a vanished profile shows up as a wipe and a
 // restore can still save the current state first.
 //
 // Snapshots are serialized across processes with a lock file in dir, and
 // each one stages in its own folder.
-func Take(root, dir string, now time.Time, heavy bool, reason string) (Snapshot, error) {
+func Take(root, dir string, now time.Time, heavy bool, reason string, extraDirs []string) (Snapshot, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Snapshot{}, fmt.Errorf("chromebackup: %w", err)
 	}
@@ -134,12 +140,17 @@ func Take(root, dir string, now time.Time, heavy bool, reason string) (Snapshot,
 		return Snapshot{}, fmt.Errorf("chromebackup: %w", err)
 	}
 	m := Manifest{ID: id, Taken: at, Heavy: heavy, Reason: reason, Profiles: []Profile{}}
+	dirs := []string{}
+	if heavy {
+		dirs = heavyDirs(extraDirs)
+		m.ExtraDirs = dirs[len(HeavyDirs):]
+	}
 	if err := gzipFile(filepath.Join(root, "Local State"), filepath.Join(tmp, "Local State.gz")); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		_ = os.RemoveAll(tmp)
 		return Snapshot{}, fmt.Errorf("chromebackup: Local State: %w", err)
 	}
 	for _, p := range profiles {
-		m.Profiles = append(m.Profiles, snapshotProfile(root, tmp, p, names[p], heavy))
+		m.Profiles = append(m.Profiles, snapshotProfile(root, tmp, p, names[p], heavy, dirs))
 	}
 	if err := writeManifest(tmp, m); err != nil {
 		_ = os.RemoveAll(tmp)
@@ -152,7 +163,97 @@ func Take(root, dir string, now time.Time, heavy bool, reason string) (Snapshot,
 	return Snapshot{Manifest: m, Path: final}, nil
 }
 
-func snapshotProfile(root, snap, dir, name string, heavy bool) Profile {
+// heavyDirs is HeavyDirs followed by the extra dirs CheckExtraDir accepts.
+// Wider folders go first, and a folder inside one already taken is left
+// out because it is copied with it, so asking for both IndexedDB and one
+// site's IndexedDB copies all of IndexedDB.
+func heavyDirs(extra []string) []string {
+	cands := make([]string, 0, len(extra))
+	for _, d := range extra {
+		cands = append(cands, filepath.Clean(d))
+	}
+	sep := string(filepath.Separator)
+	sort.SliceStable(cands, func(i, j int) bool {
+		return strings.Count(cands[i], sep) < strings.Count(cands[j], sep)
+	})
+	out := append([]string{}, HeavyDirs...)
+	for _, d := range cands {
+		if Covered(d, out) || CheckExtraDir(d, out[len(HeavyDirs):]) != nil {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// Covered reports whether folder d is one of dirs or inside one of them.
+func Covered(d string, dirs []string) bool {
+	d = filepath.Clean(d)
+	for _, c := range dirs {
+		if d == c || strings.HasPrefix(d, c+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// builtinPaths are the profile paths every snapshot already keeps.
+func builtinPaths() []string {
+	out := append([]string{}, LightFiles...)
+	out = append(out, filepath.Join("Network", "Cookies"))
+	out = append(out, HeavyFiles...)
+	return append(out, HeavyDirs...)
+}
+
+// CheckExtraDir reports why d, a folder relative to the profile folder,
+// cannot be an extra dir: it leaves the profile folder, or it holds, sits
+// inside or equals a path a snapshot already keeps or one of others (the
+// extra dirs accepted before it). A folder already in HeavyDirs is fine;
+// it is copied once.
+func CheckExtraDir(d string, others []string) error {
+	d = filepath.Clean(d)
+	if d == "." || filepath.IsAbs(d) || d == ".." || strings.HasPrefix(d, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%q is not inside the profile folder", d)
+	}
+	if slices.Contains(HeavyDirs, d) {
+		return nil
+	}
+	for _, b := range append(builtinPaths(), others...) {
+		if overlaps(d, b) {
+			return fmt.Errorf("%q overlaps %q, which the backup already keeps", d, b)
+		}
+	}
+	return nil
+}
+
+// overlaps reports whether a and b are the same path or one holds the other.
+func overlaps(a, b string) bool {
+	sep := string(filepath.Separator)
+	return a == b || strings.HasPrefix(b, a+sep) || strings.HasPrefix(a, b+sep)
+}
+
+// noSymlinks fails when a folder on the way from base to base/rel,
+// including rel itself, is a symlink, so a copy or restore never leaves the
+// profile folder. A missing component ends the check.
+func noSymlinks(base, rel string) error {
+	cur := base
+	for part := range strings.SplitSeq(filepath.Clean(rel), string(filepath.Separator)) {
+		cur = filepath.Join(cur, part)
+		info, err := os.Lstat(cur)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a symlink; not followed", cur)
+		}
+	}
+	return nil
+}
+
+func snapshotProfile(root, snap, dir, name string, heavy bool, dirs []string) Profile {
 	p := Profile{Dir: dir, Name: name, Cookies: -1}
 	src := filepath.Join(root, dir)
 	dst := filepath.Join(snap, dir)
@@ -201,8 +302,11 @@ func snapshotProfile(root, snap, dir, name string, heavy bool) Profile {
 		}
 	}
 	if heavy {
-		for _, d := range HeavyDirs {
-			err := copyTreeGzip(filepath.Join(src, d), filepath.Join(dst, d))
+		for _, d := range dirs {
+			err := noSymlinks(src, d)
+			if err == nil {
+				err = copyTreeGzip(filepath.Join(src, d), filepath.Join(dst, d))
+			}
 			switch {
 			case errors.Is(err, fs.ErrNotExist):
 			case err != nil:
@@ -580,7 +684,7 @@ func gunzipFile(src, dst string) error {
 }
 
 // copyTreeGzip copies a folder, gzipping each regular file. LevelDB's LOCK
-// file is skipped.
+// file is skipped. A symlink inside the folder is an error.
 func copyTreeGzip(src, dst string) error {
 	if _, err := os.Stat(src); err != nil {
 		return err
@@ -597,6 +701,11 @@ func copyTreeGzip(src, dst string) error {
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o700)
 		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			// Not followed, and not silently dropped: a restore replaces
+			// the whole folder, so a skipped link would be lost.
+			return fmt.Errorf("%s is a symlink; not copied", path)
+		}
 		if !d.Type().IsRegular() || d.Name() == "LOCK" {
 			return nil
 		}
@@ -610,9 +719,15 @@ func copyTreeGzip(src, dst string) error {
 // restoreTreeGzip replaces dst with the gunzipped copy of a tree written by
 // copyTreeGzip.
 func restoreTreeGzip(src, dst string) error {
-	tmp := dst + ".agentcookie-restore"
-	_ = os.RemoveAll(tmp)
-	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return err
+	}
+	// A fresh staging folder, so no existing sibling is ever removed.
+	tmp, err := os.MkdirTemp(filepath.Dir(dst), ".agentcookie-restore-")
+	if err != nil {
+		return err
+	}
+	err = filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
