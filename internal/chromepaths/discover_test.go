@@ -520,6 +520,11 @@ func TestBrowserForRoot(t *testing.T) {
 		{"/Users/me/Library/Application Support/some-media-app", "chrome"}, // "media" contains "dia"
 		{"/Users/dia/Library/Application Support/Google/Chrome", "chrome"},
 		{"/tmp/dia/chrome-profile", "chrome"},
+		{"/Users/me/Library/Application Support/com.ardia.browser/Chromium", "ardia"},
+		{"/Users/me/Library/Application Support/com.ardia.browser/Chromium/Default", "ardia"},
+		{"/Users/me/Library/Application Support/Chromium", "chromium"},
+		{"/Users/ardia/Library/Application Support/Google/Chrome", "chrome"},
+		{"/tmp/ardia/chrome-profile", "chrome"},
 	}
 
 	for _, tc := range cases {
@@ -587,5 +592,64 @@ func TestDiscoverForConfig_CustomRootUnderDiaDirStaysChrome(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected chrome/Default store under a dia/ parent, got %+v", result.Stores)
+	}
+}
+
+// TestDiscoverForConfig_ArdiaRootKeepsArdiaIdentity guards against the trailing
+// "Chromium" segment in com.ardia.browser/Chromium being misclassified as
+// generic "chromium", which would look up Chromium Safe Storage instead of
+// Ardia Safe Storage.
+func TestDiscoverForConfig_ArdiaRootKeepsArdiaIdentity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	ardiaRoot := filepath.Join(home, "Library", "Application Support", "com.ardia.browser", "Chromium")
+	if err := os.MkdirAll(ardiaRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	makeProfile(t, ardiaRoot, "Default", true, false)
+
+	result := DiscoverForConfig(ardiaRoot)
+
+	found := false
+	for _, s := range result.Stores {
+		if s.Profile == "Default" && s.Browser == "ardia" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected ardia/Default store from Ardia root, got %+v", result.Stores)
+	}
+}
+
+// TestDiscoverForConfig_CustomRootUnderArdiaDirStaysChrome ensures an
+// unrelated Chrome profile path that merely contains an "ardia" folder stays
+// classified as chrome.
+func TestDiscoverForConfig_CustomRootUnderArdiaDirStaysChrome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	chromeRoot := filepath.Join(home, "ardia", "agent-chrome")
+	if err := os.MkdirAll(chromeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	makeProfile(t, chromeRoot, "Default", true, false)
+
+	result := DiscoverForConfig(chromeRoot)
+	found := false
+	for _, s := range result.Stores {
+		if s.CookiesPath == "" {
+			continue
+		}
+		if s.Browser != "chrome" {
+			t.Errorf("store under %q labeled %q, want chrome", chromeRoot, s.Browser)
+		}
+		if s.Profile == "Default" && s.Browser == "chrome" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected chrome/Default store under an ardia/ parent, got %+v", result.Stores)
 	}
 }

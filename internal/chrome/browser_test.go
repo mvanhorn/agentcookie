@@ -77,6 +77,7 @@ func TestLookupBrowserStandardForks(t *testing.T) {
 		{"edge", []string{"Microsoft Edge"}, "Microsoft Edge", "Microsoft Edge Safe Storage"},
 		{"arc", []string{"Arc", "User Data"}, "Arc", "Arc Safe Storage"},
 		{"dia", []string{"Dia", "User Data"}, "Dia", "Dia Safe Storage"},
+		{"ardia", []string{"com.ardia.browser", "Chromium"}, "Ardia", "Ardia Safe Storage"},
 	}
 	for _, tc := range cases {
 		b, err := LookupBrowser(tc.name)

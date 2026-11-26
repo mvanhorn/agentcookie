@@ -375,7 +375,7 @@ agentcookie services refresh
 
 ## Claude in Chrome on two Claude accounts
 
-Claude in Chrome pairs only with the Claude account it is signed into. To use it from two Claude Code accounts, give each account its own Chrome profile with the extension signed in, and copy your logins across once with `agentcookie profile-sync --to "Profile 1"`.
+Claude in Chrome pairs only with the Claude account it is signed into. To use it from two Claude Code accounts, give each account its own Chrome profile with the extension signed in, and copy your logins across once with `agentcookie profile-sync --to "Profile 1"`. You can also copy logins one-way between different Chromium browsers on the same Mac (for example Chrome to Ardia) with `--from-browser chrome --to-browser ardia --from "Profile 1" --to Default`.
 
 Chrome unloads a profile when its last window closes, which disconnects Claude in Chrome for that account. `agentcookie profile-keepalive` keeps every such profile loaded inside the running Chrome, with no window and no focus change. The wizard turns it on when two or more profiles are signed into different Claude accounts. Otherwise it does nothing. Like the other background jobs, it runs through `agentcookie.app`, which needs the signed release build (`install-beta.sh`): macOS blocks an unsigned build run by launchd from reading Chrome's profile folder.
 

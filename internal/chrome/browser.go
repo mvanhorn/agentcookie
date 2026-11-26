@@ -106,6 +106,16 @@ var browserRegistry = map[string]Browser{
 		KeychainAccount: "Dia",
 		KeychainService: "Dia Safe Storage",
 	},
+	// Ardia (Chromium 158 macOS browser, bundle com.ardia.browser) stores its
+	// Chromium profiles under ~/Library/Application Support/com.ardia.browser/Chromium/<profile>/
+	// and uses a standard file-based "Ardia Safe Storage" keychain item in
+	// login.keychain-db (verified live on Ardia v0.2.48 on 2026-11-25).
+	"ardia": {
+		Name:            "ardia",
+		SupportDir:      []string{"com.ardia.browser", "Chromium"},
+		KeychainAccount: "Ardia",
+		KeychainService: "Ardia Safe Storage",
+	},
 }
 
 // LookupBrowser returns the browser descriptor for name. Empty name defaults
@@ -177,8 +187,8 @@ func linuxSupportDir(macDirs []string) []string {
 		return macDirs
 	case "Microsoft Edge":
 		return []string{"microsoft-edge"}
-	case "Arc", "Dia":
-		return macDirs // Arc and Dia are macOS-only
+	case "Arc", "Dia", "com.ardia.browser":
+		return macDirs // Arc, Dia, and Ardia are macOS-only
 	default:
 		return macDirs
 	}
