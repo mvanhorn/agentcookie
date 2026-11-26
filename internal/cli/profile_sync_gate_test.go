@@ -32,10 +32,12 @@ func newProfileSyncFixture(t *testing.T) *profileSyncFixture {
 	common.ConfigDir = t.TempDir()
 	oldPw, oldHolders := profileSyncPasswordFor, profileSyncHolders
 	oldFrom, oldTo, oldDry, oldAllow := profileSyncFrom, profileSyncTo, profileSyncDryRun, profileSyncAllowSignout
+	oldBrowser, oldFromBrowser, oldToBrowser := profileSyncBrowser, profileSyncFromBrowser, profileSyncToBrowser
 	t.Cleanup(func() {
 		common.ConfigDir = oldDir
 		profileSyncPasswordFor, profileSyncHolders = oldPw, oldHolders
 		profileSyncFrom, profileSyncTo, profileSyncDryRun, profileSyncAllowSignout = oldFrom, oldTo, oldDry, oldAllow
+		profileSyncBrowser, profileSyncFromBrowser, profileSyncToBrowser = oldBrowser, oldFromBrowser, oldToBrowser
 		profileSyncCmd.SetErr(nil)
 	})
 
@@ -62,6 +64,7 @@ func newProfileSyncFixture(t *testing.T) *profileSyncFixture {
 
 	profileSyncHolders = func(string) ([]fileHolder, error) { return f.holders, nil }
 	profileSyncFrom, profileSyncTo = "Default", "Profile 2"
+	profileSyncBrowser, profileSyncFromBrowser, profileSyncToBrowser = "", "", ""
 	profileSyncDryRun, profileSyncAllowSignout = false, false
 	profileSyncCmd.SetErr(f.out)
 	return f
@@ -300,5 +303,97 @@ func TestRunProfileSync_AllowSignoutStillNamesSites(t *testing.T) {
 	}
 	if out := f.out.String(); !strings.Contains(out, "google.com") || !strings.Contains(out, "--allow-signout") {
 		t.Fatalf("accepted risk should still be shown: %s", out)
+	}
+}
+
+func TestRunProfileSync_CrossBrowserChromeToArdiaDistinctKeys(t *testing.T) {
+	f := newProfileSyncFixture(t)
+
+	chromeBrowser, err := chrome.LookupBrowser("chrome")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ardiaBrowser, err := chrome.LookupBrowser("ardia")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	chromeKey, err := chrome.DeriveAESKey("chrome-pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ardiaKey, err := chrome.DeriveAESKey("ardia-pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileSyncPasswordFor = func(b chrome.Browser) (string, error) {
+		switch b.Name {
+		case "chrome":
+			return "chrome-pw", nil
+		case "ardia":
+			return "ardia-pw", nil
+		default:
+			t.Fatalf("unexpected browser lookup: %q", b.Name)
+			return "", nil
+		}
+	}
+
+	if err := os.MkdirAll(ardiaBrowser.ProfileDir("Default"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(chromeBrowser.CookiesPath("Default"))
+	seedSourceCookiesDB(t, chromeBrowser.CookiesPath("Default"), []chrome.Cookie{
+		{HostKey: ".github.com", Name: "user_session", Value: "gh-secret", Path: "/", IsSecure: 1},
+		{HostKey: ".own.example", Name: "tok", Value: "chrome-val", Path: "/", IsSecure: 1},
+	}, chromeKey)
+	seedSourceCookiesDB(t, ardiaBrowser.CookiesPath("Default"), []chrome.Cookie{
+		{HostKey: ".own.example", Name: "tok", Value: "ardia-own", Path: "/", IsSecure: 1},
+	}, ardiaKey)
+
+	// Same profile name ("Default") is allowed across different browsers.
+	profileSyncFrom, profileSyncTo = "Default", "Default"
+	profileSyncFromBrowser, profileSyncToBrowser = "chrome", "ardia"
+
+	if err := runProfileSync(profileSyncCmd, nil); err != nil {
+		t.Fatalf("cross-browser profile-sync failed: %v", err)
+	}
+
+	got, err := chrome.ReadCookiesForHostClosed(ardiaBrowser.CookiesPath("Default"), "%", ardiaKey)
+	if err != nil {
+		t.Fatalf("read ardia cookies with ardiaKey: %v", err)
+	}
+	byKey := map[string]string{}
+	for _, c := range got {
+		byKey[c.HostKey+"/"+c.Name] = c.Value
+	}
+	if byKey[".github.com/user_session"] != "gh-secret" {
+		t.Errorf("copied github cookie = %q, want gh-secret", byKey[".github.com/user_session"])
+	}
+	if byKey[".own.example/tok"] != "ardia-own" {
+		t.Errorf("ardia-owned cookie clobbered: got %q, want ardia-own", byKey[".own.example/tok"])
+	}
+	if out := f.out.String(); !strings.Contains(out, "chrome/Default -> ardia/Default") {
+		t.Errorf("output missing cross-browser label: %s", out)
+	}
+}
+
+func TestRunProfileSync_CrossBrowserBlocksOpenArdia(t *testing.T) {
+	f := newProfileSyncFixture(t)
+	ardiaBrowser, err := chrome.LookupBrowser("ardia")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(ardiaBrowser.ProfileDir("Default"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	seedSourceCookiesDB(t, ardiaBrowser.CookiesPath("Default"), nil, f.key)
+
+	f.holders = []fileHolder{{PID: 73842, Command: "Ardia"}}
+	profileSyncFrom, profileSyncTo = "Default", "Default"
+	profileSyncFromBrowser, profileSyncToBrowser = "chrome", "ardia"
+
+	err = runProfileSync(profileSyncCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "ardia") || !strings.Contains(err.Error(), "pid 73842") {
+		t.Fatalf("expected refusal naming ardia and pid 73842, got %v", err)
 	}
 }

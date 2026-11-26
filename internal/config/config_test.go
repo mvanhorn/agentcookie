@@ -178,6 +178,35 @@ security:
 	}
 }
 
+func TestLoadSourceBrowserArdiaDerivesChromiumPath(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "source.yaml", `
+sink:
+  url: http://example.test:9999/sync
+browser:
+  name: ardia
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+	cfg, err := LoadSource(dir)
+	if err != nil {
+		t.Fatalf("LoadSource: %v", err)
+	}
+	if cfg.Browser.Name != "ardia" {
+		t.Errorf("browser name: got %q, want ardia", cfg.Browser.Name)
+	}
+	home, _ := os.UserHomeDir()
+	var want string
+	if runtime.GOOS == "linux" {
+		want = filepath.Join(home, ".config", "com.ardia.browser", "Chromium", "Default", "Cookies")
+	} else {
+		want = filepath.Join(home, "Library", "Application Support", "com.ardia.browser", "Chromium", "Default", "Cookies")
+	}
+	if cfg.Chrome.DBPath != want {
+		t.Errorf("derived DBPath: got %q, want %q", cfg.Chrome.DBPath, want)
+	}
+}
+
 func TestLoadSourceDBPathOverridesBrowserDerivedPath(t *testing.T) {
 	dir := t.TempDir()
 	explicit := filepath.Join(dir, "Custom", "Cookies")

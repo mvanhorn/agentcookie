@@ -12,7 +12,7 @@ Because the alternative is a hosted relay, which is a third-party data plane for
 
 ## Which browsers can agentcookie read from?
 
-Chrome, plus the Chromium browsers Brave, Edge, Arc, Dia and Atlas (Atlas cookies cannot be decrypted; see `agentcookie doctor`), and the Firefox-family browsers Zen, Firefox, LibreWolf and Floorp. Set `browser.name` in `source.yaml`. Firefox-family browsers store cookies unencrypted, so agentcookie reads a private copy of the profile's `cookies.sqlite` with no Keychain prompt; it reads cookies only, not Local Storage or IndexedDB. See the README section "Firefox-family browsers". Safari is not supported.
+Chrome, plus the Chromium browsers Brave, Edge, Arc, Dia, Ardia and Atlas (Atlas cookies cannot be decrypted; see `agentcookie doctor`), and the Firefox-family browsers Zen, Firefox, LibreWolf and Floorp. Set `browser.name` in `source.yaml`. Firefox-family browsers store cookies unencrypted, so agentcookie reads a private copy of the profile's `cookies.sqlite` with no Keychain prompt; it reads cookies only, not Local Storage or IndexedDB. See the README section "Firefox-family browsers". Safari is not supported.
 
 ## What about Linux sinks?
 

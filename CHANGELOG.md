@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Ardia browser support and cross-browser `profile-sync`
+
+- Ardia (`com.ardia.browser`, Chromium 158) is now a supported Chromium-family source browser on macOS using `Ardia Safe Storage`. Set `browser.name: ardia` in `source.yaml`, or pass `--browser ardia` to `cookies`, `export`, `agent-sync`, or `cmux-sync`. Discovery scans `~/Library/Application Support/com.ardia.browser/Chromium` and labels it `ardia` (checked before generic `chromium`) so key lookup uses `Ardia Safe Storage`.
+- `agentcookie profile-sync` now accepts `--from-browser` and `--to-browser` (defaulting to `--browser` when omitted), allowing one-way local cookie sync across different Chromium browsers using distinct Safe Storage keys (for example `agentcookie profile-sync --from "Profile 1" --to Default --from-browser chrome --to-browser ardia`) while preserving target-owned cookies, `lsof` holder checks, and device-bound session warnings.
+
 ### Chrome backups can keep a site's IndexedDB
 
 Chrome deletes a site's stored data, such as a browser game's saves in IndexedDB, when free disk space runs low. A new `~/.config/agentcookie/chrome-backup.yaml` lists extra folders, relative to each profile folder, under `extra_dirs`. The daily full snapshot and `agentcookie chrome-backup now` copy them, the manifest records them, and `chrome-backup restore` puts them back (still only with Chrome quit). Without the file nothing changes.

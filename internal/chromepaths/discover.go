@@ -103,6 +103,8 @@ func chromeRoots() []string {
 			// (profiles live under Dia/User Data/<profile>/), not the Dia
 			// support dir, or Default/Profile N would not be found.
 			filepath.Join(appSupport, "Dia", "User Data"),
+			// Ardia stores Chromium profiles under com.ardia.browser/Chromium/<profile>/.
+			filepath.Join(appSupport, "com.ardia.browser", "Chromium"),
 		)
 	case "linux":
 		configDir := filepath.Join(home, ".config")
@@ -152,6 +154,12 @@ func browserForRoot(root string) string {
 		return "brave"
 	case strings.Contains(lower, "edge"):
 		return "edge"
+	case isArdiaRoot(lower):
+		// Must run BEFORE the generic "chromium" check because Ardia's
+		// support path ends in com.ardia.browser/Chromium. Requiring the
+		// consecutive pair also keeps unrelated paths containing "ardia"
+		// classified as chrome.
+		return "ardia"
 	case strings.Contains(lower, "chromium"):
 		return "chromium"
 	case isDiaUserDataRoot(lower):
@@ -163,6 +171,19 @@ func browserForRoot(root string) string {
 	default:
 		return "chrome"
 	}
+}
+
+// isArdiaRoot reports whether slashPath contains consecutive Ardia support-dir
+// components ("com.ardia.browser" then "chromium"). slashPath must already use
+// forward slashes and be lowercased.
+func isArdiaRoot(slashPath string) bool {
+	parts := strings.Split(slashPath, "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] == "com.ardia.browser" && parts[i+1] == "chromium" {
+			return true
+		}
+	}
+	return false
 }
 
 // isDiaUserDataRoot reports whether slashPath contains consecutive Dia

@@ -22,6 +22,8 @@ var (
 	profileSyncFrom         string
 	profileSyncTo           string
 	profileSyncBrowser      string
+	profileSyncFromBrowser  string
+	profileSyncToBrowser    string
 	profileSyncDryRun       bool
 	profileSyncExclude      []string
 	profileSyncVerbose      bool
@@ -41,10 +43,9 @@ var profileSyncDefaultExcludes = []string{"claude.ai", "claude.com", "anthropic.
 var profileSyncCmd = &cobra.Command{
 	Use:   "profile-sync",
 	Short: "Copy this Mac's logins from one Chrome profile into another local profile, one-way",
-	Long: `profile-sync copies cookies from one Chrome profile on this Mac into
-another profile of the same Chrome, so a second profile (for example one
-running Claude in Chrome on a second Claude account) is logged into the same
-sites as your main one.
+	Long: `profile-sync copies cookies from one Chromium browser profile on this Mac
+into another local profile (either another profile of the same browser, or
+another Chromium-family browser such as Chrome -> Ardia), one-way.
 
 It is one-way and never clobbers the target's own logins:
 
@@ -57,13 +58,14 @@ claude.ai, claude.com and anthropic.com are never copied, so each profile
 keeps its own Claude account. Device-bound Google account cookies (DBSC) are
 skipped; sign into Google in each profile directly.
 
-Chrome only reads a profile's cookie store when the profile loads, so the
-target profile must be closed: close its windows first (profile-sync refuses
-while any process other than agentcookie itself still has the target's cookie
-store open), then run:
+Chromium browsers only read a profile's cookie store when the profile loads,
+so the target profile must be closed: close its windows first (profile-sync
+refuses while any process other than agentcookie itself still has the target's
+cookie store open), then run:
 
   agentcookie profile-sync --to "Profile 1"
   agentcookie profile-sync --to "Profile 1" --dry-run    # show the plan only
+  agentcookie profile-sync --from "Profile 1" --to Default --from-browser chrome --to-browser ardia
 
 The source profile can stay open; it is only read.
 
@@ -79,7 +81,9 @@ you accept signing back in to those sites. --dry-run always shows the list.`,
 func init() {
 	profileSyncCmd.Flags().StringVar(&profileSyncFrom, "from", "Default", "source profile directory name")
 	profileSyncCmd.Flags().StringVar(&profileSyncTo, "to", "", `target profile directory name, e.g. "Profile 1" (required)`)
-	profileSyncCmd.Flags().StringVar(&profileSyncBrowser, "browser", "", "browser name (default: Chrome)")
+	profileSyncCmd.Flags().StringVar(&profileSyncBrowser, "browser", "", "browser name for both source and target (default: chrome)")
+	profileSyncCmd.Flags().StringVar(&profileSyncFromBrowser, "from-browser", "", "source browser name (overrides --browser)")
+	profileSyncCmd.Flags().StringVar(&profileSyncToBrowser, "to-browser", "", "target browser name (overrides --browser)")
 	profileSyncCmd.Flags().BoolVar(&profileSyncDryRun, "dry-run", false, "print what would be copied without writing")
 	profileSyncCmd.Flags().StringSliceVar(&profileSyncExclude, "exclude", nil, "extra registrable domains to never copy (repeatable), e.g. --exclude chase.com")
 	profileSyncCmd.Flags().BoolVar(&profileSyncVerbose, "verbose", false, "list skipped target-owned cookies by host")
@@ -95,34 +99,58 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("profile %q is not a Chrome profile directory name (Default or \"Profile N\")", p)
 		}
 	}
-	if profileSyncFrom == profileSyncTo {
-		return fmt.Errorf("--from and --to are the same profile (%s)", profileSyncTo)
-	}
 
-	browser, err := chrome.LookupBrowser(profileSyncBrowser)
+	srcBrowserName := profileSyncBrowser
+	if strings.TrimSpace(profileSyncFromBrowser) != "" {
+		srcBrowserName = profileSyncFromBrowser
+	}
+	dstBrowserName := profileSyncBrowser
+	if strings.TrimSpace(profileSyncToBrowser) != "" {
+		dstBrowserName = profileSyncToBrowser
+	}
+	srcBrowser, err := chrome.LookupBrowser(srcBrowserName)
 	if err != nil {
 		return err
 	}
-	srcPath := browser.CookiesPath(profileSyncFrom)
-	dstPath := browser.CookiesPath(profileSyncTo)
+	dstBrowser, err := chrome.LookupBrowser(dstBrowserName)
+	if err != nil {
+		return err
+	}
+	if srcBrowser.Name == dstBrowser.Name && profileSyncFrom == profileSyncTo {
+		return fmt.Errorf("--from and --to are the same profile (%s/%s)", dstBrowser.Name, profileSyncTo)
+	}
+
+	srcPath := srcBrowser.CookiesPath(profileSyncFrom)
+	dstPath := dstBrowser.CookiesPath(profileSyncTo)
 	if _, err := os.Stat(dstPath); err != nil {
-		return fmt.Errorf("target profile %q has no cookie store at %s (open it in Chrome once first): %w", profileSyncTo, dstPath, err)
+		return fmt.Errorf("target profile %s/%q has no cookie store at %s (open it in %s once first): %w", dstBrowser.Name, profileSyncTo, dstPath, dstBrowser.Name, err)
 	}
 
 	blocklist, err := loadFreshBlocklist()
 	if err != nil {
 		return err
 	}
-	password, err := profileSyncPasswordFor(browser)
+	srcPassword, err := profileSyncPasswordFor(srcBrowser)
 	if err != nil {
 		return err
 	}
-	key, err := chrome.DeriveAESKey(password)
+	srcKey, err := chrome.DeriveAESKey(srcPassword)
 	if err != nil {
 		return err
+	}
+	dstKey := srcKey
+	if dstBrowser.Name != srcBrowser.Name {
+		dstPassword, err := profileSyncPasswordFor(dstBrowser)
+		if err != nil {
+			return err
+		}
+		dstKey, err = chrome.DeriveAESKey(dstPassword)
+		if err != nil {
+			return err
+		}
 	}
 
-	statePath := profileSyncStatePath(browser.Name, profileSyncTo)
+	statePath := profileSyncStatePath(dstBrowser.Name, profileSyncTo)
 	// Hold a per-target lock from the target/state read through the state
 	// save, so overlapping runs cannot interleave writes and ownership.
 	unlock, err := profileSyncLock(statePath + ".lock")
@@ -131,7 +159,7 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 	}
 	defer unlock()
 
-	// Chrome keeps no SQLite lock on Cookies, and a loaded profile would never
+	// Chromium keeps no SQLite lock on Cookies, and a loaded profile would never
 	// pick up rows written under it (and could later overwrite them). A real
 	// run refuses unless no process other than agentcookie holds the target's
 	// cookie store open; agentcookie's own daemons only read it.
@@ -142,9 +170,9 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 	open := len(holders) > 0
 
 	// Closing the target, or reloading it after the write, can end the
-	// sessions Chrome binds to that profile. Name them and stop until the
+	// sessions the browser binds to that profile. Name them and stop until the
 	// owner accepts signing back in; a dry run only reports them.
-	signout := describeSignoutRisk(profileSyncTo, browser.ProfileDir(profileSyncTo))
+	signout := describeSignoutRisk(profileSyncTo, dstBrowser.ProfileDir(profileSyncTo))
 	if signout != "" && !profileSyncDryRun && !profileSyncAllowSignout {
 		next := "nothing was written"
 		if open {
@@ -156,22 +184,25 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "agentcookie profile-sync: %s; going ahead because of --allow-signout\n", signout)
 	}
 	if open && !profileSyncDryRun {
+		if dstBrowser.Name != "chrome" {
+			return fmt.Errorf("profile %s/%q is open (held by %s); quit %s (it may take a few seconds to let go) and run again", dstBrowser.Name, profileSyncTo, formatHolders(holders), dstBrowser.Name)
+		}
 		return fmt.Errorf("profile %q is open (held by %s); close every window of that profile (Chrome may take a few seconds to let go) and run again. If the profile keep-alive is on, it keeps the profile loaded with no window: run `agentcookie profile-keepalive pause --profile %q`, then open a window of that profile and close it (or quit Chrome), then run again", profileSyncTo, formatHolders(holders), profileSyncTo)
 	}
 
 	// skipDBSC=true: device-bound cookies cannot move between profiles.
-	src, st, err := readFilteredCookies(srcPath, blocklist, key, true, time.Now().UTC())
+	src, st, err := readFilteredCookies(srcPath, blocklist, srcKey, true, time.Now().UTC())
 	if err != nil {
 		return fmt.Errorf("read source profile %q: %w", profileSyncFrom, err)
 	}
-	// A closed target is read WAL-aware, so committed rows Chrome left in
-	// Cookies-wal count as the target's own. An open one (dry-run only) is
-	// read as a snapshot.
+	// A closed target is read WAL-aware, so committed rows left in Cookies-wal
+	// count as the target's own. An open one (dry-run only) is read as a
+	// snapshot.
 	readTarget := chrome.ReadCookiesForHostClosed
 	if open {
 		readTarget = chrome.ReadCookiesForHost
 	}
-	dst, err := readTarget(dstPath, "%", key)
+	dst, err := readTarget(dstPath, "%", dstKey)
 	if err != nil {
 		return fmt.Errorf("read target profile %q: %w", profileSyncTo, err)
 	}
@@ -184,9 +215,15 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 	excludes := append(append([]string(nil), profileSyncDefaultExcludes...), profileSyncExclude...)
 	plan := planProfileSync(src, dst, state, excludes)
 
+	srcLabel, dstLabel := profileSyncFrom, profileSyncTo
+	if srcBrowser.Name != dstBrowser.Name {
+		srcLabel = srcBrowser.Name + "/" + profileSyncFrom
+		dstLabel = dstBrowser.Name + "/" + profileSyncTo
+	}
+
 	out := cmd.ErrOrStderr()
 	fmt.Fprintf(out, "agentcookie profile-sync: %s -> %s: source %d (policy dropped %d, device-bound skipped %d), copy %d new, update %d, unchanged %d, target-owned kept %d, excluded %d\n",
-		profileSyncFrom, profileSyncTo, st.totalRead, st.totalDropped, st.dbsc.skipped,
+		srcLabel, dstLabel, st.totalRead, st.totalDropped, st.dbsc.skipped,
 		plan.added, plan.updated, plan.unchanged, len(plan.targetOwned), plan.excluded)
 	if profileSyncVerbose {
 		for _, h := range summarizeHosts(plan.targetOwned) {
@@ -212,12 +249,12 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 		}
 		// The reopened profile may have gained device-bound logins while we
 		// planned; closing it again could sign it out of them.
-		if risk := describeSignoutRisk(profileSyncTo, browser.ProfileDir(profileSyncTo)); risk != "" && !profileSyncAllowSignout {
+		if risk := describeSignoutRisk(profileSyncTo, dstBrowser.ProfileDir(profileSyncTo)); risk != "" && !profileSyncAllowSignout {
 			return fmt.Errorf("profile %q was reopened while profile-sync was planning (held by %s) and %s; nothing written. Rerun with --allow-signout once you accept signing back in to them", profileSyncTo, formatHolders(holders), risk)
 		}
 		return fmt.Errorf("profile %q was reopened while profile-sync was planning (held by %s); nothing written. Close it and run again", profileSyncTo, formatHolders(holders))
 	}
-	n, err := chrome.WriteCookiesChromeNative(dstPath, plan.write, key)
+	n, err := chrome.WriteCookiesChromeNative(dstPath, plan.write, dstKey)
 	if err != nil {
 		return fmt.Errorf("write target profile %q: %w", profileSyncTo, err)
 	}
@@ -227,7 +264,7 @@ func runProfileSync(cmd *cobra.Command, args []string) error {
 	if err := saveProfileSyncState(statePath, state); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "agentcookie profile-sync: wrote %d cookies into %s\n", n, profileSyncTo)
+	fmt.Fprintf(out, "agentcookie profile-sync: wrote %d cookies into %s\n", n, dstLabel)
 	return nil
 }
 
